@@ -3226,7 +3226,18 @@ PR #15 and PR #16 (stacked: `feat/motion` → `harden/review-fixes` → `main`).
   (which would leave the gate silently red forever with no record of why) and reversible
   the moment upstream ships a fix — `cargo tree -i` before removing any entry to confirm.
 
-## `fenestra-anim`: a standalone leaf crate for keyframe animation math (2026-07-03)
+  **2026-07-24 addendum (muda → gtk3-rs, never compiled).** Adding `muda` for the native
+  menu bar (a macOS-only dependency of `fenestra-shell`) put its *Linux* half — the
+  archived gtk3-rs bindings (`gtk`/`gdk`/`atk` + `-sys` crates, `gtk3-macros`, and their
+  `proc-macro-error`) — into `Cargo.lock`, tripping eight unmaintained advisories
+  (RUSTSEC-2024-0412/0413/0415/0416/0418/0419/0420/0370) in `cargo deny check`. No
+  supported target ever compiles any of them: `cargo tree -i gtk --target
+  x86_64-unknown-linux-gnu` prints nothing, because nothing depends on muda off macOS.
+  Scoping `[graph] targets` in deny.toml was tried and does **not** help — cargo-deny's
+  graph keeps every cfg-gated edge of every resolved crate, so muda's `cfg(linux)` edges
+  survive any target list that includes Linux. Ignored with the same documented-chain
+  pattern; revisit when muda moves its Linux backend off gtk3 or grows an opt-out
+  feature.
 
 A new workspace member, `fenestra-anim` (published independently at `0.1.0`, not
 lockstepped with the workspace's `0.39.0` series), extracts the frame-pure keyframe

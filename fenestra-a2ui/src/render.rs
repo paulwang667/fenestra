@@ -1138,13 +1138,7 @@ fn render_choice_picker(
     };
     if path.is_none() {
         // Literal-valued pickers stay interactive through local edits.
-        if let Some(edited) = ctx
-            .surface
-            .ui
-            .local_edits
-            .get(id)
-            .and_then(selection_of)
-        {
+        if let Some(edited) = ctx.surface.ui.local_edits.get(id).and_then(selection_of) {
             selected_values = edited;
         }
     }
