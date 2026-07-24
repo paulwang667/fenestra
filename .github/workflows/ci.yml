@@ -116,6 +116,10 @@ jobs:
       - run: cargo test -p fenestra-core
       - name: render tests (CPU compute over WARP — informational)
         continue-on-error: true
+        # WARP can hang instead of crash (observed 2026-07-24: 1.5h+ stall
+        # vs a 5–10 min normal run). An informational step must never hold
+        # the job open toward the 6h default; bound it hard.
+        timeout-minutes: 30
         env:
           FENESTRA_CPU: "1"
           WGPU_BACKEND: dx12
