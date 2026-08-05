@@ -681,3 +681,101 @@ fn repeated_rejected_writes_record_one_note() {
         surface.notes()
     );
 }
+
+// ── From the second 2026-08-05 review of PR #19 ───────────────────────────
+
+/// The widget decides its range in f32, so validating in f64 proved
+/// nothing: 1e39 narrows to infinity and the kit silently keeps its default
+/// domain, while the note claimed otherwise. An accepted infinite bound was
+/// worse — the widget's normalization divides by it and feeds NaN into
+/// layout.
+#[test]
+fn slider_ranges_are_validated_in_the_widgets_own_precision() {
+    // 1e39 overflows f32 to infinity; the second pair differs by less
+    // than f32's step near 1.0 (~1.2e-7), so both bounds land on 1.0f32.
+    for (min, max) in [(1e39_f64, 2e39_f64), (1.0, 1.000_000_01)] {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {{"id":"root","component":"Slider","min":{min},"max":{max},"value":{min}}}
+            ]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::InvalidValue && n.detail.contains("slider range")),
+            "{min}..={max} collapses in f32 and must be reported, got: {:?}",
+            rendered.notes
+        );
+    }
+}
+
+/// A value JSON cannot carry is not a request to delete the binding.
+/// `Surface::write(path, None)` *removes* the key, so mapping a
+/// non-representable f64 to `None` silently erased the data the control was
+/// bound to — and reported nothing, because the removal itself succeeded.
+#[test]
+fn an_unrepresentable_number_does_not_delete_the_binding() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"volume":0.5}}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Text","text":"x"}
+        ]}}
+    ]"#;
+    let mut client = apply(stream);
+    let surface = client.surface_mut("s").expect("surface");
+    surface.handle(A2uiMsg::SetNumber {
+        path: "/volume".into(),
+        value: f64::INFINITY,
+    });
+    assert_eq!(
+        surface.data().pointer("/volume"),
+        Some(&serde_json::json!(0.5)),
+        "the model keeps its previous value rather than losing the key"
+    );
+    assert!(
+        surface
+            .notes()
+            .iter()
+            .any(|n| n.kind == NoteKind::RejectedWrite),
+        "and the rejected write is reported, got: {:?}",
+        surface.notes()
+    );
+}
+
+/// A partial match is the damaging case: the picker renders as though the
+/// values it cannot show were not there, and the next toggle writes the
+/// visible selection back over them.
+#[test]
+fn a_multi_select_cannot_delete_values_it_cannot_show() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"tags":["a","legacy"]}}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"ChoicePicker","variant":"multipleSelection",
+             "value":{"path":"/tags"},"options":[
+                {"label":"A","value":"a"},{"label":"B","value":"b"}
+             ]}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| { n.kind == NoteKind::InvalidValue && n.detail.contains("legacy") }),
+        "the value the picker cannot show must be reported, got: {:?}",
+        rendered.notes
+    );
+}

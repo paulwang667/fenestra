@@ -251,10 +251,21 @@ impl Surface {
                 Vec::new()
             }
             A2uiMsg::SetNumber { path, value } => {
-                self.write(
-                    &path,
-                    serde_json::Number::from_f64(value).map(Value::Number),
-                );
+                match serde_json::Number::from_f64(value) {
+                    Some(n) => self.write(&path, Some(Value::Number(n))),
+                    // `write(_, None)` means "remove this key". An infinite
+                    // or NaN value is not a request to delete the binding —
+                    // it is a value JSON cannot carry, and deleting on its
+                    // behalf destroys the data the control was bound to.
+                    None => self.push_note(Note::new(
+                        &path,
+                        NoteKind::RejectedWrite,
+                        format!(
+                            "{value} cannot be represented in JSON; the model keeps its previous \
+                             value"
+                        ),
+                    )),
+                }
                 Vec::new()
             }
             A2uiMsg::SetList { path, values } => {
@@ -1162,33 +1173,45 @@ fn render_component(
             max,
             value,
         } => {
-            let min = min.unwrap_or(0.0);
-            // `Slider::range` ignores anything that is not max > min, which
-            // would silently leave the control on its default 0..=1 domain.
-            // A stream that asked for an impossible range gets told.
-            let usable = |lo: f64, hi: f64| lo.is_finite() && hi.is_finite() && hi > lo;
-            let (min, max) = if usable(min, *max) {
-                (min, *max)
-            } else {
-                // The repair has to survive the same test that rejected the
-                // original: at the top of the f64 range `min + 1.0` rounds
-                // straight back to `min`, so falling back to 0..=1 is the
-                // only honest answer left.
-                let (lo, hi) = if usable(min, min + 1.0) {
-                    (min, min + 1.0)
+            let requested_min = min.unwrap_or(0.0);
+            let requested_max = *max;
+            // `Slider::range` ignores anything that is not max > min, and it
+            // decides that in f32 — so validating in f64 proves nothing.
+            // 1e39 narrows to infinity, 1.0 and 1.0000001 collapse onto the
+            // same f32, and either way the kit silently keeps its default
+            // 0..=1 domain. An accepted infinite bound is worse still: the
+            // widget's own normalization divides by it and feeds NaN into
+            // layout. Validate exactly the values the widget will see.
+            #[expect(clippy::cast_possible_truncation, reason = "checked below in f32")]
+            let (min, max) = {
+                let usable = |lo: f32, hi: f32| lo.is_finite() && hi.is_finite() && hi > lo;
+                let (lo, hi) = (requested_min as f32, requested_max as f32);
+                if usable(lo, hi) {
+                    (lo, hi)
                 } else {
-                    (0.0, 1.0)
-                };
-                ctx.note(
-                    id,
-                    NoteKind::InvalidValue,
-                    format!("slider range {min}..={max} is empty or not finite; using {lo}..={hi}"),
-                );
-                (lo, hi)
+                    // The repair has to survive the same test that rejected
+                    // the original: near the top of the f32 range `lo + 1.0`
+                    // rounds straight back to `lo`, so 0..=1 is the only
+                    // honest answer left.
+                    let (lo, hi) = if usable(lo, lo + 1.0) {
+                        (lo, lo + 1.0)
+                    } else {
+                        (0.0, 1.0)
+                    };
+                    ctx.note(
+                        id,
+                        NoteKind::InvalidValue,
+                        format!(
+                            "slider range {requested_min}..={requested_max} is empty, not finite, \
+                             or collapses to a single value in f32; using {lo}..={hi}"
+                        ),
+                    );
+                    (lo, hi)
+                }
             };
             let (current, path) = match value {
                 Dyn::Binding { path } => (
-                    bound_f64(ctx, id, path, scope, min),
+                    bound_f64(ctx, id, path, scope, f64::from(min)),
                     Some(absolute(path, scope)),
                 ),
                 other => {
@@ -1205,8 +1228,11 @@ fn render_component(
                     (current, None)
                 }
             };
-            #[expect(clippy::cast_possible_truncation, reason = "UI ranges fit in f32")]
-            let mut s = slider(current as f32).range(min as f32, max as f32);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "slider positions fit in f32"
+            )]
+            let mut s = slider(current as f32).range(min, max);
             s = match path {
                 Some(path) => s.on_change(move |v| A2uiMsg::SetNumber {
                     path: path.clone(),
@@ -1496,13 +1522,20 @@ fn render_choice_picker(
         .filter(|(_, v)| selected_values.contains(v))
         .map(|(i, _)| i)
         .collect();
-    if selected_idx.is_empty() && !selected_values.is_empty() {
+    // Values the model holds that this picker has no option for. Reporting
+    // only the all-or-nothing case hid the more damaging one: a partial
+    // match renders as if the unmatched values were not there, and the next
+    // toggle writes the visible selection back over them.
+    let unmatched: Vec<String> = selected_values
+        .iter()
+        .filter(|v| !values.contains(v))
+        .cloned()
+        .collect();
+    if !unmatched.is_empty() {
         ctx.note(
             id,
             NoteKind::InvalidValue,
-            format!(
-                "selection {selected_values:?} matches none of this picker's options {values:?}"
-            ),
+            format!("selection {unmatched:?} matches none of this picker's options {values:?}"),
         );
     }
     // Selection changes write through the binding, or store a local edit
@@ -1527,6 +1560,11 @@ fn render_choice_picker(
         {
             let values = values.clone();
             let current = selected_idx;
+            // The picker can only offer its own options, so rebuilding the
+            // list from them alone would drop anything the model holds that
+            // this picker cannot show. Carry those through untouched: a
+            // control the user cannot see must not be able to delete data.
+            let unmatched = unmatched.clone();
             ms = ms.on_toggle(move |i| {
                 let mut next: Vec<usize> = current.clone();
                 if let Some(pos) = next.iter().position(|&x| x == i) {
@@ -1535,11 +1573,12 @@ fn render_choice_picker(
                     next.push(i);
                     next.sort_unstable();
                 }
-                make_msg(
-                    next.iter()
-                        .filter_map(|&x| values.get(x).cloned())
-                        .collect(),
-                )
+                let mut written: Vec<String> = next
+                    .iter()
+                    .filter_map(|&x| values.get(x).cloned())
+                    .collect();
+                written.extend(unmatched.iter().cloned());
+                make_msg(written)
             });
         }
         ms.into()
