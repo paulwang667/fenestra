@@ -561,8 +561,9 @@ pub struct A2uiRenderOut {
     /// The rendered pixels.
     pub png: RgbaImage,
     /// Fidelity notes from the catalog mapping (empty means every
-    /// component and binding mapped cleanly).
-    pub notes: Vec<String>,
+    /// component and binding mapped cleanly). Each carries a machine-
+    /// readable [`fenestra_a2ui::NoteKind`] alongside the prose.
+    pub notes: Vec<fenestra_a2ui::Note>,
 }
 
 /// Renders an A2UI v0.9 message stream (the open Agent-to-UI standard,

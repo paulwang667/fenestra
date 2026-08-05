@@ -123,22 +123,36 @@ crate deterministic.
 ## Notes are the contract
 
 Every render returns `notes`. An empty list means every component and
-every binding mapped cleanly. A non-empty one tells you exactly what
-didn't, pointed at the component id:
+every binding mapped cleanly. A non-empty one says exactly what didn't,
+pointed at the component id that carried it:
 
+```json
+{ "componentId": "avatar_img", "kind": "unresolvedBinding",
+  "detail": "binding \"/user/avatar\" resolves to nothing" }
 ```
-avatar_img: binding "/user/avatar" resolves to nothing
-chart_1: component "FancyGauge" did not map onto the basic catalog
+
+The `kind` is there so you can branch. An agent that sees `unknownIcon`
+retries with a different name; one that sees `unknownComponent` knows the
+catalog is the problem, not its data. Matching on the prose would break
+the first time a message is reworded.
+
+Each kind also carries a severity. `broken` means the surface is not what
+the stream asked for — a missing component, an unresolved binding, a write
+that didn't apply. `approximate` means it rendered the right thing
+inexactly. `any_broken(&notes)` is the one-line check for a test:
+
+```rust,ignore
+assert!(!fenestra_a2ui::any_broken(&rendered.notes), "{:?}", rendered.notes);
 ```
+
+The approximate cases, all of which record a note: remote images, video,
+and audio render as labeled placeholders (a deterministic render never
+touches the network), `DateTimeInput` is an ISO text field rather than a
+calendar, obscured text fields render unmasked, and `checks` and
+`validationRegexp` parse but do not gate anything yet.
 
 This is the same fidelity-or-report rule the JSON emitter follows. Nothing
 degrades quietly.
-
-Known gaps, all of which record a note: remote images, video, and audio
-render as labeled placeholders (a deterministic render never touches the
-network), `DateTimeInput` is an ISO text field rather than a calendar,
-obscured text fields render unmasked, and `checks` validation rules parse
-but do not yet gate actions.
 
 ## Verifying it
 
@@ -148,7 +162,7 @@ the same way anything else in fenestra is:
 ```rust,ignore
 let rendered = surface.render(&Theme::light());
 let image = render_element(rendered.element, &Theme::light(), (480, 640));
-assert!(rendered.notes.is_empty(), "stream degraded: {:?}", rendered.notes);
+assert!(!any_broken(&rendered.notes), "stream degraded: {:?}", rendered.notes);
 assert_png_snapshot("tests/snapshots", "checkout_surface", &image);
 ```
 

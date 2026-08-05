@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use fenestra_a2ui::{A2uiMsg, A2uiSignal, Client, parse_stream};
+use fenestra_a2ui::{A2uiMsg, A2uiSignal, Client, NoteKind, parse_stream};
 use fenestra_core::{Theme, by};
 use fenestra_shell::{render_element, testing::assert_png_snapshot};
 
@@ -218,7 +218,10 @@ fn reference_cycles_degrade_with_a_note() {
         .expect("surface")
         .render(&Theme::light());
     assert!(
-        rendered.notes.iter().any(|n| n.contains("cycle")),
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::ReferenceCycle),
         "cycle must be reported, got: {:?}",
         rendered.notes
     );
@@ -242,8 +245,11 @@ fn unknown_components_degrade_with_a_note() {
         .expect("surface")
         .render(&Theme::light());
     assert!(
-        rendered.notes.iter().any(|n| n.contains("FancyGauge")),
-        "got: {:?}",
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::UnknownComponent && n.detail.contains("FancyGauge")),
+        "an out-of-catalog name is unknown, not malformed, got: {:?}",
         rendered.notes
     );
 }

@@ -99,7 +99,11 @@ surface: {} · fidelity notes: {}",
             if out.notes.is_empty() {
                 "none (full fidelity)".to_owned()
             } else {
-                out.notes.join("; ")
+                out.notes
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
             },
         );
         Ok(content::ok(text, structured, Some(&out.png)))

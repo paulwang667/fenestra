@@ -2,7 +2,7 @@
 //! renderer: binding resolution gaps, protocol tolerance, and silent
 //! write failures. Each test names the finding it pins.
 
-use fenestra_a2ui::{A2uiMsg, A2uiSignal, Client, parse_stream};
+use fenestra_a2ui::{A2uiMsg, A2uiSignal, Client, NoteKind, parse_stream};
 use fenestra_core::{Element, Theme};
 
 fn apply(stream: &str) -> Client {
@@ -37,13 +37,19 @@ fn bound_icon_names_resolve() {
         .expect("surface")
         .render(&Theme::light());
     assert!(
-        !rendered.notes.iter().any(|n| n.contains("{\"path\"")),
+        !rendered
+            .notes
+            .iter()
+            .any(|n| n.detail.contains("{\"path\"")),
         "the binding object leaked into rendering, notes: {:?}",
         rendered.notes
     );
     let tree = frame_tree(&rendered.element, (480.0, 640.0));
     assert!(
-        rendered.notes.iter().any(|n| n.contains("priority_high"))
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::UnknownIcon && n.detail.contains("priority_high"))
             || tree.contains("priority_high"),
         "the bound icon name must resolve to priority_high; notes: {:?}",
         rendered.notes
@@ -195,7 +201,10 @@ fn unknown_message_types_are_skipped_not_fatal() {
         "known messages around the unknown one apply"
     );
     assert!(
-        surface.notes().iter().any(|n| n.contains("updateTheme")),
+        surface
+            .notes()
+            .iter()
+            .any(|n| n.kind == NoteKind::UnknownMessage && n.component_id == "updateTheme"),
         "the skipped message type is noted, got: {:?}",
         surface.notes()
     );
@@ -222,8 +231,11 @@ fn malformed_known_component_degrades_not_fails() {
     let tree = frame_tree(&rendered.element, (480.0, 640.0));
     assert!(tree.contains("fine"), "siblings render");
     assert!(
-        rendered.notes.iter().any(|n| n.contains("Slider")),
-        "the malformed component is noted, got: {:?}",
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::MalformedComponent && n.detail.contains("Slider")),
+        "a *known* name that failed to parse is malformed, not unknown, got: {:?}",
         rendered.notes
     );
 }
@@ -246,7 +258,10 @@ fn array_appends_apply_and_bad_writes_are_noted() {
         "`-` appends"
     );
     assert!(
-        surface.notes().iter().any(|n| n.contains("/items/9")),
+        surface
+            .notes()
+            .iter()
+            .any(|n| n.kind == NoteKind::RejectedWrite && n.component_id == "/items/9"),
         "the dropped out-of-range write is noted, got: {:?}",
         surface.notes()
     );

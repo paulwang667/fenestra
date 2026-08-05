@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::catalog::{Action, ChildList, ChoiceOption, Component, Dyn, FunctionCall, Kind};
 use crate::functions;
+use crate::note::{Note, NoteKind};
 use crate::surface::Surface;
 
 /// The deepest component chain the renderer follows. True cycles are
@@ -127,21 +128,23 @@ pub struct Rendered {
     pub element: Element<A2uiMsg>,
     /// Render-time notes (unknown components, unresolved calls,
     /// truncations). Empty means every component mapped cleanly.
-    pub notes: Vec<String>,
+    pub notes: Vec<Note>,
 }
 
 struct Ctx<'a> {
     surface: &'a Surface,
     theme: &'a Theme,
-    notes: std::cell::RefCell<Vec<String>>,
+    notes: std::cell::RefCell<Vec<Note>>,
     /// The id chain currently being rendered: exact cycle detection
     /// (`a → b → a` trips on re-entry, not after burning stack).
     path_stack: std::cell::RefCell<Vec<String>>,
 }
 
 impl Ctx<'_> {
-    fn note(&self, id: &str, msg: impl std::fmt::Display) {
-        self.notes.borrow_mut().push(format!("{id}: {msg}"));
+    fn note(&self, id: &str, kind: NoteKind, detail: impl std::fmt::Display) {
+        self.notes
+            .borrow_mut()
+            .push(Note::new(id, kind, detail.to_string()));
     }
 }
 
@@ -160,7 +163,11 @@ impl Surface {
         let element = if self.components.contains_key("root") {
             render_by_id(&ctx, "root", None, 0)
         } else {
-            ctx.note("root", "no root component yet (stream incomplete?)");
+            ctx.note(
+                "root",
+                NoteKind::MissingComponent,
+                "no root component yet (stream incomplete?)",
+            );
             col()
         };
         Rendered {
@@ -277,7 +284,11 @@ fn resolve_value(ctx: &Ctx, id: &str, d: &Dyn<String>, scope: Option<&str>) -> S
         Dyn::Binding { path } => match lookup(ctx.surface, path, scope) {
             Some(v) => functions::display(v),
             None => {
-                ctx.note(id, format!("binding {path:?} resolves to nothing"));
+                ctx.note(
+                    id,
+                    NoteKind::UnresolvedBinding,
+                    format!("binding {path:?} resolves to nothing"),
+                );
                 String::new()
             }
         },
@@ -292,7 +303,11 @@ fn bound_bool(ctx: &Ctx, id: &str, path: &str, scope: Option<&str>) -> bool {
     match lookup(ctx.surface, path, scope) {
         None => false,
         Some(v) => v.as_bool().unwrap_or_else(|| {
-            ctx.note(id, format!("binding {path:?} is not a boolean; false"));
+            ctx.note(
+                id,
+                NoteKind::BindingType,
+                format!("binding {path:?} is not a boolean; false"),
+            );
             false
         }),
     }
@@ -303,7 +318,11 @@ fn bound_f64(ctx: &Ctx, id: &str, path: &str, scope: Option<&str>, fallback: f64
     match lookup(ctx.surface, path, scope) {
         None => fallback,
         Some(v) => v.as_f64().unwrap_or_else(|| {
-            ctx.note(id, format!("binding {path:?} is not a number; {fallback}"));
+            ctx.note(
+                id,
+                NoteKind::BindingType,
+                format!("binding {path:?} is not a number; {fallback}"),
+            );
             fallback
         }),
     }
@@ -316,6 +335,7 @@ fn resolve_bool(ctx: &Ctx, id: &str, d: &Dyn<bool>, scope: Option<&str>) -> bool
         Dyn::Call(call) => {
             ctx.note(
                 id,
+                NoteKind::BindingType,
                 format!("function {:?} in a boolean slot; false", call.call),
             );
             false
@@ -328,7 +348,11 @@ fn resolve_f64(ctx: &Ctx, id: &str, d: &Dyn<f64>, scope: Option<&str>) -> f64 {
         Dyn::Lit(n) => *n,
         Dyn::Binding { path } => bound_f64(ctx, id, path, scope, 0.0),
         Dyn::Call(call) => {
-            ctx.note(id, format!("function {:?} in a numeric slot; 0", call.call));
+            ctx.note(
+                id,
+                NoteKind::BindingType,
+                format!("function {:?} in a numeric slot; 0", call.call),
+            );
             0.0
         }
     }
@@ -387,7 +411,11 @@ fn resolve_call(ctx: &Ctx, id: &str, call: &FunctionCall, scope: Option<&str>) -
                 .unwrap_or("yyyy-MM-dd");
             let raw = functions::display(&v);
             functions::format_date(&raw, pattern).unwrap_or_else(|| {
-                ctx.note(id, format!("formatDate could not parse {raw:?}"));
+                ctx.note(
+                    id,
+                    NoteKind::InvalidValue,
+                    format!("formatDate could not parse {raw:?}"),
+                );
                 raw
             })
         }
@@ -398,7 +426,11 @@ fn resolve_call(ctx: &Ctx, id: &str, call: &FunctionCall, scope: Option<&str>) -
             functions::pluralize(v.as_f64().unwrap_or(0.0), one, other)
         }
         other => {
-            ctx.note(id, format!("function {other:?} is not implemented"));
+            ctx.note(
+                id,
+                NoteKind::UnimplementedFunction,
+                format!("function {other:?} is not implemented"),
+            );
             format!("[{other}]")
         }
     }
@@ -441,12 +473,17 @@ fn interpolate(ctx: &Ctx, id: &str, template: &str, scope: Option<&str>) -> Stri
         if expr.contains('(') {
             ctx.note(
                 id,
+                NoteKind::UnimplementedFunction,
                 format!("nested call in formatString template ({expr:?}) is not implemented"),
             );
         } else {
             match lookup(ctx.surface, expr, scope) {
                 Some(v) => out.push_str(&functions::display(v)),
-                None => ctx.note(id, format!("template path {expr:?} resolves to nothing")),
+                None => ctx.note(
+                    id,
+                    NoteKind::UnresolvedBinding,
+                    format!("template path {expr:?} resolves to nothing"),
+                ),
             }
         }
         rest = &after[end + 1..];
@@ -456,6 +493,33 @@ fn interpolate(ctx: &Ctx, id: &str, template: &str, scope: Option<&str>) -> Stri
 }
 
 // ── Component rendering ───────────────────────────────────────────────────
+
+/// `checks` and `validationRegexp` parse but gate nothing yet. Say so, so a
+/// stream never believes its validation is running when it is not — the
+/// difference between "this form is validated" and "this form looks
+/// validated" is exactly what a fidelity note is for.
+fn note_unenforced_validation(ctx: &Ctx, id: &str, checks: Option<&Value>, regexp: Option<&str>) {
+    if checks.is_some_and(|c| !c.is_null()) {
+        ctx.note(
+            id,
+            NoteKind::Unsupported,
+            "`checks` parsed but does not gate this control yet",
+        );
+    }
+    if regexp.is_some() {
+        ctx.note(
+            id,
+            NoteKind::Unsupported,
+            "`validationRegexp` parsed but is not enforced yet",
+        );
+    }
+}
+
+/// A short quoted form for note prose, so a page-long data URI cannot bury
+/// the rest of the note.
+fn quoted(s: &str) -> String {
+    format!("{:?}", truncate_label(s, 60))
+}
 
 /// Trims a placeholder label to a displayable length (char-safe).
 fn truncate_label(s: &str, max: usize) -> String {
@@ -481,19 +545,25 @@ fn render_by_id(ctx: &Ctx, id: &str, scope: Option<&str>, depth: usize) -> Eleme
     if ctx.path_stack.borrow().iter().any(|p| p == id) {
         ctx.note(
             id,
-            "reference cycle detected (depth cap); rendering a placeholder",
+            NoteKind::ReferenceCycle,
+            "reference cycle detected; rendering a placeholder",
         );
         return placeholder(format!("[cycle: {id}]"), ctx.theme);
     }
     if depth > MAX_DEPTH {
         ctx.note(
             id,
+            NoteKind::DepthCap,
             "component chain exceeds the depth cap; rendering a placeholder",
         );
         return placeholder(format!("[deep: {id}]"), ctx.theme);
     }
     let Some(component) = ctx.surface.components.get(id) else {
-        ctx.note(id, "referenced component is not defined");
+        ctx.note(
+            id,
+            NoteKind::MissingComponent,
+            "referenced component is not defined",
+        );
         return placeholder(format!("[missing: {id}]"), ctx.theme);
     };
     ctx.path_stack.borrow_mut().push(id.to_owned());
@@ -520,12 +590,17 @@ fn children_of(
             .collect(),
         ChildList::Template { component_id, path } => {
             let Some(Value::Array(items)) = lookup(ctx.surface, path, scope) else {
-                ctx.note(id, format!("template path {path:?} is not a list"));
+                ctx.note(
+                    id,
+                    NoteKind::BindingType,
+                    format!("template path {path:?} is not a list"),
+                );
                 return Vec::new();
             };
             if items.len() > MAX_TEMPLATE_CHILDREN {
                 ctx.note(
                     id,
+                    NoteKind::Truncated,
                     format!(
                         "{} template items exceed the cap ({MAX_TEMPLATE_CHILDREN}); extra items dropped",
                         items.len()
@@ -558,12 +633,20 @@ fn apply_flex(
         Some("end") => el.justify_end(),
         Some("spaceBetween") => el.justify_between(),
         Some("spaceAround" | "spaceEvenly") => {
-            ctx.note(id, "spaceAround/spaceEvenly approximate as spaceBetween");
+            ctx.note(
+                id,
+                NoteKind::Approximated,
+                "spaceAround/spaceEvenly approximate as spaceBetween",
+            );
             el.justify_between()
         }
         Some("stretch") | Some("start") | None => el,
         Some(other) => {
-            ctx.note(id, format!("unknown justify {other:?}"));
+            ctx.note(
+                id,
+                NoteKind::InvalidValue,
+                format!("unknown justify {other:?}"),
+            );
             el
         }
     };
@@ -573,7 +656,11 @@ fn apply_flex(
         Some("start") => el.items_start(),
         Some("stretch") | None => el,
         Some(other) => {
-            ctx.note(id, format!("unknown align {other:?}"));
+            ctx.note(
+                id,
+                NoteKind::InvalidValue,
+                format!("unknown align {other:?}"),
+            );
             el
         }
     }
@@ -616,11 +703,17 @@ fn render_component(
         } => {
             // Deterministic headless renders never fetch the network: a
             // labeled placeholder stands in, sized by the variant hint.
+            let src = resolve_value(ctx, id, url, scope);
             let desc = description
                 .as_ref()
                 .map(|d| resolve_value(ctx, id, d, scope))
                 .filter(|d| !d.is_empty())
-                .unwrap_or_else(|| resolve_value(ctx, id, url, scope));
+                .unwrap_or_else(|| src.clone());
+            ctx.note(
+                id,
+                NoteKind::NetworkAsset,
+                format!("image {} renders as a labeled placeholder", quoted(&src)),
+            );
             let (w, h) = match variant.as_deref() {
                 Some("icon") => (24.0, 24.0),
                 Some("avatar") => (40.0, 40.0),
@@ -657,6 +750,7 @@ fn render_component(
                 None => {
                     ctx.note(
                         id,
+                        NoteKind::UnknownIcon,
                         format!("icon {name:?} is not in the vendored Lucide set"),
                     );
                     placeholder(format!("[icon: {name}]"), theme)
@@ -665,14 +759,25 @@ fn render_component(
         }
         Kind::Video { url } => {
             let url = resolve_value(ctx, id, url, scope);
+            ctx.note(
+                id,
+                NoteKind::NetworkAsset,
+                format!("video {} renders as a labeled placeholder", quoted(&url)),
+            );
             placeholder(format!("[video: {}]", truncate_label(&url, 48)), theme)
         }
         Kind::AudioPlayer { url, description } => {
+            let src = resolve_value(ctx, id, url, scope);
             let label = description
                 .as_ref()
                 .map(|d| resolve_value(ctx, id, d, scope))
                 .filter(|d| !d.is_empty())
-                .unwrap_or_else(|| resolve_value(ctx, id, url, scope));
+                .unwrap_or_else(|| src.clone());
+            ctx.note(
+                id,
+                NoteKind::NetworkAsset,
+                format!("audio {} renders as a labeled placeholder", quoted(&src)),
+            );
             placeholder(format!("[audio: {}]", truncate_label(&label, 48)), theme)
         }
         Kind::Row {
@@ -774,8 +879,9 @@ fn render_component(
             child,
             variant,
             action,
-            ..
+            checks,
         } => {
+            note_unenforced_validation(ctx, id, checks.as_ref(), None);
             // Extract a text label when the child is a Text component; any
             // other child renders inside an icon button.
             let child_component = ctx.surface.components.get(child);
@@ -814,12 +920,18 @@ fn render_component(
             label,
             value,
             variant,
-            ..
+            validation_regexp,
+            checks,
         } => {
+            note_unenforced_validation(ctx, id, checks.as_ref(), validation_regexp.as_deref());
             let label = resolve_value(ctx, id, label, scope);
             let (current, path) = input_state(ctx, id, value.as_ref(), scope);
             if variant.as_deref() == Some("obscured") {
-                ctx.note(id, "obscured input renders unmasked (masking is a kit gap)");
+                ctx.note(
+                    id,
+                    NoteKind::Unsupported,
+                    "obscured input renders unmasked (masking is a kit gap)",
+                );
             }
             let control: Element<A2uiMsg> = if variant.as_deref() == Some("longText") {
                 let mut area = text_area(current);
@@ -856,7 +968,12 @@ fn render_component(
             };
             field(label).child(control).into()
         }
-        Kind::CheckBox { label, value, .. } => {
+        Kind::CheckBox {
+            label,
+            value,
+            checks,
+        } => {
+            note_unenforced_validation(ctx, id, checks.as_ref(), None);
             let label = resolve_value(ctx, id, label, scope);
             let (checked, path) = match value {
                 Dyn::Binding { path } => (
@@ -954,6 +1071,7 @@ fn render_component(
         Kind::DateTimeInput { value, label, .. } => {
             ctx.note(
                 id,
+                NoteKind::Unsupported,
                 "DateTimeInput renders as an ISO text field (calendar UI TBD)",
             );
             let (current, path) = input_state(ctx, id, Some(value), scope);
@@ -974,12 +1092,24 @@ fn render_component(
                 .get("component")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
+            // A known name that failed to parse is an authoring bug in the
+            // stream; an unknown name is the protocol working as intended.
+            // Different kinds, because an agent fixes them differently.
+            let (kind, why) = if crate::catalog::BASIC_CATALOG.contains(&name) {
+                (
+                    NoteKind::MalformedComponent,
+                    "is a basic-catalog component whose fields did not parse",
+                )
+            } else {
+                (
+                    NoteKind::UnknownComponent,
+                    "is not part of the v0.9 basic catalog",
+                )
+            };
             ctx.note(
                 id,
-                format!(
-                    "component {name:?} did not map onto the basic catalog (unknown name or \
-                     malformed fields); rendering a placeholder"
-                ),
+                kind,
+                format!("component {name:?} {why}; rendering a placeholder"),
             );
             placeholder(format!("[{name}]"), theme)
         }
@@ -1054,6 +1184,7 @@ fn action_msg(ctx: &Ctx, id: &str, action: &Action, scope: Option<&str>) -> A2ui
         Action::FunctionCall { function_call } => {
             ctx.note(
                 id,
+                NoteKind::UnimplementedFunction,
                 format!(
                     "action function {:?} is not implemented",
                     function_call.call
@@ -1126,6 +1257,7 @@ fn render_choice_picker(
                 Some(v) => selection_of(v).unwrap_or_else(|| {
                     ctx.note(
                         id,
+                        NoteKind::BindingType,
                         format!("selection binding {p:?} is neither a list nor a string"),
                     );
                     Vec::new()

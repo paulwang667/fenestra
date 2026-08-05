@@ -6,6 +6,35 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+/// Every component name in the v0.9 basic catalog.
+///
+/// A [`Kind::Unknown`] whose `component` field appears here is a *known*
+/// component that failed to parse — a missing or mistyped field — which is
+/// an authoring bug in the stream. A name that does not appear is simply
+/// outside this catalog build, which is the protocol working as intended.
+/// The renderer reports those two as different note kinds, because an agent
+/// fixes them differently.
+pub const BASIC_CATALOG: [&str; 18] = [
+    "Text",
+    "Image",
+    "Icon",
+    "Video",
+    "AudioPlayer",
+    "Row",
+    "Column",
+    "List",
+    "Card",
+    "Tabs",
+    "Modal",
+    "Divider",
+    "Button",
+    "TextField",
+    "CheckBox",
+    "ChoicePicker",
+    "Slider",
+    "DateTimeInput",
+];
+
 /// One component definition: identity, layout weight, and the typed body.
 ///
 /// Deserialization never fails a whole message over one bad component: a
