@@ -119,7 +119,7 @@ fn two_way_binding_writes_the_data_model() {
         path: "/username".into(),
         value: "ada".into(),
     });
-    assert!(signal.is_none(), "binding writes are internal");
+    assert!(signal.is_empty(), "binding writes are internal");
     assert_eq!(surface.data().pointer("/username").unwrap(), "ada");
 }
 
@@ -139,7 +139,7 @@ fn actions_surface_as_signals_with_the_data_model() {
         context: serde_json::Value::Null,
         source_id: "submit_button".into(),
     });
-    match signal {
+    match signal.into_iter().next() {
         Some(A2uiSignal::Event {
             name,
             data_model,

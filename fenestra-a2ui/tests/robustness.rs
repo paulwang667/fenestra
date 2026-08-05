@@ -120,6 +120,7 @@ fn event_actions_carry_the_source_component() {
         .surface_mut("s")
         .expect("surface")
         .handle(msg.clone())
+        .pop()
         .expect("events surface as signals");
     let A2uiSignal::Event { source_id, .. } = signal else {
         panic!("expected an event signal");
@@ -163,7 +164,7 @@ fn literal_checkbox_toggles_take_effect() {
             .surface_mut("s")
             .expect("surface")
             .handle(toggle)
-            .is_none()
+            .is_empty()
     );
     let rendered = client
         .surface("s")
@@ -288,7 +289,7 @@ fn literal_choice_picker_reads_local_edits() {
             id: "root".into(),
             value: serde_json::json!(["basic"]),
         });
-    assert!(signal.is_none(), "local edits are internal");
+    assert!(signal.is_empty(), "local edits are internal");
     let rendered = client
         .surface("s")
         .expect("surface")

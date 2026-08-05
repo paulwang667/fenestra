@@ -96,6 +96,21 @@ pub enum A2uiMsg {
         /// The new active index.
         index: usize,
     },
+    /// Several messages from one interaction, applied in order.
+    ///
+    /// One click can legitimately mean two things — a Modal trigger that
+    /// is also a Button opens the dialog *and* reports its own action to
+    /// the agent. fenestra dispatches a press to exactly one element, so
+    /// the composition happens here rather than by stacking handlers.
+    Many(
+        /// The messages, in the order they apply.
+        Vec<A2uiMsg>,
+    ),
+    /// Nothing happens, on purpose — an interaction the catalog defines
+    /// but this build cannot carry out. Keeps a control clickable (and
+    /// honestly noted) instead of inventing an event the agent never
+    /// asked for.
+    Ignored,
 }
 
 /// What [`Surface::handle`] hands back to the host: the effects the host
@@ -177,23 +192,29 @@ impl Surface {
     }
 
     /// Applies one rendered-surface message: binding writes and UI state
-    /// mutate the surface; agent-facing effects come back as a signal.
-    pub fn handle(&mut self, msg: A2uiMsg) -> Option<A2uiSignal> {
+    /// mutate the surface; agent-facing effects come back as signals.
+    ///
+    /// Returns every signal the message produced, in order — usually none
+    /// or one, but an [`A2uiMsg::Many`] (a Modal trigger that is also a
+    /// Button) can produce several.
+    pub fn handle(&mut self, msg: A2uiMsg) -> Vec<A2uiSignal> {
         match msg {
+            A2uiMsg::Many(msgs) => msgs.into_iter().flat_map(|m| self.handle(m)).collect(),
+            A2uiMsg::Ignored => Vec::new(),
             A2uiMsg::SetString { path, value } => {
                 self.write(&path, Some(Value::String(value)));
-                None
+                Vec::new()
             }
             A2uiMsg::SetBool { path, value } => {
                 self.write(&path, Some(Value::Bool(value)));
-                None
+                Vec::new()
             }
             A2uiMsg::SetNumber { path, value } => {
                 self.write(
                     &path,
                     serde_json::Number::from_f64(value).map(Value::Number),
                 );
-                None
+                Vec::new()
             }
             A2uiMsg::SetList { path, values } => {
                 self.write(
@@ -202,34 +223,34 @@ impl Surface {
                         values.into_iter().map(Value::String).collect(),
                     )),
                 );
-                None
+                Vec::new()
             }
             A2uiMsg::LocalEdit { id, value } => {
                 self.ui.local_edits.insert(id, value);
-                None
+                Vec::new()
             }
             A2uiMsg::Event {
                 name,
                 context,
                 source_id,
-            } => Some(A2uiSignal::Event {
+            } => vec![A2uiSignal::Event {
                 name,
                 context,
                 data_model: self.send_data_model.then(|| self.data.clone()),
                 source_id,
-            }),
-            A2uiMsg::OpenUrl(url) => Some(A2uiSignal::OpenUrl(url)),
+            }],
+            A2uiMsg::OpenUrl(url) => vec![A2uiSignal::OpenUrl(url)],
             A2uiMsg::OpenModal(id) => {
                 self.ui.open_modals.insert(id);
-                None
+                Vec::new()
             }
             A2uiMsg::CloseModal(id) => {
                 self.ui.open_modals.remove(&id);
-                None
+                Vec::new()
             }
             A2uiMsg::SelectTab { id, index } => {
                 self.ui.active_tabs.insert(id, index);
-                None
+                Vec::new()
             }
         }
     }
@@ -493,6 +514,44 @@ fn interpolate(ctx: &Ctx, id: &str, template: &str, scope: Option<&str>) -> Stri
 }
 
 // ── Component rendering ───────────────────────────────────────────────────
+
+/// Whether any descendant (not the element itself) handles a click.
+fn has_clickable_descendant(el: &Element<A2uiMsg>) -> bool {
+    el.children_ref()
+        .iter()
+        .any(|c| c.click_msg().is_some() || has_clickable_descendant(c))
+}
+
+/// Turns a Modal's rendered trigger into something that actually opens the
+/// modal.
+///
+/// The obvious version — wrap the trigger in a clickable `div` — cannot
+/// work, because fenestra hands a press to the *deepest* enabled
+/// interactive node and stops: a Button trigger wins the press and the
+/// wrapper never hears it. So the open message is composed onto the
+/// trigger element itself, keeping whatever the trigger already did
+/// ([`A2uiMsg::Many`]), and clearing the disabled flag an actionless
+/// Button would otherwise carry — a modal trigger is never a dead control.
+///
+/// A trigger that *contains* its own interactive child is the one shape
+/// this cannot rescue; that child still wins the press. Say so rather than
+/// leave a dialog that opens only when you miss the button inside it.
+fn open_modal_trigger(ctx: &Ctx, id: &str, trigger: Element<A2uiMsg>) -> Element<A2uiMsg> {
+    if has_clickable_descendant(&trigger) {
+        ctx.note(
+            id,
+            NoteKind::Unsupported,
+            "the modal trigger contains its own interactive child, which takes the click; \
+             clicking that child will not open the dialog",
+        );
+    }
+    let open = A2uiMsg::OpenModal(id.to_owned());
+    let composed = match trigger.click_msg().cloned() {
+        Some(existing) => A2uiMsg::Many(vec![existing, open]),
+        None => open,
+    };
+    trigger.disabled(false).on_click(composed)
+}
 
 /// `checks` and `validationRegexp` parse but gate nothing yet. Say so, so a
 /// stream never believes its validation is running when it is not — the
@@ -854,18 +913,16 @@ fn render_component(
         Kind::Modal { trigger, content } => {
             let open = ctx.surface.ui.open_modals.contains(id);
             let trigger_el = render_by_id(ctx, trigger, scope, depth + 1);
-            let wrapped = div()
-                .child(trigger_el)
-                .on_click(A2uiMsg::OpenModal(id.to_owned()));
+            let opener = open_modal_trigger(ctx, id, trigger_el);
             if open {
                 col().children((
-                    wrapped,
+                    opener,
                     modal("")
                         .child(render_by_id(ctx, content, scope, depth + 1))
                         .on_close(A2uiMsg::CloseModal(id.to_owned())),
                 ))
             } else {
-                wrapped
+                opener
             }
         }
         Kind::Divider { axis } => {
