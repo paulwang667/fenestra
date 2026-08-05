@@ -385,31 +385,42 @@ fn selections_matching_no_option_are_reported() {
 /// Remote assets render as placeholders because a deterministic render
 /// never touches the network. The crate documented that as noted; it was
 /// not. A surface of grey boxes must not report full fidelity.
+///
+/// All three asset components are checked: Video and AudioPlayer had no
+/// test of any kind before this.
 #[test]
 fn remote_assets_report_their_placeholders() {
-    let stream = r#"[
-        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
-        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
-            {"id":"root","component":"Image","url":"https://example.com/a.png"}
-        ]}}
-    ]"#;
-    let rendered = apply(stream)
-        .surface("s")
-        .expect("surface")
-        .render(&Theme::light());
-    assert!(
-        rendered
-            .notes
-            .iter()
-            .any(|n| n.kind == NoteKind::NetworkAsset),
-        "a placeholder image must be reported, got: {:?}",
-        rendered.notes
-    );
-    assert!(
-        !fenestra_a2ui::any_broken(&rendered.notes),
-        "…but a placeholder is approximate, not broken: {:?}",
-        rendered.notes
-    );
+    for (component, extra) in [
+        ("Image", ""),
+        ("Video", ""),
+        ("AudioPlayer", r#","description":"a podcast""#),
+    ] {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {{"id":"root","component":"{component}","url":"https://example.com/a"{extra}}}
+            ]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::NetworkAsset),
+            "a placeholder {component} must be reported, got: {:?}",
+            rendered.notes
+        );
+        assert!(
+            !fenestra_a2ui::any_broken(&rendered.notes),
+            "…but a placeholder is approximate, not broken: {:?}",
+            rendered.notes
+        );
+    }
 }
 
 /// `checks` and `validationRegexp` parse and then gate nothing. Silence
