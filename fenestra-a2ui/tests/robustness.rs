@@ -600,15 +600,17 @@ fn open_url_with_an_unresolved_argument_does_nothing() {
             {"id":"lbl","component":"Text","text":"Visit"}
         ]}}
     ]"#;
-    let mut client = apply(stream);
-    let rendered = client
+    let rendered = apply(stream)
         .surface("s")
         .expect("surface")
         .render(&Theme::light());
-    let click = find_click(&rendered.element).expect("the button is clickable");
+    // An action that resolves to nothing leaves the button as dead as no
+    // action at all, so it renders disabled and carries no handler —
+    // nothing to click is a stronger guarantee than a click that is
+    // dropped later.
     assert!(
-        matches!(click, A2uiMsg::Ignored),
-        "an openUrl with no URL must not reach the host, got {click:?}"
+        find_click(&rendered.element).is_none(),
+        "a button that cannot carry out its action must not look live"
     );
     assert!(
         rendered.notes.iter().any(|n| n.detail.contains("openUrl")),
@@ -616,12 +618,12 @@ fn open_url_with_an_unresolved_argument_does_nothing() {
         rendered.notes
     );
     assert!(
-        client
-            .surface_mut("s")
-            .expect("surface")
-            .handle(click)
-            .is_empty(),
-        "no signal reaches the host"
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::Unreachable),
+        "the dead control is reported as unreachable, got: {:?}",
+        rendered.notes
     );
 }
 
@@ -669,10 +671,15 @@ fn repeated_rejected_writes_record_one_note() {
     let mut client = apply(stream);
     let surface = client.surface_mut("s").expect("surface");
     for _ in 0..500 {
-        surface.handle(A2uiMsg::SetString {
-            path: "/items/9".into(),
-            value: "nope".into(),
-        });
+        assert!(
+            surface
+                .handle(A2uiMsg::SetString {
+                    path: "/items/9".into(),
+                    value: "nope".into(),
+                })
+                .is_empty(),
+            "a data-model write is not a host-bound signal"
+        );
     }
     assert_eq!(
         surface.notes().len(),
@@ -732,10 +739,15 @@ fn an_unrepresentable_number_does_not_delete_the_binding() {
     ]"#;
     let mut client = apply(stream);
     let surface = client.surface_mut("s").expect("surface");
-    surface.handle(A2uiMsg::SetNumber {
-        path: "/volume".into(),
-        value: f64::INFINITY,
-    });
+    assert!(
+        surface
+            .handle(A2uiMsg::SetNumber {
+                path: "/volume".into(),
+                value: f64::INFINITY,
+            })
+            .is_empty(),
+        "a rejected write is not a host-bound signal"
+    );
     assert_eq!(
         surface.data().pointer("/volume"),
         Some(&serde_json::json!(0.5)),

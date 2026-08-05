@@ -148,8 +148,16 @@ assert!(!fenestra_a2ui::any_broken(&rendered.notes), "{:?}", rendered.notes);
 The approximate cases, all of which record a note: remote images, video,
 and audio render as labeled placeholders (a deterministic render never
 touches the network), `DateTimeInput` is an ISO text field rather than a
-calendar, obscured text fields render unmasked, and `checks` and
-`validationRegexp` parse but do not gate anything yet.
+calendar, and `checks` and `validationRegexp` parse but do not gate
+anything yet.
+
+Two gaps count as `broken`, not approximate, because the surface cannot do
+what the stream described: an `obscured` field renders unmasked — the
+pixels contain the value meant to be hidden — and a modal trigger that
+wraps its own interactive child never opens its dialog, because that child
+takes the press. A form with a password field will fail the `any_broken`
+check above until masking lands. That is deliberate: the alternative is a
+green check over a screenshot with the password in it.
 
 This is the same fidelity-or-report rule the JSON emitter follows. Nothing
 degrades quietly.

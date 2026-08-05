@@ -72,7 +72,7 @@ impl FenestraServer {
 
     #[tool(
         name = "render_a2ui",
-        description = "Render an A2UI v0.9 message stream (the open Agent-to-UI standard, a2ui.org) to a typed accessibility tree, a preview image, and fidelity notes, using fenestra's native widget catalog. Accepts the official gallery shape ({\"messages\": [...]}) or a raw message array. Deterministic pixels: what renders here is what any fenestra A2UI client shows. Read the notes — an empty list means every component and binding mapped cleanly."
+        description = "Render an A2UI v0.9 message stream (the open Agent-to-UI standard, a2ui.org) to a typed accessibility tree, a preview image, and fidelity notes, using fenestra's native widget catalog. Accepts the official gallery shape ({\"messages\": [...]}) or a raw message array. Deterministic pixels: what renders here is what any fenestra A2UI client shows. Read the notes — each is {componentId, kind, severity, detail}; an empty list means every component and binding mapped cleanly, `severity: \"broken\"` means the surface cannot do what the stream described, and `\"approximate\"` means it does, inexactly."
     )]
     async fn render_a2ui(
         &self,
@@ -99,9 +99,13 @@ surface: {} · fidelity notes: {}",
             if out.notes.is_empty() {
                 "none (full fidelity)".to_owned()
             } else {
+                // `Display` prints "id: detail", which drops the severity —
+                // and telling an agent an image is a placeholder in the
+                // same breath as telling it a password is on screen is the
+                // prose-matching the typed kinds exist to end.
                 out.notes
                     .iter()
-                    .map(ToString::to_string)
+                    .map(|n| format!("[{:?}] {n}", n.severity()))
                     .collect::<Vec<_>>()
                     .join("; ")
             },

@@ -252,6 +252,8 @@ impl Surface {
     /// Returns every signal the message produced, in order — usually none
     /// or one, but an [`A2uiMsg::Many`] (a Modal trigger that is also a
     /// Button) can produce several.
+    #[must_use = "these are the effects the host must carry out; dropping them silently discards \
+                  every agent-bound event the interaction produced"]
     pub fn handle(&mut self, msg: A2uiMsg) -> Vec<A2uiSignal> {
         match msg {
             A2uiMsg::Many(msgs) => msgs.into_iter().flat_map(|m| self.handle(m)).collect(),
@@ -1073,37 +1075,43 @@ fn render_component(
             };
             let msg = action.as_ref().map(|a| action_msg(ctx, id, a, scope));
             let opens_a_modal = ctx.modal_triggers.contains(id);
-            if msg.is_none() && !opens_a_modal {
+            // An action that resolved to nothing leaves the button just as
+            // dead as no action at all — `Ignored` is what an unimplemented
+            // function or an unresolvable openUrl becomes. Both answers to
+            // "can this button do anything?" have to be the same, or the
+            // note below is true of one path and a lie about the other.
+            let inert = !opens_a_modal && matches!(msg, None | Some(A2uiMsg::Ignored));
+            if inert {
                 ctx.note(
                     id,
-                    NoteKind::InvalidValue,
-                    "button has no action and opens nothing; rendered as a disabled control",
+                    NoteKind::Unreachable,
+                    "button has no action it can carry out and opens nothing; rendered as a \
+                     disabled control",
                 );
             }
             match label {
                 Some(label) => {
                     let mut b = button(label).variant(kit_variant);
-                    match msg {
-                        Some(m) => b = b.on_click(m),
-                        // A modal trigger has something to do even without
-                        // an action of its own, so it must not be *built*
-                        // disabled — see `Ctx::modal_triggers`.
-                        None if !opens_a_modal => b = b.disabled(true),
-                        None => {}
+                    // A modal trigger has something to do even without an
+                    // action of its own, so it must not be *built* disabled
+                    // — see `Ctx::modal_triggers`.
+                    if inert {
+                        b = b.disabled(true);
+                    } else if let Some(m) = msg {
+                        b = b.on_click(m);
                     }
                     b.into()
                 }
                 None => {
                     let inner = render_by_id(ctx, child, scope, depth + 1);
                     let mut b = icon_button(inner);
-                    match msg {
-                        Some(m) => b = b.on_click(m),
-                        // Same rule as the labeled branch — an inert
-                        // button must *look* inert, or the note above is a
-                        // lie and the user presses a live-looking control
-                        // that does nothing.
-                        None if !opens_a_modal => b = b.disabled(true),
-                        None => {}
+                    // Same rule as the labeled branch — an inert button
+                    // must *look* inert, or the note above is a lie and the
+                    // user presses a live-looking control that does nothing.
+                    if inert {
+                        b = b.disabled(true);
+                    } else if let Some(m) = msg {
+                        b = b.on_click(m);
                     }
                     b.into()
                 }

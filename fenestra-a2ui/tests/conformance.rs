@@ -130,10 +130,15 @@ fn actions_surface_as_signals_with_the_data_model() {
     let mut client = client_for("00_simple-login-form.json");
     let id = client.surfaces().next().expect("surface").id().to_owned();
     let surface = client.surface_mut(&id).expect("surface");
-    surface.handle(A2uiMsg::SetString {
-        path: "/username".into(),
-        value: "ada".into(),
-    });
+    assert!(
+        surface
+            .handle(A2uiMsg::SetString {
+                path: "/username".into(),
+                value: "ada".into(),
+            })
+            .is_empty(),
+        "a data-model write is not a host-bound signal"
+    );
     let signal = surface.handle(A2uiMsg::Event {
         name: "login".into(),
         context: serde_json::Value::Null,

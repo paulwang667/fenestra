@@ -431,6 +431,49 @@ mod tests {
     /// malformed instances of that component into "unknown component",
     /// which is the note an agent reads as "give up, this catalog does not
     /// have it".
+    /// The other direction: every [`Kind`] variant must appear in
+    /// [`BASIC_CATALOG`].
+    ///
+    /// `every_catalog_name_parses` walks the list into the enum, which
+    /// catches a renamed or mistyped *name* but not a new *variant* — add
+    /// `Kind::Chart` without touching the list and that test stays green
+    /// while malformed Charts get reported as "not part of the basic
+    /// catalog", the exact inversion of the truth. Matching exhaustively on
+    /// the pattern costs nothing at runtime and makes the omission a
+    /// compile error.
+    /// The catalog name for a parsed variant, or `None` for the
+    /// degraded-parse fallback. Exhaustive on purpose — see
+    /// `every_kind_variant_is_in_the_catalog`.
+    fn name_of(kind: &Kind) -> Option<&'static str> {
+        match kind {
+            Kind::Text { .. } => Some("Text"),
+            Kind::Image { .. } => Some("Image"),
+            Kind::Icon { .. } => Some("Icon"),
+            Kind::Video { .. } => Some("Video"),
+            Kind::AudioPlayer { .. } => Some("AudioPlayer"),
+            Kind::Row { .. } => Some("Row"),
+            Kind::Column { .. } => Some("Column"),
+            Kind::List { .. } => Some("List"),
+            Kind::Card { .. } => Some("Card"),
+            Kind::Tabs { .. } => Some("Tabs"),
+            Kind::Modal { .. } => Some("Modal"),
+            Kind::Divider { .. } => Some("Divider"),
+            Kind::Button { .. } => Some("Button"),
+            Kind::TextField { .. } => Some("TextField"),
+            Kind::CheckBox { .. } => Some("CheckBox"),
+            Kind::ChoicePicker { .. } => Some("ChoicePicker"),
+            Kind::Slider { .. } => Some("Slider"),
+            Kind::DateTimeInput { .. } => Some("DateTimeInput"),
+            // Not a catalog component: the degraded-parse fallback.
+            Kind::Unknown(_) => None,
+        }
+    }
+
+    #[test]
+    fn every_kind_variant_is_in_the_catalog() {
+        assert_eq!(name_of(&Kind::Unknown(serde_json::json!({}))), None);
+    }
+
     #[test]
     fn every_catalog_name_parses() {
         // Minimal bodies: enough required fields for each component to
@@ -480,6 +523,11 @@ mod tests {
                 !matches!(parsed.kind, Kind::Unknown(_)),
                 "{name} is in BASIC_CATALOG but does not parse into a Kind variant — the list and \
                  the enum have drifted"
+            );
+            assert_eq!(
+                name_of(&parsed.kind),
+                Some(*name),
+                "{name} parses into a variant that BASIC_CATALOG names differently"
             );
         }
     }

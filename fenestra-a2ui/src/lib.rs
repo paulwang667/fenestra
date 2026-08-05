@@ -40,9 +40,19 @@
 //! The current inexact cases: remote images, video and audio render as
 //! labeled placeholders (a deterministic render never touches the
 //! network), `DateTimeInput` is an ISO text field rather than a calendar,
-//! obscured text renders unmasked, and `checks`/`validationRegexp` parse
-//! but do not gate anything yet. Each records its own note — an empty list
-//! really does mean full fidelity.
+//! and `checks`/`validationRegexp` parse but do not gate anything yet.
+//! Those are `approximate` — the surface still does its job.
+//!
+//! Two gaps are `broken` rather than inexact, because they leave the
+//! surface unable to do what the stream described: an `obscured` field
+//! renders unmasked, so the pixels a headless render hands back contain
+//! the value that was meant to be hidden; and a modal trigger wrapping its
+//! own interactive child cannot open its dialog at all. A login form will
+//! therefore fail [`any_broken`] until masking lands — which is the honest
+//! answer, not a false pass.
+//!
+//! Each records its own note — an empty list really does mean full
+//! fidelity.
 
 pub mod catalog;
 pub mod functions;

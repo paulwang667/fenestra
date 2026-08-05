@@ -92,11 +92,30 @@ impl NoteKind {
     /// on screen the stream asked to hide, is broken.
     #[must_use]
     pub fn severity(self) -> NoteSeverity {
+        // Exhaustive on purpose. A catch-all would classify every future
+        // kind as broken without a word from the compiler, so a genuinely
+        // approximate one would start failing every `any_broken` check on
+        // surfaces that render correctly. Adding a variant should not
+        // compile until someone has decided which side it falls on.
         match self {
             Self::NetworkAsset | Self::Approximated | Self::Unsupported => {
                 NoteSeverity::Approximate
             }
-            _ => NoteSeverity::Broken,
+            Self::UnknownComponent
+            | Self::MalformedComponent
+            | Self::MissingComponent
+            | Self::ReferenceCycle
+            | Self::DepthCap
+            | Self::UnresolvedBinding
+            | Self::BindingType
+            | Self::InvalidValue
+            | Self::UnknownIcon
+            | Self::UnimplementedFunction
+            | Self::Truncated
+            | Self::RejectedWrite
+            | Self::UnknownMessage
+            | Self::SecretExposed
+            | Self::Unreachable => NoteSeverity::Broken,
         }
     }
 }
