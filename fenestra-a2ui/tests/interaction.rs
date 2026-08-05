@@ -250,11 +250,13 @@ fn unselected_picker_does_not_claim_the_first_option() {
         ]}}
     ]"#;
     let h = harness(stream);
+    // A combobox carries its current option as its accessible *name*; it
+    // never sets `value`, so asserting on that would pass vacuously.
     let picker = h.get(&by::role(Semantics::ComboBox));
-    assert_ne!(
-        picker.value.as_deref(),
-        Some("Small"),
-        "an empty selection must not display as the first option"
+    assert_eq!(
+        picker.label.as_deref(),
+        Some("—"),
+        "an empty selection must show the placeholder, not the first option"
     );
     let rendered = h.app().surface().render(&Theme::light());
     assert!(
@@ -398,5 +400,36 @@ fn templated_local_edits_do_not_bleed_between_rows() {
         ticked,
         vec!["First".to_owned()],
         "ticking one row must not tick its siblings"
+    );
+}
+
+/// A picker that has been filled in must still be clearable. The
+/// placeholder used to appear only while the selection was empty, so once
+/// the user chose something there was no option left that wrote the empty
+/// state — the data model could be filled but never emptied through the UI.
+#[test]
+fn a_filled_picker_can_be_cleared_again() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"choice":["l"]}}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"ChoicePicker","variant":"mutuallyExclusive",
+             "value":{"path":"/choice"},"options":[
+                {"label":"Small","value":"s"},{"label":"Large","value":"l"}
+             ]}
+        ]}}
+    ]"#;
+    let mut h = harness(stream);
+    assert_eq!(
+        h.get(&by::role(Semantics::ComboBox)).label.as_deref(),
+        Some("Large"),
+        "the bound selection shows"
+    );
+    h.click(&by::role(Semantics::ComboBox));
+    h.click(&by::label("—"));
+    assert_eq!(
+        h.app().surface().data().pointer("/choice"),
+        Some(&serde_json::json!([])),
+        "choosing the placeholder must clear the selection"
     );
 }

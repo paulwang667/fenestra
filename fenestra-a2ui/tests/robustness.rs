@@ -652,3 +652,32 @@ fn an_unrepairable_slider_range_falls_back_honestly() {
         note.detail
     );
 }
+
+/// The write path is driven by the user, so a control bound to an
+/// unwritable pointer produced one note per keystroke and grew without
+/// bound — every `render_a2ui` response carrying thousands of copies of
+/// one problem.
+#[test]
+fn repeated_rejected_writes_record_one_note() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"items":[1]}}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Text","text":"x"}
+        ]}}
+    ]"#;
+    let mut client = apply(stream);
+    let surface = client.surface_mut("s").expect("surface");
+    for _ in 0..500 {
+        surface.handle(A2uiMsg::SetString {
+            path: "/items/9".into(),
+            value: "nope".into(),
+        });
+    }
+    assert_eq!(
+        surface.notes().len(),
+        1,
+        "the same rejected write said 500 times is one problem, got: {:?}",
+        surface.notes()
+    );
+}

@@ -1544,32 +1544,25 @@ fn render_choice_picker(
         }
         ms.into()
     } else {
-        // `select` has no empty state, so handing it index 0 would claim the
-        // user picked the first option when the model says nothing is
-        // chosen. A leading placeholder entry shows "nothing yet" honestly,
-        // and choosing it clears the selection.
-        let unselected = selected_idx.is_empty();
-        let (index, labels) = if unselected {
-            let mut with_placeholder = Vec::with_capacity(labels.len() + 1);
-            with_placeholder.push(UNSELECTED_LABEL.to_owned());
-            with_placeholder.extend(labels);
-            (0, with_placeholder)
-        } else {
-            (selected_idx[0], labels)
-        };
-        let mut sel = select(index, labels);
+        // `select` has no empty state, so handing it index 0 would claim
+        // the user picked the first option when the model says nothing is
+        // chosen. A leading placeholder entry shows "nothing yet" honestly.
+        //
+        // It stays in the list once something *is* chosen, because that is
+        // the only way back: offering it only while empty would make the
+        // empty state unreachable through the UI, so a picker could be
+        // filled in but never cleared.
+        let mut with_placeholder = Vec::with_capacity(labels.len() + 1);
+        with_placeholder.push(UNSELECTED_LABEL.to_owned());
+        with_placeholder.extend(labels);
+        // Index 0 is the placeholder, so every real option sits one along.
+        let index = selected_idx.first().map_or(0, |i| i + 1);
+        let mut sel = select(index, with_placeholder);
         {
             let values = values.clone();
             sel = sel.on_change(move |i| {
-                // The placeholder occupies index 0, shifting every real
-                // option along by one while it is present.
-                let picked = if unselected {
-                    i.checked_sub(1)
-                } else {
-                    Some(i)
-                };
                 make_msg(
-                    picked
+                    i.checked_sub(1)
                         .and_then(|x| values.get(x).cloned())
                         .into_iter()
                         .collect(),
