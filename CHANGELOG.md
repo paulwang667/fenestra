@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+### A2UI: typed fidelity notes, and the bugs two reviews found
+
+**Breaking.** `Surface::handle` returns `Vec<A2uiSignal>` instead of
+`Option<A2uiSignal>` — one interaction can legitimately produce two signals
+(a Modal trigger that is also a Button opens the dialog *and* reports its
+action), and returning an `Option` meant silently dropping one.
+`Surface::notes()`, `Rendered::notes` and `A2uiRenderOut::notes` are
+`Vec<Note>` rather than `Vec<String>`. `A2uiMsg` gained `Many` and
+`Ignored`, and the `LocalEdit`/`SelectTab` id field is now `key`, which
+carries template scope as well as the component id. An unimplemented action
+function no longer emits an `unimplemented:<fn>` event to the agent; it does
+nothing, with a note. `parse_size` (CLI, scenario runner, MCP) rejects a
+zero dimension that previously clamped silently to a 1px render.
+
+**Notes are machine-readable.** `Note { component_id, kind, detail }` with a
+`NoteKind` a caller can branch on and a `NoteSeverity` separating "the
+surface is not what the stream asked for" from "close, but inexact".
+`any_broken()` is the one-line CI check; severity ships in the serialized
+form so MCP and CLI consumers need not reimplement the table. `Display`
+still prints `"id: detail"`.
+
+**Notes now tell the whole truth.** Placeholder images, video and audio,
+unenforced `checks`/`validationRegexp`, `ChoicePicker.displayStyle` and
+`filterable`, `Image.fit`, `DateTimeInput.enableDate`/`enableTime`/`min`/
+`max`, and an inert Button all record notes — each of them previously
+rendered something plausible in silence. `Kind::Unknown` distinguishes a
+basic-catalog component that failed to parse from a name outside the
+catalog, because an agent fixes those differently.
+
+**Fixed.** Modal triggers open their modal (a press goes to the deepest
+interactive node, so the old clickable wrapper never saw it — and clearing
+`Element::disabled` after the kit had baked disabled *styling* in left the
+trigger painted dead). Per-surface UI state is keyed by template scope, so
+one row's dialog, local edit or tab no longer applies to every row. Literal
+`DateTimeInput`s accept typing. An unselected picker shows a placeholder
+instead of claiming the first option, and can be cleared again. Degenerate
+slider ranges, selections matching no option, and `openUrl` with an
+unresolved argument are reported rather than silently absorbed. Rejected
+data-model writes deduplicate instead of growing without bound.
+
+**Core and shell.** `apply_cmd` bounds its drain at `MAX_EFFECT_CHAIN`, so
+an app that answers a message with itself can no longer freeze the window
+with nothing in the log. A deferred effect whose worker thread cannot be
+spawned runs on the calling thread rather than vanishing.
+`Element::takes_press()` is the single definition of what wins a press,
+used by the dispatcher and by anything that needs to ask the same question.
+
+
 The two crash classes left open by the 2026-07-24 adversarial review are
 closed: runaway-deep element trees and GPU-environment failures now fail as
 pointed, catchable errors instead of process aborts and panics.

@@ -14,7 +14,13 @@ use serde_json::Value;
 /// outside this catalog build, which is the protocol working as intended.
 /// The renderer reports those two as different note kinds, because an agent
 /// fixes them differently.
-pub const BASIC_CATALOG: [&str; 18] = [
+///
+/// This list has to stay in step with [`Kind`]'s serde tags — a variant
+/// added there and forgotten here would have its malformed instances
+/// reported as *unknown*, which is the opposite of the truth. The test
+/// `every_catalog_name_parses` walks this list through the parser to keep
+/// the two honest.
+pub const BASIC_CATALOG: &[&str] = &[
     "Text",
     "Image",
     "Icon",
@@ -402,4 +408,70 @@ pub struct EventSpec {
     /// against the data model first.
     #[serde(default)]
     pub context: Option<Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BASIC_CATALOG, Component, Kind};
+
+    /// Every name in [`BASIC_CATALOG`] must parse into a real variant.
+    ///
+    /// The list is written by hand next to an enum whose tags serde
+    /// generates, so nothing but a test stops the two drifting. A name that
+    /// no longer parses — renamed variant, typo — would silently turn
+    /// malformed instances of that component into "unknown component",
+    /// which is the note an agent reads as "give up, this catalog does not
+    /// have it".
+    #[test]
+    fn every_catalog_name_parses() {
+        // Minimal bodies: enough required fields for each component to
+        // deserialize, so a Kind::Unknown here means the *name* is wrong.
+        let bodies: &[(&str, serde_json::Value)] = &[
+            ("Text", serde_json::json!({"text": "x"})),
+            ("Image", serde_json::json!({"url": "u"})),
+            ("Icon", serde_json::json!({"name": "check"})),
+            ("Video", serde_json::json!({"url": "u"})),
+            ("AudioPlayer", serde_json::json!({"url": "u"})),
+            ("Row", serde_json::json!({})),
+            ("Column", serde_json::json!({})),
+            ("List", serde_json::json!({})),
+            ("Card", serde_json::json!({"child": "c"})),
+            ("Tabs", serde_json::json!({})),
+            ("Modal", serde_json::json!({"trigger": "t", "content": "c"})),
+            ("Divider", serde_json::json!({})),
+            ("Button", serde_json::json!({"child": "c"})),
+            ("TextField", serde_json::json!({"label": "l"})),
+            (
+                "CheckBox",
+                serde_json::json!({"label": "l", "value": false}),
+            ),
+            (
+                "ChoicePicker",
+                serde_json::json!({"value": [], "options": []}),
+            ),
+            ("Slider", serde_json::json!({"max": 1.0, "value": 0.0})),
+            ("DateTimeInput", serde_json::json!({"value": "2026-01-01"})),
+        ];
+        assert_eq!(
+            bodies.len(),
+            BASIC_CATALOG.len(),
+            "every catalog name needs a body here, and vice versa"
+        );
+        for (name, body) in bodies {
+            assert!(
+                BASIC_CATALOG.contains(name),
+                "{name} is missing from BASIC_CATALOG"
+            );
+            let mut doc = body.clone();
+            let obj = doc.as_object_mut().expect("body is an object");
+            obj.insert("id".into(), serde_json::json!("x"));
+            obj.insert("component".into(), serde_json::json!(name));
+            let parsed: Component = serde_json::from_value(doc).expect("component deserializes");
+            assert!(
+                !matches!(parsed.kind, Kind::Unknown(_)),
+                "{name} is in BASIC_CATALOG but does not parse into a Kind variant — the list and \
+                 the enum have drifted"
+            );
+        }
+    }
 }
