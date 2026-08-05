@@ -154,6 +154,16 @@ pub struct Rendered {
 struct Ctx<'a> {
     surface: &'a Surface,
     theme: &'a Theme,
+    /// Component ids that some Modal names as its trigger.
+    ///
+    /// A Button with no `action` renders disabled, which is honest for an
+    /// inert button and wrong for a modal trigger — that one opens a
+    /// dialog. The kit bakes disabled *styling* into the widget when it is
+    /// built (a themed label color, and opacity on solid variants), so
+    /// clearing `Element::disabled` afterwards restores hit-testing while
+    /// leaving the button painted dead. The decision has to be made before
+    /// the button is built, which means knowing here.
+    modal_triggers: std::collections::HashSet<String>,
     notes: std::cell::RefCell<Vec<Note>>,
     /// The id chain currently being rendered: exact cycle detection
     /// (`a → b → a` trips on re-entry, not after burning stack).
@@ -177,6 +187,14 @@ impl Surface {
         let ctx = Ctx {
             surface: self,
             theme,
+            modal_triggers: self
+                .components
+                .values()
+                .filter_map(|c| match &c.kind {
+                    Kind::Modal { trigger, .. } => Some(trigger.clone()),
+                    _ => None,
+                })
+                .collect(),
             notes: std::cell::RefCell::new(Vec::new()),
             path_stack: std::cell::RefCell::new(Vec::new()),
         };
@@ -520,11 +538,17 @@ fn interpolate(ctx: &Ctx, id: &str, template: &str, scope: Option<&str>) -> Stri
 
 // ── Component rendering ───────────────────────────────────────────────────
 
-/// Whether any descendant (not the element itself) handles a click.
-fn has_clickable_descendant(el: &Element<A2uiMsg>) -> bool {
+/// Whether any descendant (not the element itself) would take a press.
+///
+/// Asks [`Element::takes_press`] — the dispatcher's own question — rather
+/// than checking for a click handler. A focusable descendant with no
+/// `on_click` (a TextField, a select) still wins the press and still
+/// swallows the modal-open, so a narrower check would miss exactly the
+/// cases worth warning about.
+fn has_pressable_descendant(el: &Element<A2uiMsg>) -> bool {
     el.children_ref()
         .iter()
-        .any(|c| c.click_msg().is_some() || has_clickable_descendant(c))
+        .any(|c| c.takes_press() || has_pressable_descendant(c))
 }
 
 /// Turns a Modal's rendered trigger into something that actually opens the
@@ -542,7 +566,7 @@ fn has_clickable_descendant(el: &Element<A2uiMsg>) -> bool {
 /// this cannot rescue; that child still wins the press. Say so rather than
 /// leave a dialog that opens only when you miss the button inside it.
 fn open_modal_trigger(ctx: &Ctx, id: &str, trigger: Element<A2uiMsg>) -> Element<A2uiMsg> {
-    if has_clickable_descendant(&trigger) {
+    if has_pressable_descendant(&trigger) {
         ctx.note(
             id,
             NoteKind::Unsupported,
@@ -959,12 +983,24 @@ fn render_component(
                 _ => ButtonVariant::Secondary,
             };
             let msg = action.as_ref().map(|a| action_msg(ctx, id, a, scope));
+            let opens_a_modal = ctx.modal_triggers.contains(id);
+            if msg.is_none() && !opens_a_modal {
+                ctx.note(
+                    id,
+                    NoteKind::InvalidValue,
+                    "button has no action and opens nothing; rendered as a disabled control",
+                );
+            }
             match label {
                 Some(label) => {
                     let mut b = button(label).variant(kit_variant);
                     match msg {
                         Some(m) => b = b.on_click(m),
-                        None => b = b.disabled(true),
+                        // A modal trigger has something to do even without
+                        // an action of its own, so it must not be *built*
+                        // disabled — see `Ctx::modal_triggers`.
+                        None if !opens_a_modal => b = b.disabled(true),
+                        None => {}
                     }
                     b.into()
                 }

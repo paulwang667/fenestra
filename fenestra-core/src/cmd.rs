@@ -186,7 +186,10 @@ fn report_runaway_chain() {
 /// The drain is bounded by [`MAX_EFFECT_CHAIN`]. An app that keeps feeding
 /// itself would otherwise spin here forever, on the UI thread, with the
 /// window frozen and nothing written anywhere — so the chain stops and
-/// says why on stderr instead.
+/// says why on stderr instead. Stopping abandons whatever was still queued,
+/// including deferred units inside those commands, which never reach
+/// `spawn`; by that point the app is already misbehaving and the only
+/// question is how loudly it stops.
 pub fn apply_cmd<A: crate::App + ?Sized>(
     app: &mut A,
     cmd: Cmd<A::Msg>,

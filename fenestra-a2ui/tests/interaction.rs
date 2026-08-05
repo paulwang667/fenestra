@@ -263,3 +263,64 @@ fn unselected_picker_does_not_claim_the_first_option() {
         rendered.notes
     );
 }
+
+/// Picking from a picker that was showing the empty placeholder must write
+/// the option the user actually chose.
+///
+/// The placeholder occupies index 0 while it is present, so every real
+/// option shifts along by one. Nothing exercised that arithmetic through a
+/// real selection — the other picker tests only read the static render, so
+/// dropping the shift would have left them all green while the picker
+/// wrote the wrong value.
+#[test]
+fn picking_from_the_placeholder_state_writes_the_chosen_option() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"ChoicePicker","variant":"mutuallyExclusive",
+             "value":{"path":"/choice"},"options":[
+                {"label":"Small","value":"s"},
+                {"label":"Large","value":"l"}
+             ]}
+        ]}}
+    ]"#;
+    let mut h = harness(stream);
+    h.click(&by::role(Semantics::ComboBox));
+    h.click(&by::label("Large"));
+    assert_eq!(
+        h.app().surface().data().pointer("/choice"),
+        Some(&serde_json::json!(["l"])),
+        "choosing the second option must write that option, not its neighbour"
+    );
+}
+
+/// A pixel-level pin on the modal trigger.
+///
+/// The access tree said `focusable: true` while the button was still
+/// *painted* as a dead control — the kit bakes disabled styling (a themed
+/// label color, opacity on solid variants) into the widget when it is
+/// built, so clearing `Element::disabled` afterwards fixed hit-testing and
+/// nothing else. Only pixels catch that, which is why this golden exists.
+#[test]
+fn modal_trigger_golden() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Column","children":["actionless","acting"]},
+            {"id":"actionless","component":"Modal","trigger":"t1","content":"dialog"},
+            {"id":"t1","component":"Button","child":"l1","variant":"primary"},
+            {"id":"l1","component":"Text","text":"Opens a dialog"},
+            {"id":"acting","component":"Button","child":"l2","variant":"primary",
+             "action":{"event":{"name":"go"}}},
+            {"id":"l2","component":"Text","text":"Has an action"},
+            {"id":"dialog","component":"Text","text":"body"}
+        ]}}
+    ]"#;
+    let mut h = harness(stream);
+    let image = h.render();
+    fenestra_shell::testing::assert_png_snapshot(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/snapshots"),
+        "modal_trigger",
+        &image,
+    );
+}
