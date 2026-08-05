@@ -324,3 +324,79 @@ fn modal_trigger_golden() {
         &image,
     );
 }
+
+/// UI state has to know *which* expansion it belongs to.
+///
+/// A template renders the same component once per data item, so keying a
+/// Modal's open flag by component id alone made every copy share it:
+/// clicking one row's trigger opened every row's dialog at once, each
+/// showing its own item's content.
+#[test]
+fn a_templated_modal_opens_only_its_own_row() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"rows":[
+            {"label":"Row A","detail":"Detail A"},
+            {"label":"Row B","detail":"Detail B"}
+        ]}}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Column",
+             "children":{"componentId":"row","path":"/rows"}},
+            {"id":"row","component":"Modal","trigger":"trg","content":"body"},
+            {"id":"trg","component":"Button","child":"trglbl"},
+            {"id":"trglbl","component":"Text","text":{"path":"label"}},
+            {"id":"body","component":"Text","text":{"path":"detail"}}
+        ]}}
+    ]"#;
+    let mut h = harness(stream);
+    h.click(&by::role(Semantics::Button).name("Row B"));
+    assert!(
+        h.query(&by::label_contains("Detail B")).is_some(),
+        "the row that was clicked opens"
+    );
+    assert!(
+        h.query(&by::label_contains("Detail A")).is_none(),
+        "and no other row does"
+    );
+}
+
+/// The same defect, on the input side: two expansions of one literal-valued
+/// CheckBox shared a single local edit, so ticking one ticked both.
+#[test]
+fn templated_local_edits_do_not_bleed_between_rows() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"tasks":[
+            {"name":"First"},{"name":"Second"}
+        ]}}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Column",
+             "children":{"componentId":"task","path":"/tasks"}},
+            {"id":"task","component":"CheckBox","label":{"path":"name"},"value":false}
+        ]}}
+    ]"#;
+    let mut h = harness(stream);
+    h.click(
+        &by::role(Semantics::Checkbox {
+            checked: false,
+            mixed: false,
+        })
+        .name("First"),
+    );
+    // `by::role` matches the variant, not its payload, so read the state
+    // off each node rather than querying for it.
+    let ticked: Vec<String> = h
+        .get_all(&by::role(Semantics::Checkbox {
+            checked: false,
+            mixed: false,
+        }))
+        .into_iter()
+        .filter(|n| matches!(n.semantics, Some(Semantics::Checkbox { checked: true, .. })))
+        .filter_map(|n| n.label)
+        .collect();
+    assert_eq!(
+        ticked,
+        vec!["First".to_owned()],
+        "ticking one row must not tick its siblings"
+    );
+}

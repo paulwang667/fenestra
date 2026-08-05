@@ -25,6 +25,23 @@ const MAX_DEPTH: usize = 16;
 /// The most children one template expansion materializes.
 const MAX_TEMPLATE_CHILDREN: usize = 1000;
 
+/// Identity for one piece of client-side UI state: which component, and —
+/// when it was rendered inside a template expansion — which item.
+///
+/// A component id alone is not enough. `children_of` renders the same
+/// component once per item of a data-model list, so keying a Modal's open
+/// flag or an input's local edit by id would make every expansion share one
+/// value: opening row three's dialog opens all of them at once, and typing
+/// into one row's field types into every row's.
+fn ui_key(id: &str, scope: Option<&str>) -> String {
+    match scope {
+        // U+0001 cannot appear in a JSON Pointer or a sane component id, so
+        // no id can be mistaken for a scope boundary.
+        Some(scope) => format!("{scope}\u{1}{id}"),
+        None => id.to_owned(),
+    }
+}
+
 /// Shown by a single-selection picker when the model has chosen nothing.
 /// The kit's `select` always renders *some* option, so without this the
 /// control would assert a choice the user never made.
@@ -63,8 +80,9 @@ pub enum A2uiMsg {
     },
     /// Store a local edit for a literal-valued input (no binding path).
     LocalEdit {
-        /// The input component id.
-        id: String,
+        /// The input's instance key — its component id, plus which
+        /// template item it belongs to when it came from one.
+        key: String,
         /// The edited value.
         value: Value,
     },
@@ -86,18 +104,18 @@ pub enum A2uiMsg {
     ),
     /// Open a Modal component.
     OpenModal(
-        /// The Modal component id.
+        /// The Modal's instance key.
         String,
     ),
     /// Close a Modal component.
     CloseModal(
-        /// The Modal component id.
+        /// The Modal's instance key.
         String,
     ),
     /// Switch a Tabs component to a tab.
     SelectTab {
-        /// The Tabs component id.
-        id: String,
+        /// The Tabs component's instance key.
+        key: String,
         /// The new active index.
         index: usize,
     },
@@ -248,8 +266,8 @@ impl Surface {
                 );
                 Vec::new()
             }
-            A2uiMsg::LocalEdit { id, value } => {
-                self.ui.local_edits.insert(id, value);
+            A2uiMsg::LocalEdit { key, value } => {
+                self.ui.local_edits.insert(key, value);
                 Vec::new()
             }
             A2uiMsg::Event {
@@ -271,8 +289,8 @@ impl Surface {
                 self.ui.open_modals.remove(&id);
                 Vec::new()
             }
-            A2uiMsg::SelectTab { id, index } => {
-                self.ui.active_tabs.insert(id, index);
+            A2uiMsg::SelectTab { key, index } => {
+                self.ui.active_tabs.insert(key, index);
                 Vec::new()
             }
         }
@@ -565,7 +583,12 @@ fn has_pressable_descendant(el: &Element<A2uiMsg>) -> bool {
 /// A trigger that *contains* its own interactive child is the one shape
 /// this cannot rescue; that child still wins the press. Say so rather than
 /// leave a dialog that opens only when you miss the button inside it.
-fn open_modal_trigger(ctx: &Ctx, id: &str, trigger: Element<A2uiMsg>) -> Element<A2uiMsg> {
+fn open_modal_trigger(
+    ctx: &Ctx,
+    id: &str,
+    key: &str,
+    trigger: Element<A2uiMsg>,
+) -> Element<A2uiMsg> {
     if has_pressable_descendant(&trigger) {
         ctx.note(
             id,
@@ -574,7 +597,7 @@ fn open_modal_trigger(ctx: &Ctx, id: &str, trigger: Element<A2uiMsg>) -> Element
              clicking that child will not open the dialog",
         );
     }
-    let open = A2uiMsg::OpenModal(id.to_owned());
+    let open = A2uiMsg::OpenModal(key.to_owned());
     let composed = match trigger.click_msg().cloned() {
         Some(existing) => A2uiMsg::Many(vec![existing, open]),
         None => open,
@@ -918,21 +941,19 @@ fn render_component(
                 .iter()
                 .map(|t| resolve_value(ctx, id, &t.title, scope))
                 .collect();
+            let tabs_key = ui_key(id, scope);
             let active = ctx
                 .surface
                 .ui
                 .active_tabs
-                .get(id)
+                .get(&tabs_key)
                 .copied()
                 .unwrap_or(0)
                 .min(items.len().saturating_sub(1));
-            let strip = {
-                let tabs_id = id.to_owned();
-                tabs(active, labels, move |index| A2uiMsg::SelectTab {
-                    id: tabs_id.clone(),
-                    index,
-                })
-            };
+            let strip = tabs(active, labels, move |index| A2uiMsg::SelectTab {
+                key: tabs_key.clone(),
+                index,
+            });
             let mut container = col().gap(8.0).child(strip);
             if let Some(tab) = items.get(active) {
                 container = container.child(render_by_id(ctx, &tab.child, scope, depth + 1));
@@ -940,15 +961,16 @@ fn render_component(
             container
         }
         Kind::Modal { trigger, content } => {
-            let open = ctx.surface.ui.open_modals.contains(id);
+            let modal_key = ui_key(id, scope);
+            let open = ctx.surface.ui.open_modals.contains(&modal_key);
             let trigger_el = render_by_id(ctx, trigger, scope, depth + 1);
-            let opener = open_modal_trigger(ctx, id, trigger_el);
+            let opener = open_modal_trigger(ctx, id, &modal_key, trigger_el);
             if open {
                 col().children((
                     opener,
                     modal("")
                         .child(render_by_id(ctx, content, scope, depth + 1))
-                        .on_close(A2uiMsg::CloseModal(id.to_owned())),
+                        .on_close(A2uiMsg::CloseModal(modal_key.clone())),
                 ))
             } else {
                 opener
@@ -1059,7 +1081,7 @@ fn render_component(
                         .surface
                         .ui
                         .local_edits
-                        .get(id)
+                        .get(&ui_key(id, scope))
                         .and_then(Value::as_bool)
                         .unwrap_or(base);
                     (checked, None)
@@ -1072,7 +1094,7 @@ fn render_component(
                     value: !checked,
                 }),
                 None => cb.on_toggle(A2uiMsg::LocalEdit {
-                    id: id.to_owned(),
+                    key: ui_key(id, scope),
                     value: Value::Bool(!checked),
                 }),
             };
@@ -1129,7 +1151,7 @@ fn render_component(
                         .surface
                         .ui
                         .local_edits
-                        .get(id)
+                        .get(&ui_key(id, scope))
                         .and_then(Value::as_f64)
                         .unwrap_or(base);
                     (current, None)
@@ -1143,9 +1165,9 @@ fn render_component(
                     value: f64::from(v),
                 }),
                 None => {
-                    let id = id.to_owned();
+                    let key = ui_key(id, scope);
                     s.on_change(move |v| A2uiMsg::LocalEdit {
-                        id: id.clone(),
+                        key: key.clone(),
                         value: serde_json::json!(f64::from(v)),
                     })
                 }
@@ -1206,15 +1228,17 @@ fn render_component(
 /// forgets the second branch silently becomes read-only — which is exactly
 /// what `DateTimeInput` was, while still *reading* local edits that could
 /// never be written.
-fn string_writer(id: &str, path: Option<String>) -> impl Fn(String) -> A2uiMsg + Clone + 'static {
-    let id = id.to_owned();
+fn string_writer(
+    key: String,
+    path: Option<String>,
+) -> impl Fn(String) -> A2uiMsg + Clone + 'static {
     move |v| match &path {
         Some(p) => A2uiMsg::SetString {
             path: p.clone(),
             value: v,
         },
         None => A2uiMsg::LocalEdit {
-            id: id.clone(),
+            key: key.clone(),
             value: Value::String(v),
         },
     }
@@ -1242,7 +1266,7 @@ fn input_state(
                 .surface
                 .ui
                 .local_edits
-                .get(id)
+                .get(&ui_key(id, scope))
                 .map(functions::display)
                 .unwrap_or(base);
             (current, None)
@@ -1251,13 +1275,13 @@ fn input_state(
             ctx.surface
                 .ui
                 .local_edits
-                .get(id)
+                .get(&ui_key(id, scope))
                 .map(functions::display)
                 .unwrap_or_default(),
             None,
         ),
     };
-    (current, string_writer(id, path))
+    (current, string_writer(ui_key(id, scope), path))
 }
 
 fn action_msg(ctx: &Ctx, id: &str, action: &Action, scope: Option<&str>) -> A2uiMsg {
@@ -1379,7 +1403,13 @@ fn render_choice_picker(
     };
     if path.is_none() {
         // Literal-valued pickers stay interactive through local edits.
-        if let Some(edited) = ctx.surface.ui.local_edits.get(id).and_then(selection_of) {
+        if let Some(edited) = ctx
+            .surface
+            .ui
+            .local_edits
+            .get(&ui_key(id, scope))
+            .and_then(selection_of)
+        {
             selected_values = edited;
         }
     }
@@ -1402,14 +1432,14 @@ fn render_choice_picker(
     // for literal-valued pickers — either way the picker stays live.
     let make_msg = {
         let path = path.clone();
-        let id = id.to_owned();
+        let key = ui_key(id, scope);
         move |values: Vec<String>| match &path {
             Some(p) => A2uiMsg::SetList {
                 path: p.clone(),
                 values,
             },
             None => A2uiMsg::LocalEdit {
-                id: id.clone(),
+                key: key.clone(),
                 value: Value::Array(values.into_iter().map(Value::String).collect()),
             },
         }

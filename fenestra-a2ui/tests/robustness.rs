@@ -286,7 +286,7 @@ fn literal_choice_picker_reads_local_edits() {
         .surface_mut("s")
         .expect("surface")
         .handle(A2uiMsg::LocalEdit {
-            id: "root".into(),
+            key: "root".into(),
             value: serde_json::json!(["basic"]),
         });
     assert!(signal.is_empty(), "local edits are internal");
