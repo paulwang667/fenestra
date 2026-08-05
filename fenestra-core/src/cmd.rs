@@ -143,6 +143,31 @@ impl<Msg> Cmd<Msg> {
     }
 }
 
+/// The most messages one [`apply_cmd`] call applies before it decides the
+/// app is looping rather than working.
+///
+/// A real effect chain is a handful of messages deep, and even a wide
+/// [`Cmd::batch`] is bounded by what the app actually built — so this
+/// ceiling sits far above anything legitimate. What it catches is the
+/// one-line mistake: an `update_with` that returns [`Cmd::msg`] for the
+/// message it was just handed. That never settles, and because the queue
+/// drains on the UI thread the window stops redrawing and stops accepting
+/// input. A frozen app with nothing in the log is the worst possible way
+/// to learn about it.
+pub const MAX_EFFECT_CHAIN: usize = 10_000;
+
+/// Reports a runaway effect chain and gives up on it. Loud, never silent:
+/// the alternative was an unkillable loop on the UI thread.
+#[cold]
+#[inline(never)]
+fn report_runaway_chain() {
+    eprintln!(
+        "fenestra: an effect chain applied {MAX_EFFECT_CHAIN} messages without settling and was \
+         stopped. This is almost always an `update_with` that returns `Cmd::msg` for the message \
+         it just received — look for a self-referential effect."
+    );
+}
+
 /// Applies one effect against an app: immediate messages feed back through
 /// [`App::update_with`](crate::App::update_with) until none remain, and
 /// every deferred unit (task or future) is handed to `spawn` in encounter
@@ -157,6 +182,11 @@ impl<Msg> Cmd<Msg> {
 /// B's. Deferred units are only *collected* here; when they run (worker
 /// threads live, [`run_effects`](../fenestra_shell/struct.Harness.html#method.run_effects)
 /// in tests) is the executor's business.
+///
+/// The drain is bounded by [`MAX_EFFECT_CHAIN`]. An app that keeps feeding
+/// itself would otherwise spin here forever, on the UI thread, with the
+/// window frozen and nothing written anywhere — so the chain stops and
+/// says why on stderr instead.
 pub fn apply_cmd<A: crate::App + ?Sized>(
     app: &mut A,
     cmd: Cmd<A::Msg>,
@@ -164,10 +194,16 @@ pub fn apply_cmd<A: crate::App + ?Sized>(
 ) {
     let mut queue = std::collections::VecDeque::new();
     queue.push_back(cmd);
+    let mut applied = 0_usize;
     while let Some(cmd) = queue.pop_front() {
         let mut immediate = Vec::new();
         cmd.run(&mut |m| immediate.push(m), spawn);
         for m in immediate {
+            if applied == MAX_EFFECT_CHAIN {
+                report_runaway_chain();
+                return;
+            }
+            applied += 1;
             queue.push_back(app.update_with(m));
         }
     }
@@ -371,6 +407,35 @@ mod tests {
         );
         let outputs: Vec<u32> = units.into_iter().map(CmdUnit::block).collect();
         assert_eq!(outputs, vec![1, 2]);
+    }
+
+    /// An app that answers every message with the same message again used
+    /// to hang the UI thread forever. It must stop, and stop having
+    /// applied no more than the documented ceiling.
+    #[test]
+    fn apply_cmd_stops_a_self_feeding_app() {
+        struct Loop {
+            applied: usize,
+        }
+        impl crate::App for Loop {
+            type Msg = ();
+            fn update(&mut self, (): ()) {}
+            fn update_with(&mut self, (): ()) -> Cmd<()> {
+                self.applied += 1;
+                Cmd::msg(())
+            }
+            fn view(&self) -> crate::Element<()> {
+                crate::text("loop")
+            }
+        }
+        let mut app = Loop { applied: 0 };
+        apply_cmd(&mut app, Cmd::msg(()), &mut |_| {
+            panic!("no deferred units here")
+        });
+        assert_eq!(
+            app.applied, MAX_EFFECT_CHAIN,
+            "the chain must stop at the documented ceiling, not spin"
+        );
     }
 
     #[test]

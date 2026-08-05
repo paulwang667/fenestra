@@ -954,6 +954,70 @@ impl Drop for SubHandle {
     }
 }
 
+/// Runs one deferred effect unit off the UI thread, delivering its message
+/// through `proxy`.
+///
+/// If the thread cannot be spawned — a process at its thread limit, a
+/// sandbox that forbids threads — the unit runs *here* instead. Blocking
+/// the UI thread for the length of one effect is bad; dropping the effect
+/// is worse, because the app then waits forever for a reply that is never
+/// coming and the user is left with a spinner that never stops. Losing a
+/// message is the one outcome this must not have.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn spawn_effect_unit<Msg: 'static>(
+    unit: fenestra_core::CmdUnit<Msg>,
+    proxy: &fenestra_core::Proxy<Msg>,
+) where
+    // The message itself never crosses the boundary as a value — the unit
+    // produces it on the worker and hands it straight to the proxy — so
+    // these are the real requirements, not `Msg: Send`.
+    fenestra_core::CmdUnit<Msg>: Send,
+    fenestra_core::Proxy<Msg>: Send,
+{
+    dispatch_effect_unit(unit, proxy, |work| {
+        std::thread::Builder::new()
+            .name("fenestra-cmd".into())
+            .spawn(work)
+            .map(drop)
+    });
+}
+
+/// The spawn-or-fall-back half of [`spawn_effect_unit`], with the thread
+/// spawner passed in so the failure path is reachable from a test — an
+/// out-of-threads process is not something a test can arrange for real,
+/// and this path only matters when it is the one that runs.
+#[cfg(not(target_arch = "wasm32"))]
+fn dispatch_effect_unit<Msg: 'static, S>(
+    unit: fenestra_core::CmdUnit<Msg>,
+    proxy: &fenestra_core::Proxy<Msg>,
+    spawn: S,
+) where
+    fenestra_core::CmdUnit<Msg>: Send,
+    fenestra_core::Proxy<Msg>: Send,
+    S: FnOnce(Box<dyn FnOnce() + Send + 'static>) -> std::io::Result<()>,
+{
+    // The spawner consumes the closure, and with it the unit, so the unit
+    // is parked somewhere both sides can reach: the worker takes it if it
+    // starts, and we take it back if it never does.
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(unit)));
+    let worker_slot = std::sync::Arc::clone(&slot);
+    let worker_proxy = proxy.clone();
+    let spawned = spawn(Box::new(move || {
+        if let Some(unit) = worker_slot.lock().ok().and_then(|mut g| g.take()) {
+            worker_proxy.send(unit.block());
+        }
+    }));
+    if let Err(e) = spawned
+        && let Some(unit) = slot.lock().ok().and_then(|mut g| g.take())
+    {
+        eprintln!(
+            "fenestra: could not spawn an effect worker thread ({e}); running the effect on the \
+             UI thread instead — the window will not repaint until it finishes"
+        );
+        proxy.send(unit.block());
+    }
+}
+
 /// Reconciles running subscription timers against a desired set: new keys
 /// start a timer thread delivering ticks through `proxy`, missing keys
 /// cancel theirs (within one period), a changed period restarts. Shared by
@@ -1112,14 +1176,7 @@ impl<A: App> AppRunner<A> {
         fenestra_core::apply_cmd(&mut self.app, cmd, &mut |unit| {
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let proxy = proxy.clone();
-                if std::thread::Builder::new()
-                    .name("fenestra-cmd".into())
-                    .spawn(move || proxy.send(unit.block()))
-                    .is_err()
-                {
-                    eprintln!("fenestra: failed to spawn an effect worker thread");
-                }
+                spawn_effect_unit(unit, &proxy);
             }
             #[cfg(target_arch = "wasm32")]
             {
@@ -1989,5 +2046,48 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
             WindowEvent::RedrawRequested => self.redraw(event_loop),
             _ => {}
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::dispatch_effect_unit;
+    use fenestra_core::{CmdUnit, Proxy};
+    use std::sync::{Arc, Mutex};
+
+    /// A worker thread that cannot be spawned used to mean a dropped
+    /// message: the app waited forever for a reply that was never coming.
+    /// The effect must still run, and its message must still arrive.
+    #[test]
+    fn a_failed_spawn_runs_the_effect_instead_of_losing_it() {
+        let got: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&got);
+        let proxy = Proxy::new(move |m: u32| sink.lock().expect("lock").push(m));
+        dispatch_effect_unit(CmdUnit::Task(Box::new(|| 7)), &proxy, |_| {
+            Err(std::io::Error::other("no threads today"))
+        });
+        assert_eq!(
+            *got.lock().expect("lock"),
+            vec![7],
+            "the effect must be delivered even when no worker thread is available"
+        );
+    }
+
+    /// The ordinary path still hands the unit to the spawner, and does not
+    /// also run it on the caller's thread.
+    #[test]
+    fn a_successful_spawn_runs_the_effect_once() {
+        let got: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&got);
+        let proxy = Proxy::new(move |m: u32| sink.lock().expect("lock").push(m));
+        dispatch_effect_unit(CmdUnit::Task(Box::new(|| 7)), &proxy, |work| {
+            work();
+            Ok(())
+        });
+        assert_eq!(
+            *got.lock().expect("lock"),
+            vec![7],
+            "delivered exactly once"
+        );
     }
 }
