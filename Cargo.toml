@@ -71,5 +71,15 @@ muda = "0.19.3"
 
 # vello and wgpu are unusably slow without optimization; keep our own crates
 # fast to compile but optimize dependencies even in dev builds.
+[profile.dev]
+# Line tables, not full DWARF. One `cargo test --workspace` builds fifteen
+# crates' worth of unit tests plus their integration binaries, and full
+# debug info took that to ~43 GiB of target — enough to fill a developer's
+# disk mid-run, and enough to have flaked CI on "No space left on device".
+# Line tables keep what actually gets read (panic backtraces and file:line
+# in test failures) and drop what does not; the same run is ~16 GiB. Anyone
+# who wants a debugger can override this locally.
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 2
