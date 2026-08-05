@@ -779,3 +779,117 @@ fn a_multi_select_cannot_delete_values_it_cannot_show() {
         rendered.notes
     );
 }
+
+/// Unrecognized enum strings each fall back to something plausible, which
+/// is exactly why they need reporting: a typo renders as a perfectly
+/// normal control and the stream is told it got what it asked for. The
+/// `justify`/`align` path already reported these; the rest did not.
+#[test]
+fn unknown_enum_strings_are_reported() {
+    let cases: [(&str, &str); 5] = [
+        (
+            r#"{"id":"root","component":"Text","text":"x","variant":"h9"}"#,
+            "h9",
+        ),
+        (
+            r#"{"id":"root","component":"Button","child":"c","variant":"ghosty"}"#,
+            "ghosty",
+        ),
+        (
+            r#"{"id":"root","component":"Divider","axis":"diagonal"}"#,
+            "diagonal",
+        ),
+        (
+            r#"{"id":"root","component":"List","direction":"sideways"}"#,
+            "sideways",
+        ),
+        (
+            r#"{"id":"root","component":"TextField","label":"l","variant":"sercet"}"#,
+            "sercet",
+        ),
+    ];
+    for (component, bad) in cases {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {component},{{"id":"c","component":"Text","text":"y"}}
+            ]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::InvalidValue && n.detail.contains(bad)),
+            "{bad} must be reported, got: {:?}",
+            rendered.notes
+        );
+    }
+}
+
+/// `checks` was modeled only on Button, TextField and CheckBox, so on any
+/// other input serde's unknown-field tolerance swallowed it whole — a
+/// stream that asked for a required selection was told its surface mapped
+/// with full fidelity.
+#[test]
+fn unenforced_checks_are_reported_on_every_input() {
+    let cases = [
+        r#"{"id":"root","component":"ChoicePicker","variant":"mutuallyExclusive","value":[],
+            "options":[],"checks":[{"required":true}]}"#,
+        r#"{"id":"root","component":"Slider","max":1.0,"value":0.0,"checks":[{"required":true}]}"#,
+        r#"{"id":"root","component":"DateTimeInput","value":"2026-01-01",
+            "checks":[{"required":true}]}"#,
+    ];
+    for component in cases {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[{component}]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered.notes.iter().any(|n| n.detail.contains("`checks`")),
+            "checks must be reported, got: {:?}",
+            rendered.notes
+        );
+    }
+}
+
+/// Render notes are rebuilt every frame and a template multiplies them, so
+/// the same bound the surface's notes gained has to apply here too — and
+/// hitting it must say so rather than going quiet.
+#[test]
+fn render_notes_deduplicate_across_template_rows() {
+    let rows: Vec<serde_json::Value> = (0..500).map(|i| serde_json::json!({"n": i})).collect();
+    let stream = format!(
+        r#"[
+        {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+        {{"version":"v0.9","updateDataModel":{{"surfaceId":"s","value":{{"rows":{}}}}}}},
+        {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+            {{"id":"root","component":"Column",
+             "children":{{"componentId":"row","path":"/rows"}}}},
+            {{"id":"row","component":"Image","url":"https://example.com/a.png"}}
+        ]}}}}
+    ]"#,
+        serde_json::to_string(&rows).expect("rows serialize")
+    );
+    let rendered = apply(&stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert_eq!(
+        rendered.notes.len(),
+        1,
+        "500 rows of one placeholder is one problem, got {} notes",
+        rendered.notes.len()
+    );
+}

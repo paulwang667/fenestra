@@ -268,6 +268,9 @@ pub enum Kind {
         /// Whether the picker offers filtering.
         #[serde(default)]
         filterable: Option<bool>,
+        /// Validation gates (parsed; enforcement is a noted gap).
+        #[serde(default)]
+        checks: Option<Value>,
     },
     /// A numeric slider, two-way bound when `value` is a path.
     Slider {
@@ -281,9 +284,15 @@ pub enum Kind {
         max: f64,
         /// The value (dynamic; a path makes it two-way).
         value: Dyn<f64>,
+        /// Validation gates (parsed; enforcement is a noted gap).
+        #[serde(default)]
+        checks: Option<Value>,
     },
     /// A date and/or time input, two-way bound when `value` is a path.
     DateTimeInput {
+        /// Validation gates (parsed; enforcement is a noted gap).
+        #[serde(default)]
+        checks: Option<Value>,
         /// The value (dynamic ISO-8601 string).
         value: Dyn<String>,
         /// Whether the date part is editable.

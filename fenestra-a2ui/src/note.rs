@@ -101,6 +101,40 @@ impl NoteKind {
     }
 }
 
+/// The most distinct notes either pipeline keeps.
+pub(crate) const MAX_NOTES: usize = 4096;
+
+/// Records a note in `notes`, once, up to [`MAX_NOTES`] of them.
+///
+/// Both note pipelines are driven by input the crate does not control: the
+/// surface's accumulates one rejected write per keystroke for the life of
+/// the session, and the renderer's rebuilds every frame, where a single
+/// placeholder inside a thousand-row template becomes a thousand notes —
+/// and nested templates multiply that. Unbounded, they grow until the
+/// process does; undeduplicated, the one real problem is buried in
+/// thousands of copies of itself.
+///
+/// Reaching the cap records one [`NoteKind::Truncated`] note, because a
+/// crate whose contract is "silence means fidelity" must not go silent
+/// about having gone silent.
+pub(crate) fn push_bounded(notes: &mut Vec<Note>, note: Note) {
+    if notes.contains(&note) {
+        return;
+    }
+    if notes.len() >= MAX_NOTES {
+        let marker = Note::new(
+            "",
+            NoteKind::Truncated,
+            format!("more than {MAX_NOTES} distinct notes; the rest are not recorded"),
+        );
+        if !notes.contains(&marker) {
+            notes.push(marker);
+        }
+        return;
+    }
+    notes.push(note);
+}
+
 /// One thing that did not map faithfully, and where.
 ///
 /// Serializes as `{componentId, kind, severity, detail}`. `severity` is

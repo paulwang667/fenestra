@@ -190,9 +190,23 @@ struct Ctx<'a> {
 
 impl Ctx<'_> {
     fn note(&self, id: &str, kind: NoteKind, detail: impl std::fmt::Display) {
-        self.notes
-            .borrow_mut()
-            .push(Note::new(id, kind, detail.to_string()));
+        crate::note::push_bounded(
+            &mut self.notes.borrow_mut(),
+            Note::new(id, kind, detail.to_string()),
+        );
+    }
+
+    /// Reports an enum string the catalog does not define.
+    ///
+    /// Every one of these falls back to a sensible default, which is
+    /// exactly why they need saying: a typo renders as a perfectly
+    /// plausible control, and the stream is told it got what it asked for.
+    fn note_unknown_variant(&self, id: &str, field: &str, got: &str, used: &str) {
+        self.note(
+            id,
+            NoteKind::InvalidValue,
+            format!("`{field}` value {got:?} is not in the catalog; rendered as {used}"),
+        );
     }
 }
 
@@ -827,7 +841,12 @@ fn render_component(
                 Some("h5") => text(resolved).size_px(14.0).weight(Weight::Medium),
                 Some("caption") => text(resolved).size(TextSize::Xs).color(theme.text_muted),
                 // Body text supports simple Markdown per the catalog docs.
-                _ => fenestra_markdown::markdown(resolved).into(),
+                other => {
+                    if let Some(v) = other {
+                        ctx.note_unknown_variant(id, "variant", v, "body text");
+                    }
+                    fenestra_markdown::markdown(resolved).into()
+                }
             }
         }
         Kind::Image {
@@ -863,7 +882,12 @@ fn render_component(
                 Some("smallFeature") => (80.0, 80.0),
                 Some("largeFeature") => (240.0, 180.0),
                 Some("header") => (320.0, 120.0),
-                _ => (160.0, 120.0),
+                other => {
+                    if let Some(v) = other {
+                        ctx.note_unknown_variant(id, "variant", v, "the default 160x120 box");
+                    }
+                    (160.0, 120.0)
+                }
             };
             let short = truncate_label(&desc, 36);
             let el = div()
@@ -957,6 +981,11 @@ fn render_component(
             align,
         } => {
             let kids = children_of(ctx, id, children, scope, depth);
+            if let Some(d) = direction.as_deref()
+                && !matches!(d, "horizontal" | "vertical")
+            {
+                ctx.note_unknown_variant(id, "direction", d, "a vertical list");
+            }
             let horizontal = direction.as_deref() == Some("horizontal");
             let el = if horizontal {
                 row().gap(8.0).children(kids).scroll_x()
@@ -1008,13 +1037,14 @@ fn render_component(
                 opener
             }
         }
-        Kind::Divider { axis } => {
-            if axis.as_deref() == Some("vertical") {
-                div().w(1.0).h_full().bg(theme.border_subtle)
-            } else {
+        Kind::Divider { axis } => match axis.as_deref() {
+            Some("vertical") => div().w(1.0).h_full().bg(theme.border_subtle),
+            Some("horizontal") | None => divider(),
+            Some(other) => {
+                ctx.note_unknown_variant(id, "axis", other, "a horizontal rule");
                 divider()
             }
-        }
+        },
         Kind::Button {
             child,
             variant,
@@ -1034,7 +1064,12 @@ fn render_component(
             let kit_variant = match variant.as_deref() {
                 Some("primary") => ButtonVariant::Primary,
                 Some("borderless") => ButtonVariant::Ghost,
-                _ => ButtonVariant::Secondary,
+                other => {
+                    if let Some(v) = other {
+                        ctx.note_unknown_variant(id, "variant", v, "a secondary button");
+                    }
+                    ButtonVariant::Secondary
+                }
             };
             let msg = action.as_ref().map(|a| action_msg(ctx, id, a, scope));
             let opens_a_modal = ctx.modal_triggers.contains(id);
@@ -1084,6 +1119,19 @@ fn render_component(
             note_unenforced_validation(ctx, id, checks.as_ref(), validation_regexp.as_deref());
             let label = resolve_value(ctx, id, label, scope);
             let (current, write) = input_state(ctx, id, value.as_ref(), scope);
+            match variant.as_deref() {
+                Some("shortText" | "longText" | "obscured") | None => {}
+                // Documented by the catalog, and it does constrain input —
+                // rendering an unconstrained text box accepts "abc" where
+                // the stream asked for a number.
+                Some("number") => note_unhonored(
+                    ctx,
+                    id,
+                    "variant: number",
+                    "the field accepts any text, with no numeric constraint",
+                ),
+                Some(other) => ctx.note_unknown_variant(id, "variant", other, "a short text field"),
+            }
             if variant.as_deref() == Some("obscured") {
                 ctx.note(
                     id,
@@ -1145,7 +1193,9 @@ fn render_component(
             value,
             display_style,
             filterable,
+            checks,
         } => {
+            note_unenforced_validation(ctx, id, checks.as_ref(), None);
             if display_style.is_some() {
                 note_unhonored(
                     ctx,
@@ -1172,7 +1222,9 @@ fn render_component(
             min,
             max,
             value,
+            checks,
         } => {
+            note_unenforced_validation(ctx, id, checks.as_ref(), None);
             let requested_min = min.unwrap_or(0.0);
             let requested_max = *max;
             // `Slider::range` ignores anything that is not max > min, and it
@@ -1258,7 +1310,9 @@ fn render_component(
             enable_time,
             min,
             max,
+            checks,
         } => {
+            note_unenforced_validation(ctx, id, checks.as_ref(), None);
             if enable_time == &Some(true) || enable_date == &Some(false) {
                 note_unhonored(
                     ctx,
@@ -1554,6 +1608,10 @@ fn render_choice_picker(
             },
         }
     };
+    match variant {
+        Some("mutuallyExclusive" | "multipleSelection") | None => {}
+        Some(other) => ctx.note_unknown_variant(id, "variant", other, "a single-selection picker"),
+    }
     let multiple = variant == Some("multipleSelection");
     let control: Element<A2uiMsg> = if multiple {
         let mut ms = multi_select(selected_idx.clone(), labels);

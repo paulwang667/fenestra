@@ -39,13 +39,6 @@ impl std::fmt::Display for A2uiError {
 
 impl std::error::Error for A2uiError {}
 
-/// The most distinct notes one surface accumulates.
-///
-/// Notes are deduplicated, so reaching this means a stream is producing
-/// genuinely different failures by the thousand — at which point the first
-/// few thousand describe the problem as well as all of them would.
-const MAX_SURFACE_NOTES: usize = 4096;
-
 /// Transient per-surface UI state the protocol leaves to the client.
 #[derive(Debug, Default)]
 pub(crate) struct UiState {
@@ -146,22 +139,9 @@ impl Surface {
         }
     }
 
-    /// Records a note, once.
-    ///
-    /// Surface notes accumulate for the life of the surface, and the write
-    /// path is driven by the user: a control bound to an unwritable pointer
-    /// produces one rejected write per keystroke. Storing each of those
-    /// separately grows without bound and buries the single real problem in
-    /// thousands of copies of itself, in every `render_a2ui` response. The
-    /// same note said twice tells the caller nothing the first one did not.
+    /// Records a note, once — see [`crate::note::push_bounded`].
     pub(crate) fn push_note(&mut self, note: Note) {
-        if self.notes.contains(&note) {
-            return;
-        }
-        if self.notes.len() >= MAX_SURFACE_NOTES {
-            return;
-        }
-        self.notes.push(note);
+        crate::note::push_bounded(&mut self.notes, note);
     }
 }
 
