@@ -448,3 +448,96 @@ fn unenforced_validation_is_reported() {
         rendered.notes
     );
 }
+
+// ── From the 2026-08-05 review of PR #19 ──────────────────────────────────
+
+/// An obscured field renders in cleartext, so the pixels handed back by a
+/// headless render contain the secret. That is not an inexactness, and
+/// `any_broken` — the check the book tells people to put in CI — has to say
+/// so.
+#[test]
+fn an_unmasked_secret_is_broken_not_approximate() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"pw":"hunter2"}}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"TextField","label":"Password","variant":"obscured",
+             "value":{"path":"/pw"}}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::SecretExposed),
+        "got: {:?}",
+        rendered.notes
+    );
+    assert!(
+        fenestra_a2ui::any_broken(&rendered.notes),
+        "a surface whose pixels leak a secret must not pass any_broken: {:?}",
+        rendered.notes
+    );
+}
+
+/// A dialog nothing can open is broken, not approximate — the trigger's
+/// interactive child takes every press.
+#[test]
+fn an_unopenable_modal_is_broken() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Modal","trigger":"card","content":"dlg"},
+            {"id":"card","component":"Card","child":"btn"},
+            {"id":"btn","component":"Button","child":"lbl","action":{"event":{"name":"go"}}},
+            {"id":"lbl","component":"Text","text":"Press me"},
+            {"id":"dlg","component":"Text","text":"body"}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::Unreachable),
+        "got: {:?}",
+        rendered.notes
+    );
+    assert!(
+        fenestra_a2ui::any_broken(&rendered.notes),
+        "a dialog that cannot be opened must not pass any_broken: {:?}",
+        rendered.notes
+    );
+}
+
+/// A selection binding with nothing written yet is the ordinary empty
+/// state, exactly as it is for a text field. Reporting it as broken made
+/// every fresh form fail its own CI check.
+#[test]
+fn an_empty_selection_binding_is_not_a_fidelity_loss() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"ChoicePicker","variant":"mutuallyExclusive",
+             "value":{"path":"/choice"},"options":[
+                {"label":"Small","value":"s"},{"label":"Large","value":"l"}
+             ]}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered.notes.is_empty(),
+        "a form that has not been filled in yet is not degraded: {:?}",
+        rendered.notes
+    );
+}

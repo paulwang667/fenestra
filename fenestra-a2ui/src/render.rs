@@ -569,8 +569,8 @@ fn open_modal_trigger(ctx: &Ctx, id: &str, trigger: Element<A2uiMsg>) -> Element
     if has_pressable_descendant(&trigger) {
         ctx.note(
             id,
-            NoteKind::Unsupported,
-            "the modal trigger contains its own interactive child, which takes the click; \
+            NoteKind::Unreachable,
+            "the modal trigger contains its own interactive child, which takes the press; \
              clicking that child will not open the dialog",
         );
     }
@@ -1027,8 +1027,9 @@ fn render_component(
             if variant.as_deref() == Some("obscured") {
                 ctx.note(
                     id,
-                    NoteKind::Unsupported,
-                    "obscured input renders unmasked (masking is a kit gap)",
+                    NoteKind::SecretExposed,
+                    "obscured input renders unmasked (masking is a kit gap); the rendered pixels \
+                     contain the value the stream asked to hide",
                 );
             }
             let control: Element<A2uiMsg> = if variant.as_deref() == Some("longText") {
@@ -1366,14 +1367,11 @@ fn render_choice_picker(
                     );
                     Vec::new()
                 }),
-                None => {
-                    ctx.note(
-                        id,
-                        NoteKind::UnresolvedBinding,
-                        format!("selection binding {p:?} resolves to nothing"),
-                    );
-                    Vec::new()
-                }
+                // An unset binding is the ordinary "nothing chosen yet"
+                // state, not a fidelity loss — the same call that
+                // `input_state` makes for a text field, and for the same
+                // reason: form values legitimately start empty.
+                None => Vec::new(),
             };
             (selected, Some(absolute(p, scope)))
         }

@@ -55,6 +55,13 @@ pub enum NoteKind {
     /// A remote asset (image, video, audio) rendered as a labeled
     /// placeholder. Deterministic renders never touch the network.
     NetworkAsset,
+    /// A value the stream asked to be hidden was rendered in the clear.
+    /// The pixels contain a secret, and a headless render hands those
+    /// pixels to whoever asked for them.
+    SecretExposed,
+    /// A control is on screen but cannot be operated — something else
+    /// takes its press, so the interaction it exists for is dead.
+    Unreachable,
     /// Mapped onto the nearest thing fenestra has, not the exact one.
     Approximated,
     /// A catalog feature parsed but not honored yet.
@@ -76,6 +83,13 @@ pub enum NoteSeverity {
 
 impl NoteKind {
     /// How much this kind should worry the caller.
+    ///
+    /// The line is drawn at *can the surface still do its job*. A remote
+    /// image standing in as a grey box, a layout mode mapped to its
+    /// nearest neighbour, a validation rule that parses without gating —
+    /// the surface works, it is merely not exact. Anything that leaves the
+    /// user unable to do what the stream described, or that puts something
+    /// on screen the stream asked to hide, is broken.
     #[must_use]
     pub fn severity(self) -> NoteSeverity {
         match self {
@@ -88,8 +102,13 @@ impl NoteKind {
 }
 
 /// One thing that did not map faithfully, and where.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+///
+/// Serializes as `{componentId, kind, severity, detail}`. `severity` is
+/// derived from `kind`, but it ships on the wire on purpose: without it
+/// every consumer — the MCP server, the CLI, whatever reads their JSON —
+/// has to reimplement [`NoteKind::severity`]'s table and silently drift
+/// from it the next time a kind is added.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
     /// The component id this happened to — or, for stream-level notes, the
     /// message type that carried it.
@@ -114,6 +133,18 @@ impl Note {
     #[must_use]
     pub fn severity(&self) -> NoteSeverity {
         self.kind.severity()
+    }
+}
+
+impl Serialize for Note {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut o = s.serialize_struct("Note", 4)?;
+        o.serialize_field("componentId", &self.component_id)?;
+        o.serialize_field("kind", &self.kind)?;
+        o.serialize_field("severity", &self.severity())?;
+        o.serialize_field("detail", &self.detail)?;
+        o.end()
     }
 }
 
@@ -146,6 +177,19 @@ mod tests {
         assert_eq!(n.to_string(), "btn: icon \"nope\" is not vendored");
     }
 
+    /// The two cases that motivated a `Broken` classification of their
+    /// own: a dialog nothing can open, and a secret on screen.
+    #[test]
+    fn unusable_and_leaking_surfaces_are_broken() {
+        assert_eq!(NoteKind::Unreachable.severity(), NoteSeverity::Broken);
+        assert_eq!(NoteKind::SecretExposed.severity(), NoteSeverity::Broken);
+        assert_eq!(
+            NoteKind::Unsupported.severity(),
+            NoteSeverity::Approximate,
+            "a feature that parses without acting still leaves a working surface"
+        );
+    }
+
     #[test]
     fn severity_splits_broken_from_approximate() {
         assert_eq!(
@@ -173,5 +217,9 @@ mod tests {
         assert_eq!(v["componentId"], "row_1");
         assert_eq!(v["kind"], "unresolvedBinding");
         assert_eq!(v["detail"], "no such path");
+        assert_eq!(
+            v["severity"], "broken",
+            "severity ships on the wire so consumers need not reimplement the table"
+        );
     }
 }
