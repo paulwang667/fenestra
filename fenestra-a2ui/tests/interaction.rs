@@ -151,6 +151,36 @@ fn tabs_switch_on_click() {
     );
 }
 
+/// Every literal-valued input stays editable through local edits. The
+/// DateTimeInput used to *read* local edits while attaching no handler to
+/// write them, so it was permanently read-only and the readback was dead
+/// code. Typing into one must stick.
+#[test]
+fn literal_date_time_input_accepts_typing() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"DateTimeInput","value":"2026-01-01","enableDate":true}
+        ]}}
+    ]"#;
+    let field = by::role(Semantics::TextInput { multiline: false });
+    let mut h = harness(stream);
+    assert_eq!(
+        h.get(&field).value.as_deref(),
+        Some("2026-01-01"),
+        "the literal value shows"
+    );
+    h.focus(&field);
+    h.type_text("!");
+    // Where the caret lands on focus is the editor's business; what
+    // matters is that the keystroke reached the data at all.
+    let after = h.get(&field).value.unwrap_or_default();
+    assert!(
+        after.contains('!') && after.contains("2026-01-01"),
+        "a literal-valued DateTimeInput must accept edits like every other input, got {after:?}"
+    );
+}
+
 /// A List renders its children and reports nothing — it is a plain
 /// scrolling container, and the notes must stay quiet for it.
 #[test]

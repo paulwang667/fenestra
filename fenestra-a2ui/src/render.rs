@@ -982,7 +982,7 @@ fn render_component(
         } => {
             note_unenforced_validation(ctx, id, checks.as_ref(), validation_regexp.as_deref());
             let label = resolve_value(ctx, id, label, scope);
-            let (current, path) = input_state(ctx, id, value.as_ref(), scope);
+            let (current, write) = input_state(ctx, id, value.as_ref(), scope);
             if variant.as_deref() == Some("obscured") {
                 ctx.note(
                     id,
@@ -991,37 +991,9 @@ fn render_component(
                 );
             }
             let control: Element<A2uiMsg> = if variant.as_deref() == Some("longText") {
-                let mut area = text_area(current);
-                area = match path {
-                    Some(path) => area.on_input(move |v| A2uiMsg::SetString {
-                        path: path.clone(),
-                        value: v,
-                    }),
-                    None => {
-                        let id = id.to_owned();
-                        area.on_input(move |v| A2uiMsg::LocalEdit {
-                            id: id.clone(),
-                            value: Value::String(v),
-                        })
-                    }
-                };
-                area.into()
+                text_area(current).on_input(write).into()
             } else {
-                let mut input = text_input(current);
-                input = match path {
-                    Some(path) => input.on_input(move |v| A2uiMsg::SetString {
-                        path: path.clone(),
-                        value: v,
-                    }),
-                    None => {
-                        let id = id.to_owned();
-                        input.on_input(move |v| A2uiMsg::LocalEdit {
-                            id: id.clone(),
-                            value: Value::String(v),
-                        })
-                    }
-                };
-                input.into()
+                text_input(current).on_input(write).into()
             };
             field(label).child(control).into()
         }
@@ -1131,14 +1103,10 @@ fn render_component(
                 NoteKind::Unsupported,
                 "DateTimeInput renders as an ISO text field (calendar UI TBD)",
             );
-            let (current, path) = input_state(ctx, id, Some(value), scope);
-            let mut input = text_input(current).placeholder("YYYY-MM-DD");
-            if let Some(path) = path {
-                input = input.on_input(move |v| A2uiMsg::SetString {
-                    path: path.clone(),
-                    value: v,
-                });
-            }
+            let (current, write) = input_state(ctx, id, Some(value), scope);
+            let input = text_input(current)
+                .placeholder("YYYY-MM-DD")
+                .on_input(write);
             match label {
                 Some(l) => field(resolve_value(ctx, id, l, scope)).child(input).into(),
                 None => input.into(),
@@ -1173,15 +1141,37 @@ fn render_component(
     }
 }
 
-/// Current value + absolute write path for a string-valued input,
-/// consulting local edits for literal-valued ones.
+/// How an edited string gets back into the surface: through its binding
+/// when it has one, as a local edit when the value is a literal.
+///
+/// Built here rather than at each call site, because a control that
+/// forgets the second branch silently becomes read-only — which is exactly
+/// what `DateTimeInput` was, while still *reading* local edits that could
+/// never be written.
+fn string_writer(id: &str, path: Option<String>) -> impl Fn(String) -> A2uiMsg + Clone + 'static {
+    let id = id.to_owned();
+    move |v| match &path {
+        Some(p) => A2uiMsg::SetString {
+            path: p.clone(),
+            value: v,
+        },
+        None => A2uiMsg::LocalEdit {
+            id: id.clone(),
+            value: Value::String(v),
+        },
+    }
+}
+
+/// The current value of a string-valued input, plus the writer that puts
+/// edits back. Literal-valued inputs read their local edit back, so every
+/// one of them stays interactive.
 fn input_state(
     ctx: &Ctx,
     id: &str,
     value: Option<&Dyn<String>>,
     scope: Option<&str>,
-) -> (String, Option<String>) {
-    match value {
+) -> (String, impl Fn(String) -> A2uiMsg + Clone + 'static) {
+    let (current, path) = match value {
         Some(Dyn::Binding { path }) => (
             lookup(ctx.surface, path, scope)
                 .map(functions::display)
@@ -1208,7 +1198,8 @@ fn input_state(
                 .unwrap_or_default(),
             None,
         ),
-    }
+    };
+    (current, string_writer(id, path))
 }
 
 fn action_msg(ctx: &Ctx, id: &str, action: &Action, scope: Option<&str>) -> A2uiMsg {
