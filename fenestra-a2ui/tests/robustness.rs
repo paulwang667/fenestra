@@ -541,3 +541,114 @@ fn an_empty_selection_binding_is_not_a_fidelity_loss() {
         rendered.notes
     );
 }
+
+/// Fields that parse and then go nowhere have to say so — a chips picker
+/// rendering as a dropdown, an image ignoring its fit, a time-only input
+/// asking for a date. Each renders something sensible, so each is
+/// approximate rather than broken, but silence would claim the stream got
+/// what it asked for.
+#[test]
+fn parsed_but_unhonored_fields_are_reported() {
+    let cases: [(&str, &str); 3] = [
+        (
+            r#"{"id":"root","component":"Image","url":"https://e.com/a.png","fit":"cover"}"#,
+            "fit",
+        ),
+        (
+            r#"{"id":"root","component":"ChoicePicker","variant":"mutuallyExclusive",
+                "value":[],"displayStyle":"chips","filterable":true,
+                "options":[{"label":"A","value":"a"}]}"#,
+            "displayStyle",
+        ),
+        (
+            r#"{"id":"root","component":"DateTimeInput","value":"2026-01-01",
+                "enableDate":false,"enableTime":true}"#,
+            "enableDate/enableTime",
+        ),
+    ];
+    for (component, field) in cases {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[{component}]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::Unsupported && n.detail.contains(field)),
+            "{field} must be reported, got: {:?}",
+            rendered.notes
+        );
+    }
+}
+
+/// An `openUrl` with nothing to open must do nothing, rather than handing
+/// the host an empty URL it never asked for.
+#[test]
+fn open_url_with_an_unresolved_argument_does_nothing() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Button","child":"lbl",
+             "action":{"functionCall":{"call":"openUrl","args":{"url":{"path":"/link"}}}}},
+            {"id":"lbl","component":"Text","text":"Visit"}
+        ]}}
+    ]"#;
+    let mut client = apply(stream);
+    let rendered = client
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    let click = find_click(&rendered.element).expect("the button is clickable");
+    assert!(
+        matches!(click, A2uiMsg::Ignored),
+        "an openUrl with no URL must not reach the host, got {click:?}"
+    );
+    assert!(
+        rendered.notes.iter().any(|n| n.detail.contains("openUrl")),
+        "and it must say why, got: {:?}",
+        rendered.notes
+    );
+    assert!(
+        client
+            .surface_mut("s")
+            .expect("surface")
+            .handle(click)
+            .is_empty(),
+        "no signal reaches the host"
+    );
+}
+
+/// The repaired slider range has to survive the same test that rejected the
+/// original: at the top of the f64 range `min + 1.0` rounds straight back
+/// to `min`, and the note would then describe a range the widget does not
+/// have.
+#[test]
+fn an_unrepairable_slider_range_falls_back_honestly() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Slider","min":1e308,"max":1e308,"value":1e308}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    let note = rendered
+        .notes
+        .iter()
+        .find(|n| n.kind == NoteKind::InvalidValue && n.detail.contains("slider range"))
+        .unwrap_or_else(|| panic!("expected a range note, got: {:?}", rendered.notes));
+    assert!(
+        note.detail.contains("using 0..=1"),
+        "the note must describe the range the widget actually got, got: {}",
+        note.detail
+    );
+}

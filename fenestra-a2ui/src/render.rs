@@ -605,6 +605,19 @@ fn open_modal_trigger(
     trigger.disabled(false).on_click(composed)
 }
 
+/// Reports a catalog field that parsed and then went nowhere.
+///
+/// Each of these still renders something sensible, so they are approximate
+/// rather than broken — but staying quiet would tell the stream it got what
+/// it asked for, which is the one thing this crate promises not to do.
+fn note_unhonored(ctx: &Ctx, id: &str, field: &str, instead: &str) {
+    ctx.note(
+        id,
+        NoteKind::Unsupported,
+        format!("`{field}` is not honored yet; {instead}"),
+    );
+}
+
 /// `checks` and `validationRegexp` parse but gate nothing yet. Say so, so a
 /// stream never believes its validation is running when it is not — the
 /// difference between "this form is validated" and "this form looks
@@ -810,8 +823,16 @@ fn render_component(
             url,
             description,
             variant,
-            ..
+            fit,
         } => {
+            if fit.is_some() {
+                note_unhonored(
+                    ctx,
+                    id,
+                    "fit",
+                    "the placeholder uses the variant's own size",
+                );
+            }
             // Deterministic headless renders never fetch the network: a
             // labeled placeholder stands in, sized by the variant hint.
             let src = resolve_value(ctx, id, url, scope);
@@ -1029,8 +1050,14 @@ fn render_component(
                 None => {
                     let inner = render_by_id(ctx, child, scope, depth + 1);
                     let mut b = icon_button(inner);
-                    if let Some(m) = msg {
-                        b = b.on_click(m);
+                    match msg {
+                        Some(m) => b = b.on_click(m),
+                        // Same rule as the labeled branch — an inert
+                        // button must *look* inert, or the note above is a
+                        // lie and the user presses a live-looking control
+                        // that does nothing.
+                        None if !opens_a_modal => b = b.disabled(true),
+                        None => {}
                     }
                     b.into()
                 }
@@ -1105,16 +1132,30 @@ fn render_component(
             variant,
             options,
             value,
-            ..
-        } => render_choice_picker(
-            ctx,
-            id,
-            label.as_ref(),
-            variant.as_deref(),
-            options,
-            value,
-            scope,
-        ),
+            display_style,
+            filterable,
+        } => {
+            if display_style.is_some() {
+                note_unhonored(
+                    ctx,
+                    id,
+                    "displayStyle",
+                    "the picker renders as a dropdown (single) or a checkbox list (multiple)",
+                );
+            }
+            if filterable == &Some(true) {
+                note_unhonored(ctx, id, "filterable", "the option list has no filter box");
+            }
+            render_choice_picker(
+                ctx,
+                id,
+                label.as_ref(),
+                variant.as_deref(),
+                options,
+                value,
+                scope,
+            )
+        }
         Kind::Slider {
             label,
             min,
@@ -1125,18 +1166,25 @@ fn render_component(
             // `Slider::range` ignores anything that is not max > min, which
             // would silently leave the control on its default 0..=1 domain.
             // A stream that asked for an impossible range gets told.
-            let max = if max.is_finite() && min.is_finite() && *max > min {
-                *max
+            let usable = |lo: f64, hi: f64| lo.is_finite() && hi.is_finite() && hi > lo;
+            let (min, max) = if usable(min, *max) {
+                (min, *max)
             } else {
+                // The repair has to survive the same test that rejected the
+                // original: at the top of the f64 range `min + 1.0` rounds
+                // straight back to `min`, so falling back to 0..=1 is the
+                // only honest answer left.
+                let (lo, hi) = if usable(min, min + 1.0) {
+                    (min, min + 1.0)
+                } else {
+                    (0.0, 1.0)
+                };
                 ctx.note(
                     id,
                     NoteKind::InvalidValue,
-                    format!(
-                        "slider range {min}..={max} is empty or not finite; using {min}..={}",
-                        min + 1.0
-                    ),
+                    format!("slider range {min}..={max} is empty or not finite; using {lo}..={hi}"),
                 );
-                min + 1.0
+                (lo, hi)
             };
             let (current, path) = match value {
                 Dyn::Binding { path } => (
@@ -1177,7 +1225,25 @@ fn render_component(
                 None => s.into(),
             }
         }
-        Kind::DateTimeInput { value, label, .. } => {
+        Kind::DateTimeInput {
+            value,
+            label,
+            enable_date,
+            enable_time,
+            min,
+            max,
+        } => {
+            if enable_time == &Some(true) || enable_date == &Some(false) {
+                note_unhonored(
+                    ctx,
+                    id,
+                    "enableDate/enableTime",
+                    "the field accepts a whole ISO-8601 value either way",
+                );
+            }
+            if min.is_some() || max.is_some() {
+                note_unhonored(ctx, id, "min/max", "the field accepts any text");
+            }
             ctx.note(
                 id,
                 NoteKind::Unsupported,
@@ -1309,6 +1375,17 @@ fn action_msg(ctx: &Ctx, id: &str, action: &Action, scope: Option<&str>) -> A2ui
                 Some(v) => functions::display(v),
                 None => String::new(),
             };
+            if url.is_empty() {
+                // Handing the host an empty URL to open is the same
+                // invented-message failure as the synthetic events below:
+                // it never came from the stream.
+                ctx.note(
+                    id,
+                    NoteKind::UnresolvedBinding,
+                    "openUrl has no URL to open; the action does nothing",
+                );
+                return A2uiMsg::Ignored;
+            }
             A2uiMsg::OpenUrl(url)
         }
         Action::FunctionCall { function_call } => {
