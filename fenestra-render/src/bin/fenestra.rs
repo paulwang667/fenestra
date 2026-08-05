@@ -741,16 +741,10 @@ fn read_input(path: Option<&Path>) -> io::Result<String> {
     }
 }
 
-/// Parses a `WxH` size string.
+/// Parses a `WxH` size string, turning the shared parser's message into a
+/// CLI exit.
 fn parse_size(s: &str) -> Result<(u32, u32), ExitCode> {
-    if let Some((w, h)) = s.split_once(['x', 'X'])
-        && let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse())
-    {
-        return Ok((w, h));
-    }
-    Err(err(&format!(
-        "invalid size {s:?}; expected WxH like 800x600"
-    )))
+    fenestra_render::parse_size(Some(s)).map_err(|message| err(&message))
 }
 
 /// Parses one `--mask` value (`x,y,w,h`, logical px) into a `Bounds`.

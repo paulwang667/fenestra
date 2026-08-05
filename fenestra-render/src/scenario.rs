@@ -400,23 +400,8 @@ fn scenario_env(s: &Scenario) -> Result<(Theme, (u32, u32)), EngineError> {
         )));
     }
     let theme = resolve_theme(s.theme.as_ref()).map_err(EngineError::Scenario)?;
-    let size = parse_size(s.size.as_deref())?;
+    let size = crate::engine::parse_size(s.size.as_deref()).map_err(EngineError::Scenario)?;
     Ok((theme, size))
-}
-
-/// Parses a `WxH` size, defaulting to 800x600.
-fn parse_size(s: Option<&str>) -> Result<(u32, u32), EngineError> {
-    let Some(s) = s else {
-        return Ok((800, 600));
-    };
-    if let Some((w, h)) = s.split_once(['x', 'X'])
-        && let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse())
-    {
-        return Ok((w, h));
-    }
-    Err(EngineError::Scenario(format!(
-        "invalid size {s:?}; expected WxH like 800x600"
-    )))
 }
 
 /// Builds one check outcome.

@@ -12,7 +12,7 @@ pub mod theme_input;
 pub use described_app::DescribedApp;
 pub use engine::{
     EngineError, FilmOut, InteractOut, RenderOut, ScreenshotDiff, Step, diff_images, film,
-    interact, match_screenshot, render, validate_masks,
+    interact, match_screenshot, parse_size, render, validate_masks,
 };
 pub use preview_app::{PreviewApp, PreviewMsg};
 pub use scenario::{

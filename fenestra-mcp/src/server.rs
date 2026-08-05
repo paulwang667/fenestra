@@ -607,17 +607,7 @@ fn theme_of(value: Option<&Value>) -> Result<Theme, ErrorData> {
 
 /// Parses a `WxH` size, defaulting to 800x600.
 fn parse_size(s: Option<&str>) -> Result<(u32, u32), ErrorData> {
-    let Some(s) = s else {
-        return Ok((800, 600));
-    };
-    s.split_once(['x', 'X'])
-        .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)))
-        .ok_or_else(|| {
-            ErrorData::invalid_params(
-                format!("invalid size {s:?}; expected WxH like 800x600"),
-                None,
-            )
-        })
+    fenestra_render::parse_size(s).map_err(|message| ErrorData::invalid_params(message, None))
 }
 
 /// Runs blocking (GPU) work off the async runtime.
