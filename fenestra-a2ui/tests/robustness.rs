@@ -325,3 +325,115 @@ fn bound_string_choice_picker_selects() {
         "the bound string selection must show; tree:\n{tree}"
     );
 }
+
+// ── From the 2026-08-05 review: silent fidelity losses ────────────────────
+
+/// `Slider::range` ignores anything that is not `max > min`, so an empty or
+/// non-finite range used to leave the control quietly on its default
+/// 0..=1 domain — a slider showing the wrong scale with nothing to say
+/// about it.
+#[test]
+fn empty_slider_ranges_are_reported() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Slider","min":5,"max":5,"value":5}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::InvalidValue && n.detail.contains("slider range")),
+        "an unusable range must be reported, got: {:?}",
+        rendered.notes
+    );
+}
+
+/// A selection that names no existing option renders as *nothing selected*,
+/// which is indistinguishable from an empty picker unless it is reported.
+#[test]
+fn selections_matching_no_option_are_reported() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"ChoicePicker","variant":"mutuallyExclusive",
+             "value":["xl"],"options":[
+                {"label":"Small","value":"s"},
+                {"label":"Large","value":"l"}
+             ]}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::InvalidValue && n.detail.contains("matches none")),
+        "a selection outside the option set must be reported, got: {:?}",
+        rendered.notes
+    );
+}
+
+/// Remote assets render as placeholders because a deterministic render
+/// never touches the network. The crate documented that as noted; it was
+/// not. A surface of grey boxes must not report full fidelity.
+#[test]
+fn remote_assets_report_their_placeholders() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Image","url":"https://example.com/a.png"}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::NetworkAsset),
+        "a placeholder image must be reported, got: {:?}",
+        rendered.notes
+    );
+    assert!(
+        !fenestra_a2ui::any_broken(&rendered.notes),
+        "…but a placeholder is approximate, not broken: {:?}",
+        rendered.notes
+    );
+}
+
+/// `checks` and `validationRegexp` parse and then gate nothing. Silence
+/// there is the difference between a validated form and one that merely
+/// looks validated.
+#[test]
+fn unenforced_validation_is_reported() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"TextField","label":"Email","value":"",
+             "validationRegexp":"^.+@.+$"}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::Unsupported && n.detail.contains("validationRegexp")),
+        "an unenforced validation rule must be reported, got: {:?}",
+        rendered.notes
+    );
+}

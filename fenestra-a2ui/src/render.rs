@@ -25,6 +25,11 @@ const MAX_DEPTH: usize = 16;
 /// The most children one template expansion materializes.
 const MAX_TEMPLATE_CHILDREN: usize = 1000;
 
+/// Shown by a single-selection picker when the model has chosen nothing.
+/// The kit's `select` always renders *some* option, so without this the
+/// control would assert a choice the user never made.
+const UNSELECTED_LABEL: &str = "—";
+
 /// Messages the rendered surface emits; feed them to [`Surface::handle`].
 #[derive(Clone, Debug)]
 pub enum A2uiMsg {
@@ -1058,6 +1063,22 @@ fn render_component(
             value,
         } => {
             let min = min.unwrap_or(0.0);
+            // `Slider::range` ignores anything that is not max > min, which
+            // would silently leave the control on its default 0..=1 domain.
+            // A stream that asked for an impossible range gets told.
+            let max = if max.is_finite() && min.is_finite() && *max > min {
+                *max
+            } else {
+                ctx.note(
+                    id,
+                    NoteKind::InvalidValue,
+                    format!(
+                        "slider range {min}..={max} is empty or not finite; using {min}..={}",
+                        min + 1.0
+                    ),
+                );
+                min + 1.0
+            };
             let (current, path) = match value {
                 Dyn::Binding { path } => (
                     bound_f64(ctx, id, path, scope, min),
@@ -1078,7 +1099,7 @@ fn render_component(
                 }
             };
             #[expect(clippy::cast_possible_truncation, reason = "UI ranges fit in f32")]
-            let mut s = slider(current as f32).range(min as f32, *max as f32);
+            let mut s = slider(current as f32).range(min as f32, max as f32);
             s = match path {
                 Some(path) => s.on_change(move |v| A2uiMsg::SetNumber {
                     path: path.clone(),
@@ -1238,11 +1259,10 @@ fn action_msg(ctx: &Ctx, id: &str, action: &Action, scope: Option<&str>) -> A2ui
                     function_call.call
                 ),
             );
-            A2uiMsg::Event {
-                name: format!("unimplemented:{}", function_call.call),
-                context: Value::Null,
-                source_id: id.to_owned(),
-            }
+            // Emphatically *not* a synthetic Event: the agent never asked
+            // for an action called "unimplemented:openWidget", and sending
+            // one makes it defend against messages fenestra invented.
+            A2uiMsg::Ignored
         }
     }
 }
@@ -1310,7 +1330,14 @@ fn render_choice_picker(
                     );
                     Vec::new()
                 }),
-                None => Vec::new(),
+                None => {
+                    ctx.note(
+                        id,
+                        NoteKind::UnresolvedBinding,
+                        format!("selection binding {p:?} resolves to nothing"),
+                    );
+                    Vec::new()
+                }
             };
             (selected, Some(absolute(p, scope)))
         }
@@ -1328,6 +1355,15 @@ fn render_choice_picker(
         .filter(|(_, v)| selected_values.contains(v))
         .map(|(i, _)| i)
         .collect();
+    if selected_idx.is_empty() && !selected_values.is_empty() {
+        ctx.note(
+            id,
+            NoteKind::InvalidValue,
+            format!(
+                "selection {selected_values:?} matches none of this picker's options {values:?}"
+            ),
+        );
+    }
     // Selection changes write through the binding, or store a local edit
     // for literal-valued pickers — either way the picker stays live.
     let make_msg = {
@@ -1367,10 +1403,37 @@ fn render_choice_picker(
         }
         ms.into()
     } else {
-        let mut sel = select(selected_idx.first().copied().unwrap_or(0), labels);
+        // `select` has no empty state, so handing it index 0 would claim the
+        // user picked the first option when the model says nothing is
+        // chosen. A leading placeholder entry shows "nothing yet" honestly,
+        // and choosing it clears the selection.
+        let unselected = selected_idx.is_empty();
+        let (index, labels) = if unselected {
+            let mut with_placeholder = Vec::with_capacity(labels.len() + 1);
+            with_placeholder.push(UNSELECTED_LABEL.to_owned());
+            with_placeholder.extend(labels);
+            (0, with_placeholder)
+        } else {
+            (selected_idx[0], labels)
+        };
+        let mut sel = select(index, labels);
         {
             let values = values.clone();
-            sel = sel.on_change(move |i| make_msg(values.get(i).cloned().into_iter().collect()));
+            sel = sel.on_change(move |i| {
+                // The placeholder occupies index 0, shifting every real
+                // option along by one while it is present.
+                let picked = if unselected {
+                    i.checked_sub(1)
+                } else {
+                    Some(i)
+                };
+                make_msg(
+                    picked
+                        .and_then(|x| values.get(x).cloned())
+                        .into_iter()
+                        .collect(),
+                )
+            });
         }
         sel.into()
     };

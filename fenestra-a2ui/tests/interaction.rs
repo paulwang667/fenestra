@@ -203,3 +203,63 @@ fn list_renders_children_without_notes() {
         rendered.notes
     );
 }
+
+/// An action function this build does not implement must do *nothing*.
+/// It used to send the agent a synthetic `unimplemented:<fn>` event —
+/// a message no server asked for and every server would have to defend
+/// against.
+#[test]
+fn unimplemented_action_functions_send_nothing() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Button","child":"lbl",
+             "action":{"functionCall":{"call":"summonADragon","args":{}}}},
+            {"id":"lbl","component":"Text","text":"Go"}
+        ]}}
+    ]"#;
+    let mut h = harness(stream);
+    h.click(&by::role(Semantics::Button).name("Go"));
+    assert!(
+        h.app().signals.is_empty(),
+        "an unimplemented function must not reach the agent, got: {:?}",
+        h.app().signals
+    );
+    let notes = h.app().surface().render(&Theme::light()).notes;
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.kind == fenestra_a2ui::NoteKind::UnimplementedFunction),
+        "and it must say so, got: {notes:?}"
+    );
+}
+
+/// A mutually-exclusive picker with nothing selected must not render as
+/// though the first option had been chosen. It shows a placeholder, and
+/// picking a real option still writes that option's value.
+#[test]
+fn unselected_picker_does_not_claim_the_first_option() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"ChoicePicker","variant":"mutuallyExclusive",
+             "value":[],"options":[
+                {"label":"Small","value":"s"},
+                {"label":"Large","value":"l"}
+             ]}
+        ]}}
+    ]"#;
+    let h = harness(stream);
+    let picker = h.get(&by::role(Semantics::ComboBox));
+    assert_ne!(
+        picker.value.as_deref(),
+        Some("Small"),
+        "an empty selection must not display as the first option"
+    );
+    let rendered = h.app().surface().render(&Theme::light());
+    assert!(
+        rendered.notes.is_empty(),
+        "showing an empty selection honestly is not a fidelity loss, got: {:?}",
+        rendered.notes
+    );
+}
