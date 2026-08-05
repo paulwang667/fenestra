@@ -9,4 +9,6 @@ CLAUDE.local.md
 /gallery/
 /looks/
 /liquid_glass/
-\n# mdBook build output\nbook/book/\n
+
+# mdBook build output.
+/book/book/

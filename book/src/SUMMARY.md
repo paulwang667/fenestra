@@ -12,6 +12,7 @@
 - [Overlays](overlays.md)
 - [Images and icons](images-icons.md)
 - [Commands and async](commands.md)
+- [A2UI: agent-authored surfaces](a2ui.md)
 - [Ship a tool in ten minutes](ship-a-tool.md)
 - [Multiple windows](windows.md)
 - [Embedding in your wgpu app](embedding.md)

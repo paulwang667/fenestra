@@ -112,36 +112,42 @@ motion), which makes pixel-exact golden tests practical — fenestra's own
 widget kit is tested this way, on CI, with no GPU display attached.
 
 The same pipeline backs a JSON authoring format, `fenestra/1`, for agents and
-tools that don't want to compile Rust: describe a UI — now including an
-`image` node and fourteen widgets that used to be code-only (data tables,
-trees, popovers, command palettes, the OKLCH color picker, and more) — and
-[`fenestra-describe`](fenestra-describe) parses it into the identical
-`Element` tree the builders above produce. `fenestra render` renders it,
-`fenestra preview <file>` opens a live-reload window that re-renders on
-every save, and the [`fenestra-mcp`](fenestra-mcp) server exposes the whole
-loop — render, query, interact, verify — as fourteen MCP tools (including `render_a2ui`). Motion is
-watchable too, not just single frames: `Harness::film` (or `fenestra film`,
-or the MCP `film_ui` tool) captures a sequence with real motion turned on and
-composes it into one captioned filmstrip.
+tools that don't want to compile Rust. You describe a UI in JSON;
+[`fenestra-describe`](fenestra-describe) parses it into the same `Element`
+tree the builders produce. The format covers the whole kit — data tables,
+trees, popovers, command palettes, the OKLCH color picker, images, charts,
+markdown.
 
-**The verification envelope, stated plainly.** A headless render is a
-deliberate *subset* of the live window — that subset is what makes it
-deterministic — so trust it accordingly. It uses the embedded fonts (Inter
-covers Latin; the real monospace, CJK, emoji, and RTL faces come from the OS
-and so appear only in a real window), forces reduced motion, and is
-referenced against one GPU backend (macOS/Metal; Linux/lavapipe within a
-wider tolerance). The full Liquid-Glass optics — backdrop blur, edge lensing,
-adaptive vibrancy — render only in the headless/golden path; the live
-single-pass window shows the translucent tint plus the specular rim and
-sheen. Scale is no longer pinned: `render_element_scaled` runs the same two-pass
-pipeline at any device scale, so retina-only regressions (hairlines, blur
-radii) are verifiable headlessly too. So headless is the right oracle for
-layout, semantics, color, and the large majority of pixels — but confirm
-non-Latin/monospace text and full glass in a window. On the web target,
-copy-out reaches the system clipboard (paste-in from other apps stays
-in-app), the glass story equals the native live window (tint-only, like
-every single-pass swapchain), and AccessKit awaits an upstream web
-adapter — the precise ledger is in ARCHITECTURE.md.
+From there: `fenestra render` writes a PNG, `fenestra preview <file>` opens a
+window that re-renders on every save, and the
+[`fenestra-mcp`](fenestra-mcp) server hands an agent the whole loop —
+render, query, interact, verify — as fourteen MCP tools, `render_a2ui` among
+them. Motion is watchable too, not just single frames: `Harness::film` (also
+`fenestra film`, also the MCP `film_ui` tool) captures a sequence with real
+motion turned on and composes it into one captioned filmstrip.
+
+**What a headless render does and doesn't cover.** It is a deliberate
+*subset* of the live window — that subset is what makes it deterministic —
+so trust it accordingly.
+
+Text uses the embedded fonts, so Latin is exact; the real monospace, CJK,
+emoji, and RTL faces come from the OS and only appear in a real window.
+Motion is forced to reduced. Pixels are referenced against macOS/Metal, with
+Linux/lavapipe inside a wider tolerance. Scale is not pinned:
+`render_element_scaled` runs the same two-pass pipeline at any device scale,
+so retina-only regressions (hairlines, blur radii) are verifiable headlessly
+too.
+
+Two things look different outside that path. The full Liquid-Glass optics —
+backdrop blur, edge lensing, adaptive vibrancy — render in the
+headless/golden path only; a live single-pass window shows the translucent
+tint plus the specular rim and sheen. And on the web, copy-out reaches the
+system clipboard while paste-in from other apps stays in-app, glass matches
+the native live window, and AccessKit is waiting on an upstream web adapter.
+
+So headless is the right oracle for layout, semantics, color, and the large
+majority of pixels. Confirm non-Latin and monospace text, and full glass, in
+a real window. ARCHITECTURE.md keeps the precise ledger.
 
 **Working with an AI agent?** [AGENTS.md](AGENTS.md) is the manual for the
 build → render → look → verify loop (and [llms.txt](llms.txt) for
@@ -208,8 +214,9 @@ demos render the same way: a broadcast lower-third
 | `fenestra-markdown` | CommonMark rendered as native `fenestra` elements |
 | `fenestra-looks` | Six ready-made design languages (product, editorial, terminal, console, warm-editorial, playful), applied in one call |
 | `fenestra-describe` | Parses `fenestra/1` JSON into the same `Element` tree the builders produce |
+| `fenestra-a2ui` | A native Rust renderer for [A2UI](https://a2ui.org) v0.9 — the open Agent-to-UI standard |
 | `fenestra-render` | The `fenestra` CLI: render, preview, film, query, verify, lint — from the command line |
-| `fenestra-mcp` | MCP server exposing render, query, interact, and verify as thirteen tools to AI agents |
+| `fenestra-mcp` | MCP server exposing render, query, interact, and verify as fourteen tools to AI agents |
 | `fenestra-motion` | Frame-pure motion graphics: timelines, headless frame/video rendering, temporal lints, the `motion` CLI |
 | `fenestra-anim` | Keyframe animation math — easing, springs, an exact rational timebase |
 
@@ -257,22 +264,30 @@ via `.rounded_full()`).
 
 ## Status
 
-fenestra is at 0.40.0, built and recorded decision-by-decision in
-[ARCHITECTURE.md](ARCHITECTURE.md). Shipped: the full interactive widget kit
-in light and dark themes; six ready-made design languages
-(`fenestra-looks`); a frosted-glass material system; reference third-party
-widget crates for charts and markdown; the `fenestra/1` JSON format
-authoring the entire kit, parsed by `fenestra-describe` and rendered/verified
-by the `fenestra` CLI and the `fenestra-mcp` server's thirteen tools; a
-live-reload `fenestra preview` window for authoring; and `fenestra-motion`
-for frame-pure motion graphics with its own temporal-lint verification and
-filmstrip capture. Every change goes through the same gate before it merges —
-`cargo fmt --check`, `clippy -D warnings`, the full test suite, and a
-headless golden-PNG comparison on macOS/Metal and Linux/lavapipe — plus a
-weekly `cargo audit` sweep in CI. Open work is tracked as a ranked list in
-ARCHITECTURE.md's "Deferred" notes; the two largest remaining gaps are a JSON
-authoring bridge for charts/markdown (they're Rust-only today) and hi-DPI
-headless rendering (every headless build site currently pins scale 1.0).
+fenestra is at 0.40.0. [ARCHITECTURE.md](ARCHITECTURE.md) records how it got
+there, decision by decision.
+
+Shipped: the interactive widget kit in light and dark themes; six ready-made
+design languages (`fenestra-looks`); a frosted-glass material system; charts
+and markdown as reference third-party widget crates; the `fenestra/1` JSON
+format authoring the entire kit, parsed by `fenestra-describe` and rendered
+and verified by the `fenestra` CLI and the fourteen `fenestra-mcp` tools; an
+A2UI v0.9 renderer (`fenestra-a2ui`); an effect layer (`Cmd`/`Sub`) with a
+deterministic test harness; declarative native menus on macOS; hi-DPI
+headless rendering at any scale; a live-reload `fenestra preview` window; and
+`fenestra-motion` for frame-pure motion graphics with temporal lints and
+filmstrip capture.
+
+Every change clears the same gate before it merges: `cargo fmt --check`,
+`clippy -D warnings`, the full test suite, and a headless golden-PNG
+comparison on macOS/Metal and Linux/lavapipe — plus `cargo audit` and
+`cargo deny` on every push and once a week.
+
+Open work is a ranked list in ARCHITECTURE.md's "Deferred" notes. The gaps
+worth knowing about up front: A2UI `checks` parse but don't gate yet, its
+`DateTimeInput` is an ISO text field rather than a calendar, obscured text
+fields render unmasked, and AccessKit on the web is waiting on an upstream
+adapter.
 
 ## License
 
