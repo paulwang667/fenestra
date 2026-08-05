@@ -1007,14 +1007,24 @@ fn dispatch_effect_unit<Msg: 'static, S>(
             worker_proxy.send(unit.block());
         }
     }));
-    if let Err(e) = spawned
-        && let Some(unit) = slot.lock().ok().and_then(|mut g| g.take())
-    {
-        eprintln!(
-            "fenestra: could not spawn an effect worker thread ({e}); running the effect on the \
-             UI thread instead — the window will not repaint until it finishes"
-        );
-        proxy.send(unit.block());
+    let Err(e) = spawned else { return };
+    // Report the spawn failure on its own, before trying to recover from
+    // it. Sharing one condition with the recovery meant that failing to
+    // reclaim the unit also swallowed the message about failing to spawn —
+    // a silent loss inside the function written to prevent silent losses.
+    let recovered = slot.lock().ok().and_then(|mut g| g.take());
+    match recovered {
+        Some(unit) => {
+            eprintln!(
+                "fenestra: could not spawn an effect worker thread ({e}); running the effect on \
+                 the UI thread instead — the window will not repaint until it finishes"
+            );
+            proxy.send(unit.block());
+        }
+        None => eprintln!(
+            "fenestra: could not spawn an effect worker thread ({e}), and the effect could not be \
+             reclaimed to run here either — its message will never arrive"
+        ),
     }
 }
 
@@ -1055,8 +1065,16 @@ pub(crate) fn reconcile_subs_into<Msg: 'static>(
                     proxy.send(sub.tick());
                 }
             });
-        if spawned.is_err() {
-            eprintln!("fenestra: failed to spawn subscription timer {key:?}");
+        if let Err(e) = spawned {
+            // Deliberately not inserted: leaving the key absent is what
+            // makes the next reconcile try again. Say so, because a timer
+            // is often the only thing that would *cause* another
+            // reconcile, so "later" can mean "never" — unlike a one-shot
+            // effect, there is nothing to run inline as a fallback.
+            eprintln!(
+                "fenestra: could not spawn the timer for subscription {key:?} ({e}); it is not \
+                 running, and will only be retried if something else updates the app"
+            );
             continue;
         }
         subs.insert(key, handle);
@@ -2070,6 +2088,26 @@ mod tests {
             *got.lock().expect("lock"),
             vec![7],
             "the effect must be delivered even when no worker thread is available"
+        );
+    }
+
+    /// The unit lives in the shared slot rather than inside the closure,
+    /// so a spawner that swallows the closure entirely before failing
+    /// still leaves the effect reclaimable. However the spawn fails, the
+    /// message arrives.
+    #[test]
+    fn a_spawner_that_eats_the_closure_still_delivers() {
+        let got: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&got);
+        let proxy = Proxy::new(move |m: u32| sink.lock().expect("lock").push(m));
+        dispatch_effect_unit(CmdUnit::Task(Box::new(|| 7)), &proxy, |work| {
+            drop(work);
+            Err(std::io::Error::other("no threads today"))
+        });
+        assert_eq!(
+            *got.lock().expect("lock"),
+            vec![7],
+            "the effect is reclaimed from the slot, not from the dropped closure"
         );
     }
 
