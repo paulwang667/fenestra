@@ -5,7 +5,7 @@ description = "Model Context Protocol server exposing the fenestra GUI framework
 # publishing to the MCP Registry needs a visible-markdown ownership marker in
 # the published README, which is a metadata-only change that shouldn't force
 # a workspace-wide bump.
-version = "0.40.1"
+version = "0.41.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.41.0 — 2026-08-06
+
+Three adversarial review rounds over the A2UI renderer, and what they turned
+up: notes an agent can branch on instead of a bag of strings, a dozen places
+that rendered something plausible in silence, and a handful of controls that
+destroyed the data they were bound to. Plus the release machinery itself —
+the publish order is derived now, because the hand-written one had already
+gone stale in a way that would have failed a tag halfway through.
 
 ### A2UI: typed fidelity notes, and the bugs two reviews found
 
@@ -181,8 +188,36 @@ further (all regression-tested):
   ARCHITECTURE.md: it is a second paint backend today, not a fallback
   flag.)
 
+- **A golden PNG for every component in the A2UI basic catalog.** The two
+  composite conformance goldens were a coarse net — a component that appears
+  in neither could lose its border, its disabled tint or its label spacing
+  with every test still green. All 18 entries are now pinned individually, so
+  a kit styling regression names the component it broke, and a drift guard
+  fails if a catalog entry ever arrives without one. The fixtures are checked
+  for their own soundness first: a typo would otherwise deserialize to
+  `Kind::Unknown`, render a plausible placeholder, and pin *that* as the
+  golden for a component that never rendered at all.
+
 ### Fixed
 
+- **The release would have failed halfway through a tag.** `fenestra-render`
+  depends on `fenestra-a2ui`, but the workflow's hand-written publish list
+  never gained the new crate, and it ordered `fenestra-markdown` *after* the
+  crate that reaches it through a2ui. Since crates.io publishes one at a time
+  and nothing can be unpublished, either mistake strands a release mid-flight.
+  The order is derived from `cargo metadata` now
+  (`.github/scripts/publish-order.py`, dev- and build-dependencies included
+  because `cargo publish` resolves them during verification), CI fails the PR
+  if it is uncoverable or cyclic, and `fenestra-anim` joins the loop so a
+  change to it can no longer publish a `fenestra-core` that depends on a
+  stale copy. `fenestra-a2ui` and the facade's `fenestra-looks`
+  dev-dependency stopped restating their versions by hand and go through the
+  workspace table — the second one mattered immediately: `^0.40.0` against a
+  0.41.0 crate is not an error to cargo, it is an instruction to resolve the
+  published copy instead of the one in the checkout, so the examples would
+  have built against a `fenestra-looks` that is not in this tree. The script
+  now refuses to print an order at all while any internal requirement names a
+  version its target no longer has.
 - The web runner now installs a real clipboard: in-app copy/paste works
   and copy-out reaches the system clipboard via `navigator.clipboard`
   (paste-in from other apps remains the documented gap — see

@@ -3805,3 +3805,49 @@ Decisions of record:
   thread silently. Surface notes deduplicate and cap. These join the
   existing depth and template caps as one habit: an unbounded loop driven by
   input is a hang waiting to happen.
+
+## The publish order is derived, not remembered (2026-08-06)
+
+Cutting 0.41.0 turned up two release-blocking mistakes in machinery nothing
+was checking, both of the same shape: a version or an ordering written down
+by hand in one place and left behind when the tree moved.
+
+`fenestra-render` depends on `fenestra-a2ui`, but `release.yml` carried its
+publish list literally and never gained the new crate — and it ordered
+`fenestra-markdown` *after* the crate that reaches it through a2ui. crates.io
+publishes one crate at a time and nothing can be unpublished, so either
+mistake strands a tag halfway: some crates live at the new version, the rest
+never make it, and the only way forward is another version.
+
+Separately, the facade's dev-dependency on `fenestra-looks` restated
+`version = "0.40.0"` instead of going through the workspace table. A bump to
+0.41.0 makes that requirement unsatisfiable by the crate sitting next to it,
+and cargo's answer is not an error — it quietly resolves the *published*
+0.40.0 from crates.io, so the examples build against a copy of the crate that
+is not in the checkout.
+
+Decisions of record:
+
+- **`.github/scripts/publish-order.py` derives the order** from `cargo
+  metadata`, topologically, with dev- and build-dependencies as edges
+  (`cargo publish` verifies by building, and that build resolves them from
+  the registry — which is why shell must precede kit). Both the publish loop
+  and the attestation packaging loop read it, so they cannot disagree.
+- **The same script refuses to print an order** when any in-workspace
+  dependency names a version its target no longer has. The release fails
+  before publishing anything, rather than after publishing three crates.
+- **CI runs it on every PR** and diffs its output against the workspace's
+  publishable members, so a crate added without a home fails on the branch
+  rather than on the tag.
+- **`fenestra-anim` joined the loop.** It is versioned independently and is
+  usually already published, which the idempotent skip handles — but leaving
+  it out meant a change to anim could ship a `fenestra-core` depending on a
+  version of it that was never published.
+- **`fenestra-mcp` rejoins the workspace number at 0.41.0.** It stays a
+  literal (the 2026-07-10 decoupling still stands — it may need a
+  metadata-only bump again), but 0.40.1 is already on crates.io, so leaving
+  it there would have made the release skip it silently and strand an MCP
+  server built against 0.41.0 crates. Its `server.json` deliberately still
+  says 0.40.1: that file describes a *published `.mcpb` artifact* with a
+  recorded SHA-256, and bumping it without building a new bundle would point
+  the MCP Registry at a release URL that does not exist.

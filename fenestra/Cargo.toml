@@ -25,8 +25,11 @@ image.workspace = true
 serde_json.workspace = true
 # Examples only (the `looks` showcase); a dev-dependency, so it is not a
 # runtime dependency of the published facade. Versioned (not path-only) so it
-# isn't a wildcard dependency.
-fenestra-looks = { path = "../fenestra-looks", version = "0.40.0" }
+# isn't a wildcard dependency — through the workspace table, because a
+# version restated here silently stops matching the crate it points at on the
+# next bump, and cargo answers that by quietly resolving the *published* copy
+# instead of the one in this checkout.
+fenestra-looks.workspace = true
 
 # Native-only example deps. Kept out of wasm so the web_demo wasm build never
 # tries to compile the native-only render/shell stack.
