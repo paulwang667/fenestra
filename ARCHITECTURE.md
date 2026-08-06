@@ -3851,3 +3851,56 @@ Decisions of record:
   says 0.40.1: that file describes a *published `.mcpb` artifact* with a
   recorded SHA-256, and bumping it without building a new bundle would point
   the MCP Registry at a release URL that does not exist.
+
+## Validation gates, and the two ways a short stream did unbounded harm (2026-08-06)
+
+A fourth adversarial review of the A2UI renderer, and the largest gap it had
+left: `checks` and `validationRegexp` parsed and gated nothing. A stream that
+said "accept the terms before submitting" got a submit button that submitted.
+
+Decisions of record:
+
+- **The catalog's boolean functions are the point of `DynamicBoolean`.** The
+  basic catalog defines eight — `required`, `regex`, `length`, `numeric`,
+  `email`, `and`, `or`, `not` — and the renderer implemented none, treating a
+  function call in a boolean slot as a type error worth a note and a `false`.
+  That had it backwards: the slot exists for those calls. Fixing `checks`
+  fixed `CheckBox.value` with it.
+- **The leaf predicates defer to `fenestra_kit::validation`.** The kit's
+  engine already mirrors the web's Constraint Validation API, which is what
+  an agent authoring for a browser client expects — including "every check
+  but `required` passes on an empty value". Re-deriving email and length
+  semantics next to it would have been a second copy to drift. The kit
+  deliberately has no `regex` dependency, so pattern matching is the one
+  predicate that lives in a2ui; `regex` was already a direct dependency of
+  `fenestra-describe`, so this is a workspace edge, not a new crate.
+- **An unevaluable rule fails open, loudly.** A pattern needing ECMAScript
+  lookaround does not compile in Rust's linear-time engine, and a newer
+  catalog's function is not implemented here. Failing *closed* would show a
+  message the user cannot satisfy on a control they cannot use; failing open
+  with a **broken** note keeps the surface usable and still fires
+  `any_broken`. The rule is: never block a user over a rule nobody can
+  satisfy, never let the caller believe a rule is enforced when it is not.
+- **`required` reads an unticked box as nothing provided.** `false` is not
+  "empty" by a literal reading, but `required` on a CheckBox is how a stream
+  says "you must accept the terms", and the other reading leaves that
+  inexpressible.
+- **`checks` cannot fail to parse.** `Component` degrades any parse error to
+  a `Kind::Unknown` placeholder for the whole component, so one mistyped rule
+  used to erase the control it was meant to guard. `Checks` accepts any JSON:
+  unrecognized entries become `Check::Malformed`, reported individually while
+  their well-formed siblings still gate.
+- **Caps bound products, not just factors.** `MAX_TEMPLATE_CHILDREN` bounded
+  one expansion; nested templates over the same absolute path multiplied to
+  1.65 million elements in 3.4 seconds from half a kilobyte of JSON, without
+  repeating a component id and so without tripping cycle detection. The new
+  render-wide budget is the general form of the lesson: when a cap is
+  per-occurrence and occurrences nest, the cap does not bound the work.
+- **Only a Modal that renders can arm its trigger.** The pre-scanned trigger
+  set answered a question one step off from the real one, and a Modal nothing
+  referenced armed a button no Modal would wrap — leaving it enabled, silent,
+  and dead. The arming now happens inside the traversal, where "is this
+  actually on screen" is not a guess.
+- **Notes need somewhere to go when no surface owns them.** A stream-level
+  message naming no live surface had no home and was dropped with `Ok(())`.
+  `Client::notes()` is that home.

@@ -218,9 +218,10 @@ pub enum Kind {
         /// What clicking does.
         #[serde(default)]
         action: Option<Action>,
-        /// Validation gates (parsed; enforcement is a noted gap).
+        /// Client-side validation rules; a failing one blocks the
+        /// control and shows its message.
         #[serde(default)]
-        checks: Option<Value>,
+        checks: Checks,
     },
     /// A labeled text input, two-way bound when `value` is a path.
     TextField {
@@ -235,9 +236,10 @@ pub enum Kind {
         /// Client-side validation regexp (parsed; enforcement noted).
         #[serde(default, rename = "validationRegexp")]
         validation_regexp: Option<String>,
-        /// Validation gates (parsed; enforcement is a noted gap).
+        /// Client-side validation rules; a failing one blocks the
+        /// control and shows its message.
         #[serde(default)]
-        checks: Option<Value>,
+        checks: Checks,
     },
     /// A labeled checkbox, two-way bound when `value` is a path.
     CheckBox {
@@ -245,9 +247,10 @@ pub enum Kind {
         label: Dyn<String>,
         /// The checked state (dynamic; a path makes it two-way).
         value: Dyn<bool>,
-        /// Validation gates (parsed; enforcement is a noted gap).
+        /// Client-side validation rules; a failing one blocks the
+        /// control and shows its message.
         #[serde(default)]
-        checks: Option<Value>,
+        checks: Checks,
     },
     /// A single- or multi-select over labeled options.
     ChoicePicker {
@@ -268,9 +271,10 @@ pub enum Kind {
         /// Whether the picker offers filtering.
         #[serde(default)]
         filterable: Option<bool>,
-        /// Validation gates (parsed; enforcement is a noted gap).
+        /// Client-side validation rules; a failing one blocks the
+        /// control and shows its message.
         #[serde(default)]
-        checks: Option<Value>,
+        checks: Checks,
     },
     /// A numeric slider, two-way bound when `value` is a path.
     Slider {
@@ -284,15 +288,17 @@ pub enum Kind {
         max: f64,
         /// The value (dynamic; a path makes it two-way).
         value: Dyn<f64>,
-        /// Validation gates (parsed; enforcement is a noted gap).
+        /// Client-side validation rules; a failing one blocks the
+        /// control and shows its message.
         #[serde(default)]
-        checks: Option<Value>,
+        checks: Checks,
     },
     /// A date and/or time input, two-way bound when `value` is a path.
     DateTimeInput {
-        /// Validation gates (parsed; enforcement is a noted gap).
+        /// Client-side validation rules; a failing one blocks the
+        /// control and shows its message.
         #[serde(default)]
-        checks: Option<Value>,
+        checks: Checks,
         /// The value (dynamic ISO-8601 string).
         value: Dyn<String>,
         /// Whether the date part is editable.
@@ -324,6 +330,63 @@ pub struct TabItem {
     pub title: Dyn<String>,
     /// The tab's content component id.
     pub child: String,
+}
+
+/// A component's client-side validation rules.
+///
+/// Deliberately impossible to fail parsing. `checks` sits on six of the
+/// catalog's components, and [`Component`]'s fallback turns *any* parse
+/// error into a `Kind::Unknown` placeholder for the whole component — so a
+/// single mistyped rule would erase the control it was meant to guard.
+/// Anything unrecognized becomes a [`Check::Malformed`] the renderer
+/// reports, while its well-formed siblings still gate.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(from = "Value")]
+pub struct Checks(
+    /// The rules, in the order the stream gave them.
+    pub Vec<Check>,
+);
+
+impl From<Value> for Checks {
+    fn from(v: Value) -> Self {
+        match v {
+            Value::Null => Self(Vec::new()),
+            Value::Array(items) => Self(items.into_iter().map(Check::from).collect()),
+            // `checks` is an array in the catalog. One value where a list
+            // belongs is still an intent to validate, so report it as one
+            // bad rule rather than pretending there were none.
+            other => Self(vec![Check::Malformed(other)]),
+        }
+    }
+}
+
+/// One entry of a [`Checks`] list.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(from = "Value")]
+pub enum Check {
+    /// A rule this build understands.
+    Rule(CheckRule),
+    /// An entry that did not parse as a rule, kept verbatim so the note
+    /// can quote what actually arrived.
+    Malformed(Value),
+}
+
+impl From<Value> for Check {
+    fn from(v: Value) -> Self {
+        serde_json::from_value::<CheckRule>(v.clone()).map_or(Self::Malformed(v), Self::Rule)
+    }
+}
+
+/// One validation rule: a condition that must hold, and what to say when
+/// it does not.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CheckRule {
+    /// Must evaluate true for the value to be valid. A literal, a data
+    /// binding, or one of the catalog's boolean functions (`required`,
+    /// `regex`, `length`, `numeric`, `email`, `and`, `or`, `not`).
+    pub condition: Dyn<bool>,
+    /// Shown beneath the control while [`Self::condition`] is false.
+    pub message: String,
 }
 
 /// One [`Kind::ChoicePicker`] option.

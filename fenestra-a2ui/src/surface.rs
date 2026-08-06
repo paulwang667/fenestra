@@ -232,6 +232,7 @@ fn pointer_write(root: &mut Value, pointer: &str, value: Option<Value>) -> bool 
 #[derive(Debug, Default)]
 pub struct Client {
     surfaces: BTreeMap<String, Surface>,
+    notes: Vec<Note>,
 }
 
 impl Client {
@@ -239,6 +240,20 @@ impl Client {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Notes about the stream itself, rather than about one surface.
+    ///
+    /// A message this build does not understand is recorded on the surface
+    /// it names — but a message with no `surfaceId`, or one naming a
+    /// surface that has not been created yet or has already been deleted,
+    /// belongs to no surface and used to vanish with `Ok(())` and no trace
+    /// anywhere. In a crate whose contract is "silence means fidelity",
+    /// that silence was a lie. Check these alongside each surface's own
+    /// [`Surface::notes`].
+    #[must_use]
+    pub fn notes(&self) -> &[Note] {
+        &self.notes
     }
 
     /// Applies one message.
@@ -285,7 +300,8 @@ impl Client {
         // note on the surface they name — never a hard failure.
         if !msg.extra.is_empty() {
             for (kind, payload) in &msg.extra {
-                if let Some(id) = payload.get("surfaceId").and_then(Value::as_str)
+                let named = payload.get("surfaceId").and_then(Value::as_str);
+                if let Some(id) = named
                     && let Some(surface) = self.surfaces.get_mut(id)
                 {
                     surface.push_note(Note::new(
@@ -293,6 +309,25 @@ impl Client {
                         NoteKind::UnknownMessage,
                         "unknown message type skipped (newer protocol revision?)",
                     ));
+                } else {
+                    // No surface to pin it to — before or after that
+                    // surface's lifetime, or no `surfaceId` at all. It
+                    // still happened, so it still gets recorded.
+                    let whose = match named {
+                        Some(id) => format!("for unknown surface {id:?}"),
+                        None => "naming no surface".to_owned(),
+                    };
+                    crate::note::push_bounded(
+                        &mut self.notes,
+                        Note::new(
+                            kind,
+                            NoteKind::UnknownMessage,
+                            format!(
+                                "unknown message type {kind:?} {whose} skipped \
+                                 (newer protocol revision?)"
+                            ),
+                        ),
+                    );
                 }
             }
             return Ok(());

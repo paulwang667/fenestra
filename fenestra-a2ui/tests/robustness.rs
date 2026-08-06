@@ -423,11 +423,13 @@ fn remote_assets_report_their_placeholders() {
     }
 }
 
-/// `checks` and `validationRegexp` parse and then gate nothing. Silence
-/// there is the difference between a validated form and one that merely
-/// looks validated.
+/// This used to assert the opposite: that `validationRegexp` records
+/// "parsed but is not enforced yet". It is enforced now, so the thing worth
+/// pinning is that it enforces *and* stays quiet — a note here would mean
+/// the crate is still claiming a gap it has closed. See `tests/validation.rs`
+/// for the behavior itself.
 #[test]
-fn unenforced_validation_is_reported() {
+fn an_enforced_validation_rule_is_not_reported_as_a_gap() {
     let stream = r#"[
         {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
         {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
@@ -440,11 +442,8 @@ fn unenforced_validation_is_reported() {
         .expect("surface")
         .render(&Theme::light());
     assert!(
-        rendered
-            .notes
-            .iter()
-            .any(|n| n.kind == NoteKind::Unsupported && n.detail.contains("validationRegexp")),
-        "an unenforced validation rule must be reported, got: {:?}",
+        rendered.notes.is_empty(),
+        "an enforced rule is not a fidelity gap, got: {:?}",
         rendered.notes
     );
 }
@@ -844,20 +843,29 @@ fn unknown_enum_strings_are_reported() {
     }
 }
 
-/// `checks` was modeled only on Button, TextField and CheckBox, so on any
-/// other input serde's unknown-field tolerance swallowed it whole — a
+/// `checks` was once modeled only on Button, TextField and CheckBox, so on
+/// any other input serde's unknown-field tolerance swallowed it whole — a
 /// stream that asked for a required selection was told its surface mapped
-/// with full fidelity.
+/// with full fidelity. The field exists on all six now and is enforced, so
+/// what this pins is that every one of them still *sees* it: a rule these
+/// components carry must either gate or say why it cannot, never vanish.
 #[test]
-fn unenforced_checks_are_reported_on_every_input() {
+fn every_input_sees_its_checks() {
     let cases = [
         r#"{"id":"root","component":"ChoicePicker","variant":"mutuallyExclusive","value":[],
-            "options":[],"checks":[{"required":true}]}"#,
-        r#"{"id":"root","component":"Slider","max":1.0,"value":0.0,"checks":[{"required":true}]}"#,
-        r#"{"id":"root","component":"DateTimeInput","value":"2026-01-01",
-            "checks":[{"required":true}]}"#,
+            "options":[],"checks":[CHECK]}"#,
+        r#"{"id":"root","component":"Slider","max":1.0,"value":0.0,"checks":[CHECK]}"#,
+        r#"{"id":"root","component":"DateTimeInput","value":"2026-01-01","checks":[CHECK]}"#,
+        r#"{"id":"root","component":"TextField","label":"L","value":"","checks":[CHECK]}"#,
+        r#"{"id":"root","component":"CheckBox","label":"L","value":false,"checks":[CHECK]}"#,
     ];
-    for component in cases {
+    for template in cases {
+        // A rule naming a function no build implements: the one condition
+        // guaranteed to produce a note on every component that reads it.
+        let component = template.replace(
+            "CHECK",
+            r#"{"condition":{"call":"noSuchPredicate","args":{}},"message":"m"}"#,
+        );
         let stream = format!(
             r#"[
             {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
@@ -869,8 +877,11 @@ fn unenforced_checks_are_reported_on_every_input() {
             .expect("surface")
             .render(&Theme::light());
         assert!(
-            rendered.notes.iter().any(|n| n.detail.contains("`checks`")),
-            "checks must be reported, got: {:?}",
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::UnimplementedFunction),
+            "this component never evaluated its checks: {component}\ngot: {:?}",
             rendered.notes
         );
     }

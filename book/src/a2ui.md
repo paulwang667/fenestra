@@ -147,9 +147,20 @@ assert!(!fenestra_a2ui::any_broken(&rendered.notes), "{:?}", rendered.notes);
 
 The approximate cases, all of which record a note: remote images, video,
 and audio render as labeled placeholders (a deterministic render never
-touches the network), `DateTimeInput` is an ISO text field rather than a
-calendar, and `checks` and `validationRegexp` parse but do not gate
-anything yet.
+touches the network), and `DateTimeInput` is an ISO text field rather than
+a calendar.
+
+Validation is not on that list any more. A control's `checks` run on every
+render, the first failing rule shows its message with the control marked
+invalid, and a Button whose checks fail carries no action — so a form that
+says "accept the terms first" now means it. The catalog's eight boolean
+functions (`required`, `regex`, `length`, `numeric`, `email`, `and`, `or`,
+`not`) and TextField's `validationRegexp` all work. Where a rule can't be
+evaluated here — Rust's regex engine has no lookaround or backreferences,
+so a pattern written for a browser may not compile — the check does not
+gate and records a `broken` note, which is the honest split: the user is
+not blocked by a rule nobody can satisfy, and the caller is told the rule
+isn't being enforced.
 
 Two gaps count as `broken`, not approximate, because the surface cannot do
 what the stream described: an `obscured` field renders unmasked — the
