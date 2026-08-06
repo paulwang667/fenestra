@@ -6,6 +6,41 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+/// Every component name in the v0.9 basic catalog.
+///
+/// A [`Kind::Unknown`] whose `component` field appears here is a *known*
+/// component that failed to parse — a missing or mistyped field — which is
+/// an authoring bug in the stream. A name that does not appear is simply
+/// outside this catalog build, which is the protocol working as intended.
+/// The renderer reports those two as different note kinds, because an agent
+/// fixes them differently.
+///
+/// This list has to stay in step with [`Kind`]'s serde tags — a variant
+/// added there and forgotten here would have its malformed instances
+/// reported as *unknown*, which is the opposite of the truth. The test
+/// `every_catalog_name_parses` walks this list through the parser to keep
+/// the two honest.
+pub const BASIC_CATALOG: &[&str] = &[
+    "Text",
+    "Image",
+    "Icon",
+    "Video",
+    "AudioPlayer",
+    "Row",
+    "Column",
+    "List",
+    "Card",
+    "Tabs",
+    "Modal",
+    "Divider",
+    "Button",
+    "TextField",
+    "CheckBox",
+    "ChoicePicker",
+    "Slider",
+    "DateTimeInput",
+];
+
 /// One component definition: identity, layout weight, and the typed body.
 ///
 /// Deserialization never fails a whole message over one bad component: a
@@ -233,6 +268,9 @@ pub enum Kind {
         /// Whether the picker offers filtering.
         #[serde(default)]
         filterable: Option<bool>,
+        /// Validation gates (parsed; enforcement is a noted gap).
+        #[serde(default)]
+        checks: Option<Value>,
     },
     /// A numeric slider, two-way bound when `value` is a path.
     Slider {
@@ -246,9 +284,15 @@ pub enum Kind {
         max: f64,
         /// The value (dynamic; a path makes it two-way).
         value: Dyn<f64>,
+        /// Validation gates (parsed; enforcement is a noted gap).
+        #[serde(default)]
+        checks: Option<Value>,
     },
     /// A date and/or time input, two-way bound when `value` is a path.
     DateTimeInput {
+        /// Validation gates (parsed; enforcement is a noted gap).
+        #[serde(default)]
+        checks: Option<Value>,
         /// The value (dynamic ISO-8601 string).
         value: Dyn<String>,
         /// Whether the date part is editable.
@@ -373,4 +417,118 @@ pub struct EventSpec {
     /// against the data model first.
     #[serde(default)]
     pub context: Option<Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BASIC_CATALOG, Component, Kind};
+
+    /// Every name in [`BASIC_CATALOG`] must parse into a real variant.
+    ///
+    /// The list is written by hand next to an enum whose tags serde
+    /// generates, so nothing but a test stops the two drifting. A name that
+    /// no longer parses — renamed variant, typo — would silently turn
+    /// malformed instances of that component into "unknown component",
+    /// which is the note an agent reads as "give up, this catalog does not
+    /// have it".
+    /// The other direction: every [`Kind`] variant must appear in
+    /// [`BASIC_CATALOG`].
+    ///
+    /// `every_catalog_name_parses` walks the list into the enum, which
+    /// catches a renamed or mistyped *name* but not a new *variant* — add
+    /// `Kind::Chart` without touching the list and that test stays green
+    /// while malformed Charts get reported as "not part of the basic
+    /// catalog", the exact inversion of the truth. Matching exhaustively on
+    /// the pattern costs nothing at runtime and makes the omission a
+    /// compile error.
+    /// The catalog name for a parsed variant, or `None` for the
+    /// degraded-parse fallback. Exhaustive on purpose — see
+    /// `every_kind_variant_is_in_the_catalog`.
+    fn name_of(kind: &Kind) -> Option<&'static str> {
+        match kind {
+            Kind::Text { .. } => Some("Text"),
+            Kind::Image { .. } => Some("Image"),
+            Kind::Icon { .. } => Some("Icon"),
+            Kind::Video { .. } => Some("Video"),
+            Kind::AudioPlayer { .. } => Some("AudioPlayer"),
+            Kind::Row { .. } => Some("Row"),
+            Kind::Column { .. } => Some("Column"),
+            Kind::List { .. } => Some("List"),
+            Kind::Card { .. } => Some("Card"),
+            Kind::Tabs { .. } => Some("Tabs"),
+            Kind::Modal { .. } => Some("Modal"),
+            Kind::Divider { .. } => Some("Divider"),
+            Kind::Button { .. } => Some("Button"),
+            Kind::TextField { .. } => Some("TextField"),
+            Kind::CheckBox { .. } => Some("CheckBox"),
+            Kind::ChoicePicker { .. } => Some("ChoicePicker"),
+            Kind::Slider { .. } => Some("Slider"),
+            Kind::DateTimeInput { .. } => Some("DateTimeInput"),
+            // Not a catalog component: the degraded-parse fallback.
+            Kind::Unknown(_) => None,
+        }
+    }
+
+    #[test]
+    fn every_kind_variant_is_in_the_catalog() {
+        assert_eq!(name_of(&Kind::Unknown(serde_json::json!({}))), None);
+    }
+
+    #[test]
+    fn every_catalog_name_parses() {
+        // Minimal bodies: enough required fields for each component to
+        // deserialize, so a Kind::Unknown here means the *name* is wrong.
+        let bodies: &[(&str, serde_json::Value)] = &[
+            ("Text", serde_json::json!({"text": "x"})),
+            ("Image", serde_json::json!({"url": "u"})),
+            ("Icon", serde_json::json!({"name": "check"})),
+            ("Video", serde_json::json!({"url": "u"})),
+            ("AudioPlayer", serde_json::json!({"url": "u"})),
+            ("Row", serde_json::json!({})),
+            ("Column", serde_json::json!({})),
+            ("List", serde_json::json!({})),
+            ("Card", serde_json::json!({"child": "c"})),
+            ("Tabs", serde_json::json!({})),
+            ("Modal", serde_json::json!({"trigger": "t", "content": "c"})),
+            ("Divider", serde_json::json!({})),
+            ("Button", serde_json::json!({"child": "c"})),
+            ("TextField", serde_json::json!({"label": "l"})),
+            (
+                "CheckBox",
+                serde_json::json!({"label": "l", "value": false}),
+            ),
+            (
+                "ChoicePicker",
+                serde_json::json!({"value": [], "options": []}),
+            ),
+            ("Slider", serde_json::json!({"max": 1.0, "value": 0.0})),
+            ("DateTimeInput", serde_json::json!({"value": "2026-01-01"})),
+        ];
+        assert_eq!(
+            bodies.len(),
+            BASIC_CATALOG.len(),
+            "every catalog name needs a body here, and vice versa"
+        );
+        for (name, body) in bodies {
+            assert!(
+                BASIC_CATALOG.contains(name),
+                "{name} is missing from BASIC_CATALOG"
+            );
+            let mut doc = body.clone();
+            let obj = doc.as_object_mut().expect("body is an object");
+            obj.insert("id".into(), serde_json::json!("x"));
+            obj.insert("component".into(), serde_json::json!(name));
+            let parsed: Component = serde_json::from_value(doc).expect("component deserializes");
+            assert!(
+                !matches!(parsed.kind, Kind::Unknown(_)),
+                "{name} is in BASIC_CATALOG but does not parse into a Kind variant — the list and \
+                 the enum have drifted"
+            );
+            assert_eq!(
+                name_of(&parsed.kind),
+                Some(*name),
+                "{name} parses into a variant that BASIC_CATALOG names differently"
+            );
+        }
+    }
 }

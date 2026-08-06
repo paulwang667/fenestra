@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::catalog::{Action, ChildList, ChoiceOption, Component, Dyn, FunctionCall, Kind};
 use crate::functions;
+use crate::note::{Note, NoteKind};
 use crate::surface::Surface;
 
 /// The deepest component chain the renderer follows. True cycles are
@@ -23,6 +24,28 @@ const MAX_DEPTH: usize = 16;
 
 /// The most children one template expansion materializes.
 const MAX_TEMPLATE_CHILDREN: usize = 1000;
+
+/// Identity for one piece of client-side UI state: which component, and —
+/// when it was rendered inside a template expansion — which item.
+///
+/// A component id alone is not enough. `children_of` renders the same
+/// component once per item of a data-model list, so keying a Modal's open
+/// flag or an input's local edit by id would make every expansion share one
+/// value: opening row three's dialog opens all of them at once, and typing
+/// into one row's field types into every row's.
+fn ui_key(id: &str, scope: Option<&str>) -> String {
+    match scope {
+        // U+0001 cannot appear in a JSON Pointer or a sane component id, so
+        // no id can be mistaken for a scope boundary.
+        Some(scope) => format!("{scope}\u{1}{id}"),
+        None => id.to_owned(),
+    }
+}
+
+/// Shown by a single-selection picker when the model has chosen nothing.
+/// The kit's `select` always renders *some* option, so without this the
+/// control would assert a choice the user never made.
+const UNSELECTED_LABEL: &str = "—";
 
 /// Messages the rendered surface emits; feed them to [`Surface::handle`].
 #[derive(Clone, Debug)]
@@ -57,8 +80,9 @@ pub enum A2uiMsg {
     },
     /// Store a local edit for a literal-valued input (no binding path).
     LocalEdit {
-        /// The input component id.
-        id: String,
+        /// The input's instance key — its component id, plus which
+        /// template item it belongs to when it came from one.
+        key: String,
         /// The edited value.
         value: Value,
     },
@@ -80,21 +104,36 @@ pub enum A2uiMsg {
     ),
     /// Open a Modal component.
     OpenModal(
-        /// The Modal component id.
+        /// The Modal's instance key.
         String,
     ),
     /// Close a Modal component.
     CloseModal(
-        /// The Modal component id.
+        /// The Modal's instance key.
         String,
     ),
     /// Switch a Tabs component to a tab.
     SelectTab {
-        /// The Tabs component id.
-        id: String,
+        /// The Tabs component's instance key.
+        key: String,
         /// The new active index.
         index: usize,
     },
+    /// Several messages from one interaction, applied in order.
+    ///
+    /// One click can legitimately mean two things — a Modal trigger that
+    /// is also a Button opens the dialog *and* reports its own action to
+    /// the agent. fenestra dispatches a press to exactly one element, so
+    /// the composition happens here rather than by stacking handlers.
+    Many(
+        /// The messages, in the order they apply.
+        Vec<A2uiMsg>,
+    ),
+    /// Nothing happens, on purpose — an interaction the catalog defines
+    /// but this build cannot carry out. Keeps a control clickable (and
+    /// honestly noted) instead of inventing an event the agent never
+    /// asked for.
+    Ignored,
 }
 
 /// What [`Surface::handle`] hands back to the host: the effects the host
@@ -127,21 +166,47 @@ pub struct Rendered {
     pub element: Element<A2uiMsg>,
     /// Render-time notes (unknown components, unresolved calls,
     /// truncations). Empty means every component mapped cleanly.
-    pub notes: Vec<String>,
+    pub notes: Vec<Note>,
 }
 
 struct Ctx<'a> {
     surface: &'a Surface,
     theme: &'a Theme,
-    notes: std::cell::RefCell<Vec<String>>,
+    /// Component ids that some Modal names as its trigger.
+    ///
+    /// A Button with no `action` renders disabled, which is honest for an
+    /// inert button and wrong for a modal trigger — that one opens a
+    /// dialog. The kit bakes disabled *styling* into the widget when it is
+    /// built (a themed label color, and opacity on solid variants), so
+    /// clearing `Element::disabled` afterwards restores hit-testing while
+    /// leaving the button painted dead. The decision has to be made before
+    /// the button is built, which means knowing here.
+    modal_triggers: std::collections::HashSet<String>,
+    notes: std::cell::RefCell<Vec<Note>>,
     /// The id chain currently being rendered: exact cycle detection
     /// (`a → b → a` trips on re-entry, not after burning stack).
     path_stack: std::cell::RefCell<Vec<String>>,
 }
 
 impl Ctx<'_> {
-    fn note(&self, id: &str, msg: impl std::fmt::Display) {
-        self.notes.borrow_mut().push(format!("{id}: {msg}"));
+    fn note(&self, id: &str, kind: NoteKind, detail: impl std::fmt::Display) {
+        crate::note::push_bounded(
+            &mut self.notes.borrow_mut(),
+            Note::new(id, kind, detail.to_string()),
+        );
+    }
+
+    /// Reports an enum string the catalog does not define.
+    ///
+    /// Every one of these falls back to a sensible default, which is
+    /// exactly why they need saying: a typo renders as a perfectly
+    /// plausible control, and the stream is told it got what it asked for.
+    fn note_unknown_variant(&self, id: &str, field: &str, got: &str, used: &str) {
+        self.note(
+            id,
+            NoteKind::InvalidValue,
+            format!("`{field}` value {got:?} is not in the catalog; rendered as {used}"),
+        );
     }
 }
 
@@ -154,13 +219,25 @@ impl Surface {
         let ctx = Ctx {
             surface: self,
             theme,
+            modal_triggers: self
+                .components
+                .values()
+                .filter_map(|c| match &c.kind {
+                    Kind::Modal { trigger, .. } => Some(trigger.clone()),
+                    _ => None,
+                })
+                .collect(),
             notes: std::cell::RefCell::new(Vec::new()),
             path_stack: std::cell::RefCell::new(Vec::new()),
         };
         let element = if self.components.contains_key("root") {
             render_by_id(&ctx, "root", None, 0)
         } else {
-            ctx.note("root", "no root component yet (stream incomplete?)");
+            ctx.note(
+                "root",
+                NoteKind::MissingComponent,
+                "no root component yet (stream incomplete?)",
+            );
             col()
         };
         Rendered {
@@ -170,23 +247,42 @@ impl Surface {
     }
 
     /// Applies one rendered-surface message: binding writes and UI state
-    /// mutate the surface; agent-facing effects come back as a signal.
-    pub fn handle(&mut self, msg: A2uiMsg) -> Option<A2uiSignal> {
+    /// mutate the surface; agent-facing effects come back as signals.
+    ///
+    /// Returns every signal the message produced, in order — usually none
+    /// or one, but an [`A2uiMsg::Many`] (a Modal trigger that is also a
+    /// Button) can produce several.
+    #[must_use = "these are the effects the host must carry out; dropping them silently discards \
+                  every agent-bound event the interaction produced"]
+    pub fn handle(&mut self, msg: A2uiMsg) -> Vec<A2uiSignal> {
         match msg {
+            A2uiMsg::Many(msgs) => msgs.into_iter().flat_map(|m| self.handle(m)).collect(),
+            A2uiMsg::Ignored => Vec::new(),
             A2uiMsg::SetString { path, value } => {
                 self.write(&path, Some(Value::String(value)));
-                None
+                Vec::new()
             }
             A2uiMsg::SetBool { path, value } => {
                 self.write(&path, Some(Value::Bool(value)));
-                None
+                Vec::new()
             }
             A2uiMsg::SetNumber { path, value } => {
-                self.write(
-                    &path,
-                    serde_json::Number::from_f64(value).map(Value::Number),
-                );
-                None
+                match serde_json::Number::from_f64(value) {
+                    Some(n) => self.write(&path, Some(Value::Number(n))),
+                    // `write(_, None)` means "remove this key". An infinite
+                    // or NaN value is not a request to delete the binding —
+                    // it is a value JSON cannot carry, and deleting on its
+                    // behalf destroys the data the control was bound to.
+                    None => self.push_note(Note::new(
+                        &path,
+                        NoteKind::RejectedWrite,
+                        format!(
+                            "{value} cannot be represented in JSON; the model keeps its previous \
+                             value"
+                        ),
+                    )),
+                }
+                Vec::new()
             }
             A2uiMsg::SetList { path, values } => {
                 self.write(
@@ -195,34 +291,34 @@ impl Surface {
                         values.into_iter().map(Value::String).collect(),
                     )),
                 );
-                None
+                Vec::new()
             }
-            A2uiMsg::LocalEdit { id, value } => {
-                self.ui.local_edits.insert(id, value);
-                None
+            A2uiMsg::LocalEdit { key, value } => {
+                self.ui.local_edits.insert(key, value);
+                Vec::new()
             }
             A2uiMsg::Event {
                 name,
                 context,
                 source_id,
-            } => Some(A2uiSignal::Event {
+            } => vec![A2uiSignal::Event {
                 name,
                 context,
                 data_model: self.send_data_model.then(|| self.data.clone()),
                 source_id,
-            }),
-            A2uiMsg::OpenUrl(url) => Some(A2uiSignal::OpenUrl(url)),
+            }],
+            A2uiMsg::OpenUrl(url) => vec![A2uiSignal::OpenUrl(url)],
             A2uiMsg::OpenModal(id) => {
                 self.ui.open_modals.insert(id);
-                None
+                Vec::new()
             }
             A2uiMsg::CloseModal(id) => {
                 self.ui.open_modals.remove(&id);
-                None
+                Vec::new()
             }
-            A2uiMsg::SelectTab { id, index } => {
-                self.ui.active_tabs.insert(id, index);
-                None
+            A2uiMsg::SelectTab { key, index } => {
+                self.ui.active_tabs.insert(key, index);
+                Vec::new()
             }
         }
     }
@@ -277,7 +373,11 @@ fn resolve_value(ctx: &Ctx, id: &str, d: &Dyn<String>, scope: Option<&str>) -> S
         Dyn::Binding { path } => match lookup(ctx.surface, path, scope) {
             Some(v) => functions::display(v),
             None => {
-                ctx.note(id, format!("binding {path:?} resolves to nothing"));
+                ctx.note(
+                    id,
+                    NoteKind::UnresolvedBinding,
+                    format!("binding {path:?} resolves to nothing"),
+                );
                 String::new()
             }
         },
@@ -292,7 +392,11 @@ fn bound_bool(ctx: &Ctx, id: &str, path: &str, scope: Option<&str>) -> bool {
     match lookup(ctx.surface, path, scope) {
         None => false,
         Some(v) => v.as_bool().unwrap_or_else(|| {
-            ctx.note(id, format!("binding {path:?} is not a boolean; false"));
+            ctx.note(
+                id,
+                NoteKind::BindingType,
+                format!("binding {path:?} is not a boolean; false"),
+            );
             false
         }),
     }
@@ -303,7 +407,11 @@ fn bound_f64(ctx: &Ctx, id: &str, path: &str, scope: Option<&str>, fallback: f64
     match lookup(ctx.surface, path, scope) {
         None => fallback,
         Some(v) => v.as_f64().unwrap_or_else(|| {
-            ctx.note(id, format!("binding {path:?} is not a number; {fallback}"));
+            ctx.note(
+                id,
+                NoteKind::BindingType,
+                format!("binding {path:?} is not a number; {fallback}"),
+            );
             fallback
         }),
     }
@@ -316,6 +424,7 @@ fn resolve_bool(ctx: &Ctx, id: &str, d: &Dyn<bool>, scope: Option<&str>) -> bool
         Dyn::Call(call) => {
             ctx.note(
                 id,
+                NoteKind::BindingType,
                 format!("function {:?} in a boolean slot; false", call.call),
             );
             false
@@ -328,7 +437,11 @@ fn resolve_f64(ctx: &Ctx, id: &str, d: &Dyn<f64>, scope: Option<&str>) -> f64 {
         Dyn::Lit(n) => *n,
         Dyn::Binding { path } => bound_f64(ctx, id, path, scope, 0.0),
         Dyn::Call(call) => {
-            ctx.note(id, format!("function {:?} in a numeric slot; 0", call.call));
+            ctx.note(
+                id,
+                NoteKind::BindingType,
+                format!("function {:?} in a numeric slot; 0", call.call),
+            );
             0.0
         }
     }
@@ -387,7 +500,11 @@ fn resolve_call(ctx: &Ctx, id: &str, call: &FunctionCall, scope: Option<&str>) -
                 .unwrap_or("yyyy-MM-dd");
             let raw = functions::display(&v);
             functions::format_date(&raw, pattern).unwrap_or_else(|| {
-                ctx.note(id, format!("formatDate could not parse {raw:?}"));
+                ctx.note(
+                    id,
+                    NoteKind::InvalidValue,
+                    format!("formatDate could not parse {raw:?}"),
+                );
                 raw
             })
         }
@@ -398,7 +515,11 @@ fn resolve_call(ctx: &Ctx, id: &str, call: &FunctionCall, scope: Option<&str>) -
             functions::pluralize(v.as_f64().unwrap_or(0.0), one, other)
         }
         other => {
-            ctx.note(id, format!("function {other:?} is not implemented"));
+            ctx.note(
+                id,
+                NoteKind::UnimplementedFunction,
+                format!("function {other:?} is not implemented"),
+            );
             format!("[{other}]")
         }
     }
@@ -441,12 +562,17 @@ fn interpolate(ctx: &Ctx, id: &str, template: &str, scope: Option<&str>) -> Stri
         if expr.contains('(') {
             ctx.note(
                 id,
+                NoteKind::UnimplementedFunction,
                 format!("nested call in formatString template ({expr:?}) is not implemented"),
             );
         } else {
             match lookup(ctx.surface, expr, scope) {
                 Some(v) => out.push_str(&functions::display(v)),
-                None => ctx.note(id, format!("template path {expr:?} resolves to nothing")),
+                None => ctx.note(
+                    id,
+                    NoteKind::UnresolvedBinding,
+                    format!("template path {expr:?} resolves to nothing"),
+                ),
             }
         }
         rest = &after[end + 1..];
@@ -456,6 +582,95 @@ fn interpolate(ctx: &Ctx, id: &str, template: &str, scope: Option<&str>) -> Stri
 }
 
 // ── Component rendering ───────────────────────────────────────────────────
+
+/// Whether any descendant (not the element itself) would take a press.
+///
+/// Asks [`Element::takes_press`] — the dispatcher's own question — rather
+/// than checking for a click handler. A focusable descendant with no
+/// `on_click` (a TextField, a select) still wins the press and still
+/// swallows the modal-open, so a narrower check would miss exactly the
+/// cases worth warning about.
+fn has_pressable_descendant(el: &Element<A2uiMsg>) -> bool {
+    el.children_ref()
+        .iter()
+        .any(|c| c.takes_press() || has_pressable_descendant(c))
+}
+
+/// Turns a Modal's rendered trigger into something that actually opens the
+/// modal.
+///
+/// The obvious version — wrap the trigger in a clickable `div` — cannot
+/// work, because fenestra hands a press to the *deepest* enabled
+/// interactive node and stops: a Button trigger wins the press and the
+/// wrapper never hears it. So the open message is composed onto the
+/// trigger element itself, keeping whatever the trigger already did
+/// ([`A2uiMsg::Many`]), and clearing the disabled flag an actionless
+/// Button would otherwise carry — a modal trigger is never a dead control.
+///
+/// A trigger that *contains* its own interactive child is the one shape
+/// this cannot rescue; that child still wins the press. Say so rather than
+/// leave a dialog that opens only when you miss the button inside it.
+fn open_modal_trigger(
+    ctx: &Ctx,
+    id: &str,
+    key: &str,
+    trigger: Element<A2uiMsg>,
+) -> Element<A2uiMsg> {
+    if has_pressable_descendant(&trigger) {
+        ctx.note(
+            id,
+            NoteKind::Unreachable,
+            "the modal trigger contains its own interactive child, which takes the press; \
+             clicking that child will not open the dialog",
+        );
+    }
+    let open = A2uiMsg::OpenModal(key.to_owned());
+    let composed = match trigger.click_msg().cloned() {
+        Some(existing) => A2uiMsg::Many(vec![existing, open]),
+        None => open,
+    };
+    trigger.disabled(false).on_click(composed)
+}
+
+/// Reports a catalog field that parsed and then went nowhere.
+///
+/// Each of these still renders something sensible, so they are approximate
+/// rather than broken — but staying quiet would tell the stream it got what
+/// it asked for, which is the one thing this crate promises not to do.
+fn note_unhonored(ctx: &Ctx, id: &str, field: &str, instead: &str) {
+    ctx.note(
+        id,
+        NoteKind::Unsupported,
+        format!("`{field}` is not honored yet; {instead}"),
+    );
+}
+
+/// `checks` and `validationRegexp` parse but gate nothing yet. Say so, so a
+/// stream never believes its validation is running when it is not — the
+/// difference between "this form is validated" and "this form looks
+/// validated" is exactly what a fidelity note is for.
+fn note_unenforced_validation(ctx: &Ctx, id: &str, checks: Option<&Value>, regexp: Option<&str>) {
+    if checks.is_some_and(|c| !c.is_null()) {
+        ctx.note(
+            id,
+            NoteKind::Unsupported,
+            "`checks` parsed but does not gate this control yet",
+        );
+    }
+    if regexp.is_some() {
+        ctx.note(
+            id,
+            NoteKind::Unsupported,
+            "`validationRegexp` parsed but is not enforced yet",
+        );
+    }
+}
+
+/// A short quoted form for note prose, so a page-long data URI cannot bury
+/// the rest of the note.
+fn quoted(s: &str) -> String {
+    format!("{:?}", truncate_label(s, 60))
+}
 
 /// Trims a placeholder label to a displayable length (char-safe).
 fn truncate_label(s: &str, max: usize) -> String {
@@ -481,19 +696,25 @@ fn render_by_id(ctx: &Ctx, id: &str, scope: Option<&str>, depth: usize) -> Eleme
     if ctx.path_stack.borrow().iter().any(|p| p == id) {
         ctx.note(
             id,
-            "reference cycle detected (depth cap); rendering a placeholder",
+            NoteKind::ReferenceCycle,
+            "reference cycle detected; rendering a placeholder",
         );
         return placeholder(format!("[cycle: {id}]"), ctx.theme);
     }
     if depth > MAX_DEPTH {
         ctx.note(
             id,
+            NoteKind::DepthCap,
             "component chain exceeds the depth cap; rendering a placeholder",
         );
         return placeholder(format!("[deep: {id}]"), ctx.theme);
     }
     let Some(component) = ctx.surface.components.get(id) else {
-        ctx.note(id, "referenced component is not defined");
+        ctx.note(
+            id,
+            NoteKind::MissingComponent,
+            "referenced component is not defined",
+        );
         return placeholder(format!("[missing: {id}]"), ctx.theme);
     };
     ctx.path_stack.borrow_mut().push(id.to_owned());
@@ -520,12 +741,17 @@ fn children_of(
             .collect(),
         ChildList::Template { component_id, path } => {
             let Some(Value::Array(items)) = lookup(ctx.surface, path, scope) else {
-                ctx.note(id, format!("template path {path:?} is not a list"));
+                ctx.note(
+                    id,
+                    NoteKind::BindingType,
+                    format!("template path {path:?} is not a list"),
+                );
                 return Vec::new();
             };
             if items.len() > MAX_TEMPLATE_CHILDREN {
                 ctx.note(
                     id,
+                    NoteKind::Truncated,
                     format!(
                         "{} template items exceed the cap ({MAX_TEMPLATE_CHILDREN}); extra items dropped",
                         items.len()
@@ -558,12 +784,20 @@ fn apply_flex(
         Some("end") => el.justify_end(),
         Some("spaceBetween") => el.justify_between(),
         Some("spaceAround" | "spaceEvenly") => {
-            ctx.note(id, "spaceAround/spaceEvenly approximate as spaceBetween");
+            ctx.note(
+                id,
+                NoteKind::Approximated,
+                "spaceAround/spaceEvenly approximate as spaceBetween",
+            );
             el.justify_between()
         }
         Some("stretch") | Some("start") | None => el,
         Some(other) => {
-            ctx.note(id, format!("unknown justify {other:?}"));
+            ctx.note(
+                id,
+                NoteKind::InvalidValue,
+                format!("unknown justify {other:?}"),
+            );
             el
         }
     };
@@ -573,7 +807,11 @@ fn apply_flex(
         Some("start") => el.items_start(),
         Some("stretch") | None => el,
         Some(other) => {
-            ctx.note(id, format!("unknown align {other:?}"));
+            ctx.note(
+                id,
+                NoteKind::InvalidValue,
+                format!("unknown align {other:?}"),
+            );
             el
         }
     }
@@ -605,29 +843,53 @@ fn render_component(
                 Some("h5") => text(resolved).size_px(14.0).weight(Weight::Medium),
                 Some("caption") => text(resolved).size(TextSize::Xs).color(theme.text_muted),
                 // Body text supports simple Markdown per the catalog docs.
-                _ => fenestra_markdown::markdown(resolved).into(),
+                other => {
+                    if let Some(v) = other {
+                        ctx.note_unknown_variant(id, "variant", v, "body text");
+                    }
+                    fenestra_markdown::markdown(resolved).into()
+                }
             }
         }
         Kind::Image {
             url,
             description,
             variant,
-            ..
+            fit,
         } => {
+            if fit.is_some() {
+                note_unhonored(
+                    ctx,
+                    id,
+                    "fit",
+                    "the placeholder uses the variant's own size",
+                );
+            }
             // Deterministic headless renders never fetch the network: a
             // labeled placeholder stands in, sized by the variant hint.
+            let src = resolve_value(ctx, id, url, scope);
             let desc = description
                 .as_ref()
                 .map(|d| resolve_value(ctx, id, d, scope))
                 .filter(|d| !d.is_empty())
-                .unwrap_or_else(|| resolve_value(ctx, id, url, scope));
+                .unwrap_or_else(|| src.clone());
+            ctx.note(
+                id,
+                NoteKind::NetworkAsset,
+                format!("image {} renders as a labeled placeholder", quoted(&src)),
+            );
             let (w, h) = match variant.as_deref() {
                 Some("icon") => (24.0, 24.0),
                 Some("avatar") => (40.0, 40.0),
                 Some("smallFeature") => (80.0, 80.0),
                 Some("largeFeature") => (240.0, 180.0),
                 Some("header") => (320.0, 120.0),
-                _ => (160.0, 120.0),
+                other => {
+                    if let Some(v) = other {
+                        ctx.note_unknown_variant(id, "variant", v, "the default 160x120 box");
+                    }
+                    (160.0, 120.0)
+                }
             };
             let short = truncate_label(&desc, 36);
             let el = div()
@@ -657,6 +919,7 @@ fn render_component(
                 None => {
                     ctx.note(
                         id,
+                        NoteKind::UnknownIcon,
                         format!("icon {name:?} is not in the vendored Lucide set"),
                     );
                     placeholder(format!("[icon: {name}]"), theme)
@@ -665,14 +928,25 @@ fn render_component(
         }
         Kind::Video { url } => {
             let url = resolve_value(ctx, id, url, scope);
+            ctx.note(
+                id,
+                NoteKind::NetworkAsset,
+                format!("video {} renders as a labeled placeholder", quoted(&url)),
+            );
             placeholder(format!("[video: {}]", truncate_label(&url, 48)), theme)
         }
         Kind::AudioPlayer { url, description } => {
+            let src = resolve_value(ctx, id, url, scope);
             let label = description
                 .as_ref()
                 .map(|d| resolve_value(ctx, id, d, scope))
                 .filter(|d| !d.is_empty())
-                .unwrap_or_else(|| resolve_value(ctx, id, url, scope));
+                .unwrap_or_else(|| src.clone());
+            ctx.note(
+                id,
+                NoteKind::NetworkAsset,
+                format!("audio {} renders as a labeled placeholder", quoted(&src)),
+            );
             placeholder(format!("[audio: {}]", truncate_label(&label, 48)), theme)
         }
         Kind::Row {
@@ -709,6 +983,11 @@ fn render_component(
             align,
         } => {
             let kids = children_of(ctx, id, children, scope, depth);
+            if let Some(d) = direction.as_deref()
+                && !matches!(d, "horizontal" | "vertical")
+            {
+                ctx.note_unknown_variant(id, "direction", d, "a vertical list");
+            }
             let horizontal = direction.as_deref() == Some("horizontal");
             let el = if horizontal {
                 row().gap(8.0).children(kids).scroll_x()
@@ -725,21 +1004,19 @@ fn render_component(
                 .iter()
                 .map(|t| resolve_value(ctx, id, &t.title, scope))
                 .collect();
+            let tabs_key = ui_key(id, scope);
             let active = ctx
                 .surface
                 .ui
                 .active_tabs
-                .get(id)
+                .get(&tabs_key)
                 .copied()
                 .unwrap_or(0)
                 .min(items.len().saturating_sub(1));
-            let strip = {
-                let tabs_id = id.to_owned();
-                tabs(active, labels, move |index| A2uiMsg::SelectTab {
-                    id: tabs_id.clone(),
-                    index,
-                })
-            };
+            let strip = tabs(active, labels, move |index| A2uiMsg::SelectTab {
+                key: tabs_key.clone(),
+                index,
+            });
             let mut container = col().gap(8.0).child(strip);
             if let Some(tab) = items.get(active) {
                 container = container.child(render_by_id(ctx, &tab.child, scope, depth + 1));
@@ -747,35 +1024,36 @@ fn render_component(
             container
         }
         Kind::Modal { trigger, content } => {
-            let open = ctx.surface.ui.open_modals.contains(id);
+            let modal_key = ui_key(id, scope);
+            let open = ctx.surface.ui.open_modals.contains(&modal_key);
             let trigger_el = render_by_id(ctx, trigger, scope, depth + 1);
-            let wrapped = div()
-                .child(trigger_el)
-                .on_click(A2uiMsg::OpenModal(id.to_owned()));
+            let opener = open_modal_trigger(ctx, id, &modal_key, trigger_el);
             if open {
                 col().children((
-                    wrapped,
+                    opener,
                     modal("")
                         .child(render_by_id(ctx, content, scope, depth + 1))
-                        .on_close(A2uiMsg::CloseModal(id.to_owned())),
+                        .on_close(A2uiMsg::CloseModal(modal_key.clone())),
                 ))
             } else {
-                wrapped
+                opener
             }
         }
-        Kind::Divider { axis } => {
-            if axis.as_deref() == Some("vertical") {
-                div().w(1.0).h_full().bg(theme.border_subtle)
-            } else {
+        Kind::Divider { axis } => match axis.as_deref() {
+            Some("vertical") => div().w(1.0).h_full().bg(theme.border_subtle),
+            Some("horizontal") | None => divider(),
+            Some(other) => {
+                ctx.note_unknown_variant(id, "axis", other, "a horizontal rule");
                 divider()
             }
-        }
+        },
         Kind::Button {
             child,
             variant,
             action,
-            ..
+            checks,
         } => {
+            note_unenforced_validation(ctx, id, checks.as_ref(), None);
             // Extract a text label when the child is a Text component; any
             // other child renders inside an icon button.
             let child_component = ctx.surface.components.get(child);
@@ -788,22 +1066,51 @@ fn render_component(
             let kit_variant = match variant.as_deref() {
                 Some("primary") => ButtonVariant::Primary,
                 Some("borderless") => ButtonVariant::Ghost,
-                _ => ButtonVariant::Secondary,
+                other => {
+                    if let Some(v) = other {
+                        ctx.note_unknown_variant(id, "variant", v, "a secondary button");
+                    }
+                    ButtonVariant::Secondary
+                }
             };
             let msg = action.as_ref().map(|a| action_msg(ctx, id, a, scope));
+            let opens_a_modal = ctx.modal_triggers.contains(id);
+            // An action that resolved to nothing leaves the button just as
+            // dead as no action at all — `Ignored` is what an unimplemented
+            // function or an unresolvable openUrl becomes. Both answers to
+            // "can this button do anything?" have to be the same, or the
+            // note below is true of one path and a lie about the other.
+            let inert = !opens_a_modal && matches!(msg, None | Some(A2uiMsg::Ignored));
+            if inert {
+                ctx.note(
+                    id,
+                    NoteKind::Unreachable,
+                    "button has no action it can carry out and opens nothing; rendered as a \
+                     disabled control",
+                );
+            }
             match label {
                 Some(label) => {
                     let mut b = button(label).variant(kit_variant);
-                    match msg {
-                        Some(m) => b = b.on_click(m),
-                        None => b = b.disabled(true),
+                    // A modal trigger has something to do even without an
+                    // action of its own, so it must not be *built* disabled
+                    // — see `Ctx::modal_triggers`.
+                    if inert {
+                        b = b.disabled(true);
+                    } else if let Some(m) = msg {
+                        b = b.on_click(m);
                     }
                     b.into()
                 }
                 None => {
                     let inner = render_by_id(ctx, child, scope, depth + 1);
                     let mut b = icon_button(inner);
-                    if let Some(m) = msg {
+                    // Same rule as the labeled branch — an inert button
+                    // must *look* inert, or the note above is a lie and the
+                    // user presses a live-looking control that does nothing.
+                    if inert {
+                        b = b.disabled(true);
+                    } else if let Some(m) = msg {
                         b = b.on_click(m);
                     }
                     b.into()
@@ -814,49 +1121,46 @@ fn render_component(
             label,
             value,
             variant,
-            ..
+            validation_regexp,
+            checks,
         } => {
+            note_unenforced_validation(ctx, id, checks.as_ref(), validation_regexp.as_deref());
             let label = resolve_value(ctx, id, label, scope);
-            let (current, path) = input_state(ctx, id, value.as_ref(), scope);
+            let (current, write) = input_state(ctx, id, value.as_ref(), scope);
+            match variant.as_deref() {
+                Some("shortText" | "longText" | "obscured") | None => {}
+                // Documented by the catalog, and it does constrain input —
+                // rendering an unconstrained text box accepts "abc" where
+                // the stream asked for a number.
+                Some("number") => note_unhonored(
+                    ctx,
+                    id,
+                    "variant: number",
+                    "the field accepts any text, with no numeric constraint",
+                ),
+                Some(other) => ctx.note_unknown_variant(id, "variant", other, "a short text field"),
+            }
             if variant.as_deref() == Some("obscured") {
-                ctx.note(id, "obscured input renders unmasked (masking is a kit gap)");
+                ctx.note(
+                    id,
+                    NoteKind::SecretExposed,
+                    "obscured input renders unmasked (masking is a kit gap); the rendered pixels \
+                     contain the value the stream asked to hide",
+                );
             }
             let control: Element<A2uiMsg> = if variant.as_deref() == Some("longText") {
-                let mut area = text_area(current);
-                area = match path {
-                    Some(path) => area.on_input(move |v| A2uiMsg::SetString {
-                        path: path.clone(),
-                        value: v,
-                    }),
-                    None => {
-                        let id = id.to_owned();
-                        area.on_input(move |v| A2uiMsg::LocalEdit {
-                            id: id.clone(),
-                            value: Value::String(v),
-                        })
-                    }
-                };
-                area.into()
+                text_area(current).on_input(write).into()
             } else {
-                let mut input = text_input(current);
-                input = match path {
-                    Some(path) => input.on_input(move |v| A2uiMsg::SetString {
-                        path: path.clone(),
-                        value: v,
-                    }),
-                    None => {
-                        let id = id.to_owned();
-                        input.on_input(move |v| A2uiMsg::LocalEdit {
-                            id: id.clone(),
-                            value: Value::String(v),
-                        })
-                    }
-                };
-                input.into()
+                text_input(current).on_input(write).into()
             };
             field(label).child(control).into()
         }
-        Kind::CheckBox { label, value, .. } => {
+        Kind::CheckBox {
+            label,
+            value,
+            checks,
+        } => {
+            note_unenforced_validation(ctx, id, checks.as_ref(), None);
             let label = resolve_value(ctx, id, label, scope);
             let (checked, path) = match value {
                 Dyn::Binding { path } => (
@@ -871,7 +1175,7 @@ fn render_component(
                         .surface
                         .ui
                         .local_edits
-                        .get(id)
+                        .get(&ui_key(id, scope))
                         .and_then(Value::as_bool)
                         .unwrap_or(base);
                     (checked, None)
@@ -884,7 +1188,7 @@ fn render_component(
                     value: !checked,
                 }),
                 None => cb.on_toggle(A2uiMsg::LocalEdit {
-                    id: id.to_owned(),
+                    key: ui_key(id, scope),
                     value: Value::Bool(!checked),
                 }),
             };
@@ -895,26 +1199,79 @@ fn render_component(
             variant,
             options,
             value,
-            ..
-        } => render_choice_picker(
-            ctx,
-            id,
-            label.as_ref(),
-            variant.as_deref(),
-            options,
-            value,
-            scope,
-        ),
+            display_style,
+            filterable,
+            checks,
+        } => {
+            note_unenforced_validation(ctx, id, checks.as_ref(), None);
+            if display_style.is_some() {
+                note_unhonored(
+                    ctx,
+                    id,
+                    "displayStyle",
+                    "the picker renders as a dropdown (single) or a checkbox list (multiple)",
+                );
+            }
+            if filterable == &Some(true) {
+                note_unhonored(ctx, id, "filterable", "the option list has no filter box");
+            }
+            render_choice_picker(
+                ctx,
+                id,
+                label.as_ref(),
+                variant.as_deref(),
+                options,
+                value,
+                scope,
+            )
+        }
         Kind::Slider {
             label,
             min,
             max,
             value,
+            checks,
         } => {
-            let min = min.unwrap_or(0.0);
+            note_unenforced_validation(ctx, id, checks.as_ref(), None);
+            let requested_min = min.unwrap_or(0.0);
+            let requested_max = *max;
+            // `Slider::range` ignores anything that is not max > min, and it
+            // decides that in f32 — so validating in f64 proves nothing.
+            // 1e39 narrows to infinity, 1.0 and 1.0000001 collapse onto the
+            // same f32, and either way the kit silently keeps its default
+            // 0..=1 domain. An accepted infinite bound is worse still: the
+            // widget's own normalization divides by it and feeds NaN into
+            // layout. Validate exactly the values the widget will see.
+            #[expect(clippy::cast_possible_truncation, reason = "checked below in f32")]
+            let (min, max) = {
+                let usable = |lo: f32, hi: f32| lo.is_finite() && hi.is_finite() && hi > lo;
+                let (lo, hi) = (requested_min as f32, requested_max as f32);
+                if usable(lo, hi) {
+                    (lo, hi)
+                } else {
+                    // The repair has to survive the same test that rejected
+                    // the original: near the top of the f32 range `lo + 1.0`
+                    // rounds straight back to `lo`, so 0..=1 is the only
+                    // honest answer left.
+                    let (lo, hi) = if usable(lo, lo + 1.0) {
+                        (lo, lo + 1.0)
+                    } else {
+                        (0.0, 1.0)
+                    };
+                    ctx.note(
+                        id,
+                        NoteKind::InvalidValue,
+                        format!(
+                            "slider range {requested_min}..={requested_max} is empty, not finite, \
+                             or collapses to a single value in f32; using {lo}..={hi}"
+                        ),
+                    );
+                    (lo, hi)
+                }
+            };
             let (current, path) = match value {
                 Dyn::Binding { path } => (
-                    bound_f64(ctx, id, path, scope, min),
+                    bound_f64(ctx, id, path, scope, f64::from(min)),
                     Some(absolute(path, scope)),
                 ),
                 other => {
@@ -925,23 +1282,26 @@ fn render_component(
                         .surface
                         .ui
                         .local_edits
-                        .get(id)
+                        .get(&ui_key(id, scope))
                         .and_then(Value::as_f64)
                         .unwrap_or(base);
                     (current, None)
                 }
             };
-            #[expect(clippy::cast_possible_truncation, reason = "UI ranges fit in f32")]
-            let mut s = slider(current as f32).range(min as f32, *max as f32);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "slider positions fit in f32"
+            )]
+            let mut s = slider(current as f32).range(min, max);
             s = match path {
                 Some(path) => s.on_change(move |v| A2uiMsg::SetNumber {
                     path: path.clone(),
                     value: f64::from(v),
                 }),
                 None => {
-                    let id = id.to_owned();
+                    let key = ui_key(id, scope);
                     s.on_change(move |v| A2uiMsg::LocalEdit {
-                        id: id.clone(),
+                        key: key.clone(),
                         value: serde_json::json!(f64::from(v)),
                     })
                 }
@@ -951,19 +1311,36 @@ fn render_component(
                 None => s.into(),
             }
         }
-        Kind::DateTimeInput { value, label, .. } => {
+        Kind::DateTimeInput {
+            value,
+            label,
+            enable_date,
+            enable_time,
+            min,
+            max,
+            checks,
+        } => {
+            note_unenforced_validation(ctx, id, checks.as_ref(), None);
+            if enable_time == &Some(true) || enable_date == &Some(false) {
+                note_unhonored(
+                    ctx,
+                    id,
+                    "enableDate/enableTime",
+                    "the field accepts a whole ISO-8601 value either way",
+                );
+            }
+            if min.is_some() || max.is_some() {
+                note_unhonored(ctx, id, "min/max", "the field accepts any text");
+            }
             ctx.note(
                 id,
+                NoteKind::Unsupported,
                 "DateTimeInput renders as an ISO text field (calendar UI TBD)",
             );
-            let (current, path) = input_state(ctx, id, Some(value), scope);
-            let mut input = text_input(current).placeholder("YYYY-MM-DD");
-            if let Some(path) = path {
-                input = input.on_input(move |v| A2uiMsg::SetString {
-                    path: path.clone(),
-                    value: v,
-                });
-            }
+            let (current, write) = input_state(ctx, id, Some(value), scope);
+            let input = text_input(current)
+                .placeholder("YYYY-MM-DD")
+                .on_input(write);
             match label {
                 Some(l) => field(resolve_value(ctx, id, l, scope)).child(input).into(),
                 None => input.into(),
@@ -974,27 +1351,63 @@ fn render_component(
                 .get("component")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
+            // A known name that failed to parse is an authoring bug in the
+            // stream; an unknown name is the protocol working as intended.
+            // Different kinds, because an agent fixes them differently.
+            let (kind, why) = if crate::catalog::BASIC_CATALOG.contains(&name) {
+                (
+                    NoteKind::MalformedComponent,
+                    "is a basic-catalog component whose fields did not parse",
+                )
+            } else {
+                (
+                    NoteKind::UnknownComponent,
+                    "is not part of the v0.9 basic catalog",
+                )
+            };
             ctx.note(
                 id,
-                format!(
-                    "component {name:?} did not map onto the basic catalog (unknown name or \
-                     malformed fields); rendering a placeholder"
-                ),
+                kind,
+                format!("component {name:?} {why}; rendering a placeholder"),
             );
             placeholder(format!("[{name}]"), theme)
         }
     }
 }
 
-/// Current value + absolute write path for a string-valued input,
-/// consulting local edits for literal-valued ones.
+/// How an edited string gets back into the surface: through its binding
+/// when it has one, as a local edit when the value is a literal.
+///
+/// Built here rather than at each call site, because a control that
+/// forgets the second branch silently becomes read-only — which is exactly
+/// what `DateTimeInput` was, while still *reading* local edits that could
+/// never be written.
+fn string_writer(
+    key: String,
+    path: Option<String>,
+) -> impl Fn(String) -> A2uiMsg + Clone + 'static {
+    move |v| match &path {
+        Some(p) => A2uiMsg::SetString {
+            path: p.clone(),
+            value: v,
+        },
+        None => A2uiMsg::LocalEdit {
+            key: key.clone(),
+            value: Value::String(v),
+        },
+    }
+}
+
+/// The current value of a string-valued input, plus the writer that puts
+/// edits back. Literal-valued inputs read their local edit back, so every
+/// one of them stays interactive.
 fn input_state(
     ctx: &Ctx,
     id: &str,
     value: Option<&Dyn<String>>,
     scope: Option<&str>,
-) -> (String, Option<String>) {
-    match value {
+) -> (String, impl Fn(String) -> A2uiMsg + Clone + 'static) {
+    let (current, path) = match value {
         Some(Dyn::Binding { path }) => (
             lookup(ctx.surface, path, scope)
                 .map(functions::display)
@@ -1007,7 +1420,7 @@ fn input_state(
                 .surface
                 .ui
                 .local_edits
-                .get(id)
+                .get(&ui_key(id, scope))
                 .map(functions::display)
                 .unwrap_or(base);
             (current, None)
@@ -1016,12 +1429,13 @@ fn input_state(
             ctx.surface
                 .ui
                 .local_edits
-                .get(id)
+                .get(&ui_key(id, scope))
                 .map(functions::display)
                 .unwrap_or_default(),
             None,
         ),
-    }
+    };
+    (current, string_writer(ui_key(id, scope), path))
 }
 
 fn action_msg(ctx: &Ctx, id: &str, action: &Action, scope: Option<&str>) -> A2uiMsg {
@@ -1049,21 +1463,32 @@ fn action_msg(ctx: &Ctx, id: &str, action: &Action, scope: Option<&str>) -> A2ui
                 Some(v) => functions::display(v),
                 None => String::new(),
             };
+            if url.is_empty() {
+                // Handing the host an empty URL to open is the same
+                // invented-message failure as the synthetic events below:
+                // it never came from the stream.
+                ctx.note(
+                    id,
+                    NoteKind::UnresolvedBinding,
+                    "openUrl has no URL to open; the action does nothing",
+                );
+                return A2uiMsg::Ignored;
+            }
             A2uiMsg::OpenUrl(url)
         }
         Action::FunctionCall { function_call } => {
             ctx.note(
                 id,
+                NoteKind::UnimplementedFunction,
                 format!(
                     "action function {:?} is not implemented",
                     function_call.call
                 ),
             );
-            A2uiMsg::Event {
-                name: format!("unimplemented:{}", function_call.call),
-                context: Value::Null,
-                source_id: id.to_owned(),
-            }
+            // Emphatically *not* a synthetic Event: the agent never asked
+            // for an action called "unimplemented:openWidget", and sending
+            // one makes it defend against messages fenestra invented.
+            A2uiMsg::Ignored
         }
     }
 }
@@ -1126,10 +1551,15 @@ fn render_choice_picker(
                 Some(v) => selection_of(v).unwrap_or_else(|| {
                     ctx.note(
                         id,
+                        NoteKind::BindingType,
                         format!("selection binding {p:?} is neither a list nor a string"),
                     );
                     Vec::new()
                 }),
+                // An unset binding is the ordinary "nothing chosen yet"
+                // state, not a fidelity loss — the same call that
+                // `input_state` makes for a text field, and for the same
+                // reason: form values legitimately start empty.
                 None => Vec::new(),
             };
             (selected, Some(absolute(p, scope)))
@@ -1138,7 +1568,13 @@ fn render_choice_picker(
     };
     if path.is_none() {
         // Literal-valued pickers stay interactive through local edits.
-        if let Some(edited) = ctx.surface.ui.local_edits.get(id).and_then(selection_of) {
+        if let Some(edited) = ctx
+            .surface
+            .ui
+            .local_edits
+            .get(&ui_key(id, scope))
+            .and_then(selection_of)
+        {
             selected_values = edited;
         }
     }
@@ -1148,28 +1584,53 @@ fn render_choice_picker(
         .filter(|(_, v)| selected_values.contains(v))
         .map(|(i, _)| i)
         .collect();
+    // Values the model holds that this picker has no option for. Reporting
+    // only the all-or-nothing case hid the more damaging one: a partial
+    // match renders as if the unmatched values were not there, and the next
+    // toggle writes the visible selection back over them.
+    let unmatched: Vec<String> = selected_values
+        .iter()
+        .filter(|v| !values.contains(v))
+        .cloned()
+        .collect();
+    if !unmatched.is_empty() {
+        ctx.note(
+            id,
+            NoteKind::InvalidValue,
+            format!("selection {unmatched:?} matches none of this picker's options {values:?}"),
+        );
+    }
     // Selection changes write through the binding, or store a local edit
     // for literal-valued pickers — either way the picker stays live.
     let make_msg = {
         let path = path.clone();
-        let id = id.to_owned();
+        let key = ui_key(id, scope);
         move |values: Vec<String>| match &path {
             Some(p) => A2uiMsg::SetList {
                 path: p.clone(),
                 values,
             },
             None => A2uiMsg::LocalEdit {
-                id: id.clone(),
+                key: key.clone(),
                 value: Value::Array(values.into_iter().map(Value::String).collect()),
             },
         }
     };
+    match variant {
+        Some("mutuallyExclusive" | "multipleSelection") | None => {}
+        Some(other) => ctx.note_unknown_variant(id, "variant", other, "a single-selection picker"),
+    }
     let multiple = variant == Some("multipleSelection");
     let control: Element<A2uiMsg> = if multiple {
         let mut ms = multi_select(selected_idx.clone(), labels);
         {
             let values = values.clone();
             let current = selected_idx;
+            // The picker can only offer its own options, so rebuilding the
+            // list from them alone would drop anything the model holds that
+            // this picker cannot show. Carry those through untouched: a
+            // control the user cannot see must not be able to delete data.
+            let unmatched = unmatched.clone();
             ms = ms.on_toggle(move |i| {
                 let mut next: Vec<usize> = current.clone();
                 if let Some(pos) = next.iter().position(|&x| x == i) {
@@ -1178,19 +1639,40 @@ fn render_choice_picker(
                     next.push(i);
                     next.sort_unstable();
                 }
-                make_msg(
-                    next.iter()
-                        .filter_map(|&x| values.get(x).cloned())
-                        .collect(),
-                )
+                let mut written: Vec<String> = next
+                    .iter()
+                    .filter_map(|&x| values.get(x).cloned())
+                    .collect();
+                written.extend(unmatched.iter().cloned());
+                make_msg(written)
             });
         }
         ms.into()
     } else {
-        let mut sel = select(selected_idx.first().copied().unwrap_or(0), labels);
+        // `select` has no empty state, so handing it index 0 would claim
+        // the user picked the first option when the model says nothing is
+        // chosen. A leading placeholder entry shows "nothing yet" honestly.
+        //
+        // It stays in the list once something *is* chosen, because that is
+        // the only way back: offering it only while empty would make the
+        // empty state unreachable through the UI, so a picker could be
+        // filled in but never cleared.
+        let mut with_placeholder = Vec::with_capacity(labels.len() + 1);
+        with_placeholder.push(UNSELECTED_LABEL.to_owned());
+        with_placeholder.extend(labels);
+        // Index 0 is the placeholder, so every real option sits one along.
+        let index = selected_idx.first().map_or(0, |i| i + 1);
+        let mut sel = select(index, with_placeholder);
         {
             let values = values.clone();
-            sel = sel.on_change(move |i| make_msg(values.get(i).cloned().into_iter().collect()));
+            sel = sel.on_change(move |i| {
+                make_msg(
+                    i.checked_sub(1)
+                        .and_then(|x| values.get(x).cloned())
+                        .into_iter()
+                        .collect(),
+                )
+            });
         }
         sel.into()
     };

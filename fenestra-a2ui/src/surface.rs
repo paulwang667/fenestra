@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::catalog::Component;
 use crate::messages::Envelope;
+use crate::note::{Note, NoteKind};
 
 /// Errors from applying a message stream. Everything renderable degrades
 /// with a note instead; these are the structural failures.
@@ -63,7 +64,7 @@ pub struct Surface {
     pub(crate) catalog_id: Option<String>,
     /// Path-pointed notes: unknown components, unresolved functions,
     /// truncations. Silence means full fidelity.
-    pub(crate) notes: Vec<String>,
+    pub(crate) notes: Vec<Note>,
     pub(crate) ui: UiState,
 }
 
@@ -108,7 +109,7 @@ impl Surface {
     /// Path-pointed fidelity notes accumulated by parsing and rendering.
     /// Empty means everything resolved and mapped cleanly.
     #[must_use]
-    pub fn notes(&self) -> &[String] {
+    pub fn notes(&self) -> &[Note] {
         &self.notes
     }
 
@@ -129,11 +130,18 @@ impl Surface {
             return;
         }
         if !pointer_write(&mut self.data, path, value) {
-            self.notes.push(format!(
-                "{path}: data-model write did not apply (out-of-range or non-numeric array \
-                 index); the model keeps its previous value"
+            self.push_note(Note::new(
+                path,
+                NoteKind::RejectedWrite,
+                "data-model write did not apply (out-of-range or non-numeric array index); the \
+                 model keeps its previous value",
             ));
         }
+    }
+
+    /// Records a note, once — see [`crate::note::push_bounded`].
+    pub(crate) fn push_note(&mut self, note: Note) {
+        crate::note::push_bounded(&mut self.notes, note);
     }
 }
 
@@ -280,8 +288,10 @@ impl Client {
                 if let Some(id) = payload.get("surfaceId").and_then(Value::as_str)
                     && let Some(surface) = self.surfaces.get_mut(id)
                 {
-                    surface.notes.push(format!(
-                        "{kind}: unknown message type skipped (newer protocol revision?)"
+                    surface.push_note(Note::new(
+                        kind,
+                        NoteKind::UnknownMessage,
+                        "unknown message type skipped (newer protocol revision?)",
                     ));
                 }
             }

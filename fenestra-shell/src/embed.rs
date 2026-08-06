@@ -146,14 +146,7 @@ where
     fn run_cmd(&mut self, cmd: fenestra_core::Cmd<A::Msg>) {
         let proxy = self.proxy.clone();
         fenestra_core::apply_cmd(&mut self.app, cmd, &mut |unit| {
-            let proxy = proxy.clone();
-            if std::thread::Builder::new()
-                .name("fenestra-cmd".into())
-                .spawn(move || proxy.send(unit.block()))
-                .is_err()
-            {
-                eprintln!("fenestra: failed to spawn an effect worker thread");
-            }
+            crate::window::spawn_effect_unit(unit, &proxy);
         });
     }
 

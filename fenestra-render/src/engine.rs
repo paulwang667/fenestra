@@ -552,6 +552,33 @@ pub fn diff_images(
     }
 }
 
+/// Parses a `WxH` size string like `800x600`; `None` means the default
+/// 800×600.
+///
+/// One parser for the CLI, the scenario runner and the MCP server — each
+/// carried its own copy, down to the same error message. Note that the
+/// renderer additionally clamps to the GPU's maximum texture dimension, so
+/// an enormous-but-parseable size comes back smaller than requested.
+///
+/// # Errors
+/// A ready-to-show message when the string is not `WxH`, or when either
+/// dimension is zero.
+pub fn parse_size(s: Option<&str>) -> Result<(u32, u32), String> {
+    let Some(s) = s else {
+        return Ok((800, 600));
+    };
+    let parsed = s
+        .split_once(['x', 'X'])
+        .and_then(|(w, h)| Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?)));
+    match parsed {
+        Some((0, _) | (_, 0)) => Err(format!(
+            "invalid size {s:?}; both dimensions must be at least 1"
+        )),
+        Some(size) => Ok(size),
+        None => Err(format!("invalid size {s:?}; expected WxH like 800x600")),
+    }
+}
+
 /// What [`render_a2ui`] produced.
 pub struct A2uiRenderOut {
     /// The rendered surface's id.
@@ -561,8 +588,9 @@ pub struct A2uiRenderOut {
     /// The rendered pixels.
     pub png: RgbaImage,
     /// Fidelity notes from the catalog mapping (empty means every
-    /// component and binding mapped cleanly).
-    pub notes: Vec<String>,
+    /// component and binding mapped cleanly). Each carries a machine-
+    /// readable [`fenestra_a2ui::NoteKind`] alongside the prose.
+    pub notes: Vec<fenestra_a2ui::Note>,
 }
 
 /// Renders an A2UI v0.9 message stream (the open Agent-to-UI standard,
@@ -617,4 +645,27 @@ pub fn render_a2ui(
         png,
         notes,
     })
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::parse_size;
+
+    #[test]
+    fn parses_the_shapes_the_three_front_doors_accept() {
+        assert_eq!(parse_size(None), Ok((800, 600)), "the shared default");
+        assert_eq!(parse_size(Some("1024x768")), Ok((1024, 768)));
+        assert_eq!(parse_size(Some(" 320 X 240 ")), Ok((320, 240)));
+    }
+
+    #[test]
+    fn rejects_what_cannot_be_rendered() {
+        for bad in ["", "800", "800x", "axb", "-1x10", "800x600x400"] {
+            assert!(parse_size(Some(bad)).is_err(), "{bad:?} must not parse");
+        }
+        assert!(
+            parse_size(Some("0x600")).is_err(),
+            "a zero dimension is never intended; it used to clamp silently to 1px"
+        );
+    }
 }

@@ -3761,3 +3761,47 @@ category rather than left as a blanket disclaimer:
   headless golden path. The honest phrasing is "live windows show
   tint-only glass; headless shows the full effect" — web is not a
   special case and the docs now say so.
+
+## A2UI hardening: notes as data, and what two reviews found (2026-08-05)
+
+The A2UI renderer shipped with a contract — "silence means fidelity" — that
+it was not keeping, and a review found eight bugs behind it. Fixing those
+turned up four more, and a second review of the fixes turned up fifteen
+findings, all of which survived verification. The pattern is worth
+recording, because it repeated: every one of them was a case where the
+renderer produced something *plausible* and said nothing.
+
+Decisions of record:
+
+- **Notes are typed.** `Note { component_id, kind, detail }` replaces the
+  formatted string. The kind exists so a caller can branch — retry on
+  `unknownIcon`, give up on `unknownComponent` — rather than matching prose
+  that gets reworded. Severity splits "the surface cannot do what the stream
+  described" from "it does, inexactly", and ships in the serialized form
+  rather than being recomputed by every consumer. The line: a placeholder
+  image or a layout mode mapped to its nearest neighbour is approximate; an
+  unopenable dialog or a password rendered in the clear is broken.
+- **One click can mean two things.** `Surface::handle` returns every signal
+  a message produced. This came from the Modal fix: fenestra hands a press
+  to the deepest interactive node and stops, so a Modal's open message has
+  to be *composed onto* the trigger rather than stacked behind it — and if
+  the trigger already had an action, both must reach the agent.
+- **UI state is keyed by instance, not by component.** A template renders
+  one component many times; keying its open flag or local edit by id made
+  every expansion share one value. `ui_key(id, scope)` is the only way that
+  state is addressed now, and the messages carry the resulting key.
+- **Disabled styling is baked at widget-build time.** The kit closes over
+  `disabled` when a Button is built, so clearing `Element::disabled`
+  afterwards restores hit-testing and nothing else. Anything that needs a
+  control to be live has to decide *before* the widget is built — hence
+  `Ctx::modal_triggers`. The access tree cannot see this; only a golden can,
+  which is what `tests/snapshots/modal_trigger.png` is for.
+- **`Element::takes_press()` is the single press-target definition.** A
+  second copy of the rule in the A2UI renderer had already drifted (it knew
+  about `on_click` but not `focusable`), so the dispatcher's own predicate
+  is now public and both use it.
+- **Bounded loops, everywhere they were missing.** `apply_cmd` drains at
+  most `MAX_EFFECT_CHAIN` messages; a self-feeding app used to freeze the UI
+  thread silently. Surface notes deduplicate and cap. These join the
+  existing depth and template caps as one habit: an unbounded loop driven by
+  input is a hang waiting to happen.

@@ -749,6 +749,28 @@ impl<Msg> Element<Msg> {
         self.on_click.as_ref()
     }
 
+    /// Whether a press landing on this element would stop here.
+    ///
+    /// fenestra hands a press to the *deepest* element that answers yes and
+    /// looks no further — there is no bubbling — so anything that wants to
+    /// know "would something inside me swallow this click?" must ask
+    /// exactly the question the dispatcher asks. This is that question, in
+    /// one place, so a caller cannot drift from the dispatcher by
+    /// remembering only `on_click`.
+    ///
+    /// Frame-level state is not visible here: an element that anchors a
+    /// toggle overlay also takes a press, and the dispatcher adds that
+    /// check on top of this one.
+    #[must_use]
+    pub fn takes_press(&self) -> bool {
+        !self.disabled
+            && (self.on_click.is_some()
+                || self.on_drag.is_some()
+                || self.on_swipe.is_some()
+                || self.focusable
+                || self.selectable)
+    }
+
     /// The accessible name set by [`Self::label`], if any.
     pub fn access_label(&self) -> Option<&str> {
         self.label.as_deref()

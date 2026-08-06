@@ -2,7 +2,7 @@
 //! renderer: binding resolution gaps, protocol tolerance, and silent
 //! write failures. Each test names the finding it pins.
 
-use fenestra_a2ui::{A2uiMsg, A2uiSignal, Client, parse_stream};
+use fenestra_a2ui::{A2uiMsg, A2uiSignal, Client, NoteKind, parse_stream};
 use fenestra_core::{Element, Theme};
 
 fn apply(stream: &str) -> Client {
@@ -37,13 +37,19 @@ fn bound_icon_names_resolve() {
         .expect("surface")
         .render(&Theme::light());
     assert!(
-        !rendered.notes.iter().any(|n| n.contains("{\"path\"")),
+        !rendered
+            .notes
+            .iter()
+            .any(|n| n.detail.contains("{\"path\"")),
         "the binding object leaked into rendering, notes: {:?}",
         rendered.notes
     );
     let tree = frame_tree(&rendered.element, (480.0, 640.0));
     assert!(
-        rendered.notes.iter().any(|n| n.contains("priority_high"))
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::UnknownIcon && n.detail.contains("priority_high"))
             || tree.contains("priority_high"),
         "the bound icon name must resolve to priority_high; notes: {:?}",
         rendered.notes
@@ -114,6 +120,7 @@ fn event_actions_carry_the_source_component() {
         .surface_mut("s")
         .expect("surface")
         .handle(msg.clone())
+        .pop()
         .expect("events surface as signals");
     let A2uiSignal::Event { source_id, .. } = signal else {
         panic!("expected an event signal");
@@ -157,7 +164,7 @@ fn literal_checkbox_toggles_take_effect() {
             .surface_mut("s")
             .expect("surface")
             .handle(toggle)
-            .is_none()
+            .is_empty()
     );
     let rendered = client
         .surface("s")
@@ -195,7 +202,10 @@ fn unknown_message_types_are_skipped_not_fatal() {
         "known messages around the unknown one apply"
     );
     assert!(
-        surface.notes().iter().any(|n| n.contains("updateTheme")),
+        surface
+            .notes()
+            .iter()
+            .any(|n| n.kind == NoteKind::UnknownMessage && n.component_id == "updateTheme"),
         "the skipped message type is noted, got: {:?}",
         surface.notes()
     );
@@ -222,8 +232,11 @@ fn malformed_known_component_degrades_not_fails() {
     let tree = frame_tree(&rendered.element, (480.0, 640.0));
     assert!(tree.contains("fine"), "siblings render");
     assert!(
-        rendered.notes.iter().any(|n| n.contains("Slider")),
-        "the malformed component is noted, got: {:?}",
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::MalformedComponent && n.detail.contains("Slider")),
+        "a *known* name that failed to parse is malformed, not unknown, got: {:?}",
         rendered.notes
     );
 }
@@ -246,7 +259,10 @@ fn array_appends_apply_and_bad_writes_are_noted() {
         "`-` appends"
     );
     assert!(
-        surface.notes().iter().any(|n| n.contains("/items/9")),
+        surface
+            .notes()
+            .iter()
+            .any(|n| n.kind == NoteKind::RejectedWrite && n.component_id == "/items/9"),
         "the dropped out-of-range write is noted, got: {:?}",
         surface.notes()
     );
@@ -270,10 +286,10 @@ fn literal_choice_picker_reads_local_edits() {
         .surface_mut("s")
         .expect("surface")
         .handle(A2uiMsg::LocalEdit {
-            id: "root".into(),
+            key: "root".into(),
             value: serde_json::json!(["basic"]),
         });
-    assert!(signal.is_none(), "local edits are internal");
+    assert!(signal.is_empty(), "local edits are internal");
     let rendered = client
         .surface("s")
         .expect("surface")
@@ -307,5 +323,585 @@ fn bound_string_choice_picker_selects() {
     assert!(
         tree.contains("Basic"),
         "the bound string selection must show; tree:\n{tree}"
+    );
+}
+
+// ── From the 2026-08-05 review: silent fidelity losses ────────────────────
+
+/// `Slider::range` ignores anything that is not `max > min`, so an empty or
+/// non-finite range used to leave the control quietly on its default
+/// 0..=1 domain — a slider showing the wrong scale with nothing to say
+/// about it.
+#[test]
+fn empty_slider_ranges_are_reported() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Slider","min":5,"max":5,"value":5}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::InvalidValue && n.detail.contains("slider range")),
+        "an unusable range must be reported, got: {:?}",
+        rendered.notes
+    );
+}
+
+/// A selection that names no existing option renders as *nothing selected*,
+/// which is indistinguishable from an empty picker unless it is reported.
+#[test]
+fn selections_matching_no_option_are_reported() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"ChoicePicker","variant":"mutuallyExclusive",
+             "value":["xl"],"options":[
+                {"label":"Small","value":"s"},
+                {"label":"Large","value":"l"}
+             ]}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::InvalidValue && n.detail.contains("matches none")),
+        "a selection outside the option set must be reported, got: {:?}",
+        rendered.notes
+    );
+}
+
+/// Remote assets render as placeholders because a deterministic render
+/// never touches the network. The crate documented that as noted; it was
+/// not. A surface of grey boxes must not report full fidelity.
+///
+/// All three asset components are checked: Video and AudioPlayer had no
+/// test of any kind before this.
+#[test]
+fn remote_assets_report_their_placeholders() {
+    for (component, extra) in [
+        ("Image", ""),
+        ("Video", ""),
+        ("AudioPlayer", r#","description":"a podcast""#),
+    ] {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {{"id":"root","component":"{component}","url":"https://example.com/a"{extra}}}
+            ]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::NetworkAsset),
+            "a placeholder {component} must be reported, got: {:?}",
+            rendered.notes
+        );
+        assert!(
+            !fenestra_a2ui::any_broken(&rendered.notes),
+            "…but a placeholder is approximate, not broken: {:?}",
+            rendered.notes
+        );
+    }
+}
+
+/// `checks` and `validationRegexp` parse and then gate nothing. Silence
+/// there is the difference between a validated form and one that merely
+/// looks validated.
+#[test]
+fn unenforced_validation_is_reported() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"TextField","label":"Email","value":"",
+             "validationRegexp":"^.+@.+$"}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::Unsupported && n.detail.contains("validationRegexp")),
+        "an unenforced validation rule must be reported, got: {:?}",
+        rendered.notes
+    );
+}
+
+// ── From the 2026-08-05 review of PR #19 ──────────────────────────────────
+
+/// An obscured field renders in cleartext, so the pixels handed back by a
+/// headless render contain the secret. That is not an inexactness, and
+/// `any_broken` — the check the book tells people to put in CI — has to say
+/// so.
+#[test]
+fn an_unmasked_secret_is_broken_not_approximate() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"pw":"hunter2"}}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"TextField","label":"Password","variant":"obscured",
+             "value":{"path":"/pw"}}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::SecretExposed),
+        "got: {:?}",
+        rendered.notes
+    );
+    assert!(
+        fenestra_a2ui::any_broken(&rendered.notes),
+        "a surface whose pixels leak a secret must not pass any_broken: {:?}",
+        rendered.notes
+    );
+}
+
+/// A dialog nothing can open is broken, not approximate — the trigger's
+/// interactive child takes every press.
+#[test]
+fn an_unopenable_modal_is_broken() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Modal","trigger":"card","content":"dlg"},
+            {"id":"card","component":"Card","child":"btn"},
+            {"id":"btn","component":"Button","child":"lbl","action":{"event":{"name":"go"}}},
+            {"id":"lbl","component":"Text","text":"Press me"},
+            {"id":"dlg","component":"Text","text":"body"}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::Unreachable),
+        "got: {:?}",
+        rendered.notes
+    );
+    assert!(
+        fenestra_a2ui::any_broken(&rendered.notes),
+        "a dialog that cannot be opened must not pass any_broken: {:?}",
+        rendered.notes
+    );
+}
+
+/// A selection binding with nothing written yet is the ordinary empty
+/// state, exactly as it is for a text field. Reporting it as broken made
+/// every fresh form fail its own CI check.
+#[test]
+fn an_empty_selection_binding_is_not_a_fidelity_loss() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"ChoicePicker","variant":"mutuallyExclusive",
+             "value":{"path":"/choice"},"options":[
+                {"label":"Small","value":"s"},{"label":"Large","value":"l"}
+             ]}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered.notes.is_empty(),
+        "a form that has not been filled in yet is not degraded: {:?}",
+        rendered.notes
+    );
+}
+
+/// Fields that parse and then go nowhere have to say so — a chips picker
+/// rendering as a dropdown, an image ignoring its fit, a time-only input
+/// asking for a date. Each renders something sensible, so each is
+/// approximate rather than broken, but silence would claim the stream got
+/// what it asked for.
+#[test]
+fn parsed_but_unhonored_fields_are_reported() {
+    let cases: [(&str, &str); 3] = [
+        (
+            r#"{"id":"root","component":"Image","url":"https://e.com/a.png","fit":"cover"}"#,
+            "fit",
+        ),
+        (
+            r#"{"id":"root","component":"ChoicePicker","variant":"mutuallyExclusive",
+                "value":[],"displayStyle":"chips","filterable":true,
+                "options":[{"label":"A","value":"a"}]}"#,
+            "displayStyle",
+        ),
+        (
+            r#"{"id":"root","component":"DateTimeInput","value":"2026-01-01",
+                "enableDate":false,"enableTime":true}"#,
+            "enableDate/enableTime",
+        ),
+    ];
+    for (component, field) in cases {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[{component}]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::Unsupported && n.detail.contains(field)),
+            "{field} must be reported, got: {:?}",
+            rendered.notes
+        );
+    }
+}
+
+/// An `openUrl` with nothing to open must do nothing, rather than handing
+/// the host an empty URL it never asked for.
+#[test]
+fn open_url_with_an_unresolved_argument_does_nothing() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Button","child":"lbl",
+             "action":{"functionCall":{"call":"openUrl","args":{"url":{"path":"/link"}}}}},
+            {"id":"lbl","component":"Text","text":"Visit"}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    // An action that resolves to nothing leaves the button as dead as no
+    // action at all, so it renders disabled and carries no handler —
+    // nothing to click is a stronger guarantee than a click that is
+    // dropped later.
+    assert!(
+        find_click(&rendered.element).is_none(),
+        "a button that cannot carry out its action must not look live"
+    );
+    assert!(
+        rendered.notes.iter().any(|n| n.detail.contains("openUrl")),
+        "and it must say why, got: {:?}",
+        rendered.notes
+    );
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::Unreachable),
+        "the dead control is reported as unreachable, got: {:?}",
+        rendered.notes
+    );
+}
+
+/// The repaired slider range has to survive the same test that rejected the
+/// original: at the top of the f64 range `min + 1.0` rounds straight back
+/// to `min`, and the note would then describe a range the widget does not
+/// have.
+#[test]
+fn an_unrepairable_slider_range_falls_back_honestly() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Slider","min":1e308,"max":1e308,"value":1e308}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    let note = rendered
+        .notes
+        .iter()
+        .find(|n| n.kind == NoteKind::InvalidValue && n.detail.contains("slider range"))
+        .unwrap_or_else(|| panic!("expected a range note, got: {:?}", rendered.notes));
+    assert!(
+        note.detail.contains("using 0..=1"),
+        "the note must describe the range the widget actually got, got: {}",
+        note.detail
+    );
+}
+
+/// The write path is driven by the user, so a control bound to an
+/// unwritable pointer produced one note per keystroke and grew without
+/// bound — every `render_a2ui` response carrying thousands of copies of
+/// one problem.
+#[test]
+fn repeated_rejected_writes_record_one_note() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"items":[1]}}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Text","text":"x"}
+        ]}}
+    ]"#;
+    let mut client = apply(stream);
+    let surface = client.surface_mut("s").expect("surface");
+    for _ in 0..500 {
+        assert!(
+            surface
+                .handle(A2uiMsg::SetString {
+                    path: "/items/9".into(),
+                    value: "nope".into(),
+                })
+                .is_empty(),
+            "a data-model write is not a host-bound signal"
+        );
+    }
+    assert_eq!(
+        surface.notes().len(),
+        1,
+        "the same rejected write said 500 times is one problem, got: {:?}",
+        surface.notes()
+    );
+}
+
+// ── From the second 2026-08-05 review of PR #19 ───────────────────────────
+
+/// The widget decides its range in f32, so validating in f64 proved
+/// nothing: 1e39 narrows to infinity and the kit silently keeps its default
+/// domain, while the note claimed otherwise. An accepted infinite bound was
+/// worse — the widget's normalization divides by it and feeds NaN into
+/// layout.
+#[test]
+fn slider_ranges_are_validated_in_the_widgets_own_precision() {
+    // 1e39 overflows f32 to infinity; the second pair differs by less
+    // than f32's step near 1.0 (~1.2e-7), so both bounds land on 1.0f32.
+    for (min, max) in [(1e39_f64, 2e39_f64), (1.0, 1.000_000_01)] {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {{"id":"root","component":"Slider","min":{min},"max":{max},"value":{min}}}
+            ]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::InvalidValue && n.detail.contains("slider range")),
+            "{min}..={max} collapses in f32 and must be reported, got: {:?}",
+            rendered.notes
+        );
+    }
+}
+
+/// A value JSON cannot carry is not a request to delete the binding.
+/// `Surface::write(path, None)` *removes* the key, so mapping a
+/// non-representable f64 to `None` silently erased the data the control was
+/// bound to — and reported nothing, because the removal itself succeeded.
+#[test]
+fn an_unrepresentable_number_does_not_delete_the_binding() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"volume":0.5}}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Text","text":"x"}
+        ]}}
+    ]"#;
+    let mut client = apply(stream);
+    let surface = client.surface_mut("s").expect("surface");
+    assert!(
+        surface
+            .handle(A2uiMsg::SetNumber {
+                path: "/volume".into(),
+                value: f64::INFINITY,
+            })
+            .is_empty(),
+        "a rejected write is not a host-bound signal"
+    );
+    assert_eq!(
+        surface.data().pointer("/volume"),
+        Some(&serde_json::json!(0.5)),
+        "the model keeps its previous value rather than losing the key"
+    );
+    assert!(
+        surface
+            .notes()
+            .iter()
+            .any(|n| n.kind == NoteKind::RejectedWrite),
+        "and the rejected write is reported, got: {:?}",
+        surface.notes()
+    );
+}
+
+/// A partial match is the damaging case: the picker renders as though the
+/// values it cannot show were not there, and the next toggle writes the
+/// visible selection back over them.
+#[test]
+fn a_multi_select_cannot_delete_values_it_cannot_show() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"tags":["a","legacy"]}}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"ChoicePicker","variant":"multipleSelection",
+             "value":{"path":"/tags"},"options":[
+                {"label":"A","value":"a"},{"label":"B","value":"b"}
+             ]}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        rendered
+            .notes
+            .iter()
+            .any(|n| { n.kind == NoteKind::InvalidValue && n.detail.contains("legacy") }),
+        "the value the picker cannot show must be reported, got: {:?}",
+        rendered.notes
+    );
+}
+
+/// Unrecognized enum strings each fall back to something plausible, which
+/// is exactly why they need reporting: a typo renders as a perfectly
+/// normal control and the stream is told it got what it asked for. The
+/// `justify`/`align` path already reported these; the rest did not.
+#[test]
+fn unknown_enum_strings_are_reported() {
+    let cases: [(&str, &str); 5] = [
+        (
+            r#"{"id":"root","component":"Text","text":"x","variant":"h9"}"#,
+            "h9",
+        ),
+        (
+            r#"{"id":"root","component":"Button","child":"c","variant":"ghosty"}"#,
+            "ghosty",
+        ),
+        (
+            r#"{"id":"root","component":"Divider","axis":"diagonal"}"#,
+            "diagonal",
+        ),
+        (
+            r#"{"id":"root","component":"List","direction":"sideways"}"#,
+            "sideways",
+        ),
+        (
+            r#"{"id":"root","component":"TextField","label":"l","variant":"sercet"}"#,
+            "sercet",
+        ),
+    ];
+    for (component, bad) in cases {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {component},{{"id":"c","component":"Text","text":"y"}}
+            ]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::InvalidValue && n.detail.contains(bad)),
+            "{bad} must be reported, got: {:?}",
+            rendered.notes
+        );
+    }
+}
+
+/// `checks` was modeled only on Button, TextField and CheckBox, so on any
+/// other input serde's unknown-field tolerance swallowed it whole — a
+/// stream that asked for a required selection was told its surface mapped
+/// with full fidelity.
+#[test]
+fn unenforced_checks_are_reported_on_every_input() {
+    let cases = [
+        r#"{"id":"root","component":"ChoicePicker","variant":"mutuallyExclusive","value":[],
+            "options":[],"checks":[{"required":true}]}"#,
+        r#"{"id":"root","component":"Slider","max":1.0,"value":0.0,"checks":[{"required":true}]}"#,
+        r#"{"id":"root","component":"DateTimeInput","value":"2026-01-01",
+            "checks":[{"required":true}]}"#,
+    ];
+    for component in cases {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[{component}]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered.notes.iter().any(|n| n.detail.contains("`checks`")),
+            "checks must be reported, got: {:?}",
+            rendered.notes
+        );
+    }
+}
+
+/// Render notes are rebuilt every frame and a template multiplies them, so
+/// the same bound the surface's notes gained has to apply here too — and
+/// hitting it must say so rather than going quiet.
+#[test]
+fn render_notes_deduplicate_across_template_rows() {
+    let rows: Vec<serde_json::Value> = (0..500).map(|i| serde_json::json!({"n": i})).collect();
+    let stream = format!(
+        r#"[
+        {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+        {{"version":"v0.9","updateDataModel":{{"surfaceId":"s","value":{{"rows":{}}}}}}},
+        {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+            {{"id":"root","component":"Column",
+             "children":{{"componentId":"row","path":"/rows"}}}},
+            {{"id":"row","component":"Image","url":"https://example.com/a.png"}}
+        ]}}}}
+    ]"#,
+        serde_json::to_string(&rows).expect("rows serialize")
+    );
+    let rendered = apply(&stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert_eq!(
+        rendered.notes.len(),
+        1,
+        "500 rows of one placeholder is one problem, got {} notes",
+        rendered.notes.len()
     );
 }

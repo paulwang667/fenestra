@@ -574,13 +574,9 @@ pub fn dispatch<Msg: Clone>(
             }
             let target = chain.iter().rev().copied().find(|id| {
                 handlers.get(*id).is_some_and(|el| {
-                    !el.disabled
-                        && (el.on_click.is_some()
-                            || el.on_drag.is_some()
-                            || el.on_swipe.is_some()
-                            || el.focusable
-                            || el.selectable
-                            || frame.toggle_overlay_of(*id).is_some())
+                    // `takes_press` is the shared definition; the overlay
+                    // anchor is the one part that needs the frame.
+                    el.takes_press() || (!el.disabled && frame.toggle_overlay_of(*id).is_some())
                 })
             });
             if let Some(id) = target {
