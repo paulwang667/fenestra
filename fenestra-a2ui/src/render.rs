@@ -8,12 +8,15 @@ use fenestra_kit::{
     ButtonVariant, button, card, checkbox, field, icon_button, modal, multi_select, select, slider,
     tabs, text_area, text_input,
 };
+use serde::Deserialize;
 use serde_json::Value;
 
-use crate::catalog::{Action, ChildList, ChoiceOption, Component, Dyn, FunctionCall, Kind};
-use crate::functions;
+use crate::catalog::{
+    Action, Check, Checks, ChildList, ChoiceOption, Component, Dyn, FunctionCall, Kind,
+};
 use crate::note::{Note, NoteKind};
 use crate::surface::Surface;
+use crate::{checks, functions};
 
 /// The deepest component chain the renderer follows. True cycles are
 /// caught exactly by the render-path stack (see [`render_by_id`]); this
@@ -22,8 +25,21 @@ use crate::surface::Surface;
 /// component lowers to roughly 1–3 element levels).
 const MAX_DEPTH: usize = 16;
 
+/// The catalog this build implements, by its canonical spec URL. Streams
+/// name it either this way or with the bare id `basic`.
+const BASIC_CATALOG_URL: &str = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json";
+
 /// The most children one template expansion materializes.
 const MAX_TEMPLATE_CHILDREN: usize = 1000;
+
+/// The most template-generated children one whole render materializes.
+///
+/// Capping each expansion bounds a factor; this bounds the product. Real
+/// surfaces do not come close — an eagerly-built tree of ten thousand rows
+/// is already past what anyone would put on screen, and nothing here is
+/// virtualized — while a nested template over the same list reaches it in
+/// three levels and would otherwise keep going.
+const MAX_TEMPLATE_TOTAL: usize = 10_000;
 
 /// Identity for one piece of client-side UI state: which component, and —
 /// when it was rendered inside a template expansion — which item.
@@ -172,7 +188,8 @@ pub struct Rendered {
 struct Ctx<'a> {
     surface: &'a Surface,
     theme: &'a Theme,
-    /// Component ids that some Modal names as its trigger.
+    /// The chain of component ids currently being rendered *as some
+    /// Modal's trigger*, innermost last.
     ///
     /// A Button with no `action` renders disabled, which is honest for an
     /// inert button and wrong for a modal trigger — that one opens a
@@ -181,7 +198,45 @@ struct Ctx<'a> {
     /// clearing `Element::disabled` afterwards restores hit-testing while
     /// leaving the button painted dead. The decision has to be made before
     /// the button is built, which means knowing here.
-    modal_triggers: std::collections::HashSet<String>,
+    ///
+    /// This used to be a set pre-scanned from every component the surface
+    /// had ever defined, which answered a subtly different question: "does
+    /// *some* Modal name this id?" rather than "is this Modal actually on
+    /// screen?". A Modal nothing references — the ordinary state of a
+    /// progressively-delivered stream, or of two Modals sharing a trigger
+    /// id like `close` — armed a button that no Modal would ever wrap. The
+    /// button then came out neither inert (so no note, no disabled paint)
+    /// nor clickable, and the surface reported full fidelity for a control
+    /// that does nothing. Only the Modal arm renders a trigger, so only it
+    /// can arm one.
+    armed_triggers: std::cell::RefCell<Vec<String>>,
+    /// Set by a Button that rendered *blocked by a failing check* while it
+    /// was armed as a Modal's trigger.
+    ///
+    /// A blocked button is built disabled and then wrapped, with its
+    /// message, in a column — and it was that column the Modal armed, so
+    /// clicking a control painted dead and marked invalid opened the dialog
+    /// anyway. The check has to win: it is the stream's own instruction not
+    /// to act yet.
+    blocked_trigger: std::cell::Cell<bool>,
+    /// How many more template-generated children this render may build.
+    ///
+    /// [`MAX_TEMPLATE_CHILDREN`] bounds one expansion; this bounds their
+    /// product. An absolute template path is scope-invariant by design, so
+    /// nesting templates over the same list multiplies without ever
+    /// repeating a component id — which is what cycle detection watches
+    /// for. Four levels over a 30-item list is 810 000 elements from half a
+    /// kilobyte of JSON.
+    template_budget: std::cell::Cell<usize>,
+    /// Compiled validation patterns, keyed by their source text.
+    ///
+    /// A template renders its component once per item, so a `regex` check
+    /// inside a thousand-row list compiles the same pattern a thousand
+    /// times per frame otherwise. `Err` is cached too — a pattern this
+    /// engine cannot take does not get cheaper on the second try.
+    patterns: std::cell::RefCell<
+        std::collections::HashMap<String, Result<regex::Regex, crate::checks::PatternError>>,
+    >,
     notes: std::cell::RefCell<Vec<Note>>,
     /// The id chain currently being rendered: exact cycle detection
     /// (`a → b → a` trips on re-entry, not after burning stack).
@@ -194,6 +249,20 @@ impl Ctx<'_> {
             &mut self.notes.borrow_mut(),
             Note::new(id, kind, detail.to_string()),
         );
+    }
+
+    /// A compiled validation pattern, from the cache or freshly compiled.
+    ///
+    /// Returns a clone of the compiled `Regex` — `regex::Regex` is an
+    /// `Arc` inside, so this is a refcount bump, not a recompile, and it
+    /// keeps the `RefCell` borrow from spanning the note that a failure
+    /// wants to record.
+    fn pattern(&self, pattern: &str) -> Result<regex::Regex, crate::checks::PatternError> {
+        self.patterns
+            .borrow_mut()
+            .entry(pattern.to_owned())
+            .or_insert_with(|| checks::compile_pattern(pattern))
+            .clone()
     }
 
     /// Reports an enum string the catalog does not define.
@@ -211,6 +280,40 @@ impl Ctx<'_> {
 }
 
 impl Surface {
+    /// Reports a `catalogId` this build does not implement.
+    ///
+    /// The crate implements the v0.9 *basic* catalog, named either bare or
+    /// by its spec URL. Anything else still renders — a foreign catalog's
+    /// components come out as `unknownComponent` placeholders one by one —
+    /// but that per-component safety net says nothing when the other
+    /// catalog reuses basic's *names* with different semantics, which is
+    /// the case where the surface looks perfect and is not.
+    fn note_foreign_catalog(&self, ctx: &Ctx) {
+        let Some(catalog) = self.catalog_id() else {
+            return;
+        };
+        // Matched whole, not by suffix. A suffix test accepts
+        // `.../v1_5/catalogs/basic/catalog.json` and any host's copy — and a
+        // later revision of the *basic* catalog is precisely the case this
+        // note exists for, since the component names stay the same while
+        // their meanings move.
+        let basic = matches!(
+            catalog.trim_end_matches('/'),
+            "basic" | BASIC_CATALOG_URL | "https://a2ui.org/specification/v0_9/catalogs/basic"
+        );
+        if !basic {
+            ctx.note(
+                "",
+                NoteKind::UnknownCatalog,
+                format!(
+                    "surface declares catalog {}; this build implements the v0.9 basic \
+                     catalog ({BASIC_CATALOG_URL}), so its components render best-effort",
+                    quoted(catalog)
+                ),
+            );
+        }
+    }
+
     /// Renders the surface's component tree. Missing `root` renders an
     /// empty placeholder with a note (progressive streams may simply not
     /// have delivered it yet).
@@ -219,17 +322,14 @@ impl Surface {
         let ctx = Ctx {
             surface: self,
             theme,
-            modal_triggers: self
-                .components
-                .values()
-                .filter_map(|c| match &c.kind {
-                    Kind::Modal { trigger, .. } => Some(trigger.clone()),
-                    _ => None,
-                })
-                .collect(),
+            armed_triggers: std::cell::RefCell::new(Vec::new()),
+            blocked_trigger: std::cell::Cell::new(false),
+            template_budget: std::cell::Cell::new(MAX_TEMPLATE_TOTAL),
+            patterns: std::cell::RefCell::new(std::collections::HashMap::new()),
             notes: std::cell::RefCell::new(Vec::new()),
             path_stack: std::cell::RefCell::new(Vec::new()),
         };
+        self.note_foreign_catalog(&ctx);
         let element = if self.components.contains_key("root") {
             render_by_id(&ctx, "root", None, 0)
         } else {
@@ -418,17 +518,406 @@ fn bound_f64(ctx: &Ctx, id: &str, path: &str, scope: Option<&str>, fallback: f64
 }
 
 fn resolve_bool(ctx: &Ctx, id: &str, d: &Dyn<bool>, scope: Option<&str>) -> bool {
+    // A value slot needs an answer, so an unevaluable condition reads as
+    // `false` here — it has already recorded why. Only `checks` can afford
+    // the third answer, because a rule that does not apply is a coherent
+    // thing for a *rule* to be.
+    eval_bool(ctx, id, d, scope, 0).unwrap_or(false)
+}
+
+/// The most nested `and`/`or`/`not` levels one condition may use.
+///
+/// The composition functions take conditions as arguments, so a condition
+/// is a tree an agent controls the depth of, evaluated by recursion.
+const MAX_CONDITION_DEPTH: usize = 16;
+
+/// A `DynamicBoolean`: a literal, a binding, or one of the catalog's
+/// boolean functions. `None` means *this build could not evaluate it*.
+///
+/// That third answer is the whole design. `true` cannot stand in for "does
+/// not apply", because `not` inverts it into `false` — which gates, showing
+/// the user a message they cannot act on, over a rule nobody could evaluate
+/// in the first place. Whether that happened came down to the parity of the
+/// surrounding `not`s. `None` propagates through every composition instead,
+/// and a note is recorded wherever it is produced.
+///
+/// A function call here used to be reported as a type error and read as
+/// `false`, which had it backwards — the catalog defines eight functions
+/// that return booleans and exist precisely to go in this slot.
+fn eval_bool(
+    ctx: &Ctx,
+    id: &str,
+    d: &Dyn<bool>,
+    scope: Option<&str>,
+    depth: usize,
+) -> Option<bool> {
     match d {
-        Dyn::Lit(b) => *b,
-        Dyn::Binding { path } => bound_bool(ctx, id, path, scope),
-        Dyn::Call(call) => {
+        Dyn::Lit(b) => Some(*b),
+        Dyn::Binding { path } => Some(bound_bool(ctx, id, path, scope)),
+        Dyn::Call(call) => eval_bool_call(ctx, id, call, scope, depth),
+    }
+}
+
+/// Deserializes a `DynamicBoolean` operand without cloning it: the JSON
+/// subtree is borrowed, not copied, which matters when a checked control
+/// sits inside a template and every row re-reads the same condition.
+fn operand(v: &Value) -> Option<Dyn<bool>> {
+    Dyn::<bool>::deserialize(v).ok()
+}
+
+/// Reads one argument as a `DynamicBoolean` and evaluates it.
+fn arg_bool(
+    ctx: &Ctx,
+    id: &str,
+    call: &FunctionCall,
+    key: &str,
+    scope: Option<&str>,
+    depth: usize,
+) -> Option<bool> {
+    match call.args.get(key) {
+        Some(v) => match operand(v) {
+            Some(d) => eval_bool(ctx, id, &d, scope, depth + 1),
+            None => {
+                ctx.note(
+                    id,
+                    NoteKind::BindingType,
+                    format!(
+                        "`{}` argument {key:?} is not a boolean condition; \
+                         the check does not gate",
+                        call.call
+                    ),
+                );
+                None
+            }
+        },
+        None => {
             ctx.note(
                 id,
-                NoteKind::BindingType,
-                format!("function {:?} in a boolean slot; false", call.call),
+                NoteKind::InvalidValue,
+                format!(
+                    "`{}` needs a {key:?} argument; the check does not gate",
+                    call.call
+                ),
             );
-            false
+            None
         }
+    }
+}
+
+/// A bound the stream may or may not have given, and may have given badly.
+enum Bound {
+    /// The stream omitted it; there is no bound to enforce.
+    Absent,
+    /// A usable number.
+    Given(f64),
+    /// Present, and not a number this build can use — an unresolvable
+    /// binding, a bool, an object, text that does not parse.
+    Unusable,
+}
+
+/// A numeric argument as one of those three.
+///
+/// The distinction is the point: folding "present but unusable" into
+/// "absent" silently drops the bound, so `{"call": "length", "min":
+/// "eight"}` renders a password field with no minimum length, no note, and
+/// `any_broken() == false`. That is the "this form looks validated" failure
+/// the note system exists to prevent.
+fn arg_bound(ctx: &Ctx, id: &str, call: &FunctionCall, key: &str, scope: Option<&str>) -> Bound {
+    if !call.args.contains_key(key) {
+        return Bound::Absent;
+    }
+    match arg_value(ctx, id, &call.args, key, scope) {
+        Value::Number(n) => n.as_f64().map_or(Bound::Unusable, Bound::Given),
+        Value::String(s) => s.trim().parse().map_or(Bound::Unusable, Bound::Given),
+        _ => Bound::Unusable,
+    }
+}
+
+/// Reads `min`/`max` for one predicate. `None` means at least one of them
+/// was given and could not be used, so the caller must not gate.
+fn arg_bounds(
+    ctx: &Ctx,
+    id: &str,
+    call: &FunctionCall,
+    scope: Option<&str>,
+    whole: bool,
+) -> Option<(Option<f64>, Option<f64>)> {
+    let read = |key: &str| match arg_bound(ctx, id, call, key, scope) {
+        Bound::Absent => Some(None),
+        // `length` bounds are counts: a negative or fractional one is not a
+        // length, and rounding it would enforce a limit nobody wrote.
+        Bound::Given(n) if n.is_finite() && (!whole || (n >= 0.0 && n.fract() == 0.0)) => {
+            Some(Some(n))
+        }
+        Bound::Given(_) | Bound::Unusable => {
+            ctx.note(
+                id,
+                NoteKind::InvalidValue,
+                format!(
+                    "`{}` bound {key:?} is not a usable {}; the check does not gate",
+                    call.call,
+                    if whole { "count" } else { "number" }
+                ),
+            );
+            None
+        }
+    };
+    // Both are read before either is judged, so a stream with two bad
+    // bounds hears about both rather than only the first.
+    let (min, max) = (read("min"), read("max"));
+    Some((min?, max?))
+}
+
+/// A predicate's subject value. `None` means the rule never named one,
+/// which is a malformed rule rather than "the value is null" — `required`
+/// read the latter as "nothing provided" and blocked the control with no
+/// note at all.
+fn arg_subject(ctx: &Ctx, id: &str, call: &FunctionCall, scope: Option<&str>) -> Option<Value> {
+    if !call.args.contains_key("value") {
+        ctx.note(
+            id,
+            NoteKind::InvalidValue,
+            format!(
+                "`{}` names no `value` to check; the check does not gate",
+                call.call
+            ),
+        );
+        return None;
+    }
+    Some(arg_value(ctx, id, &call.args, "value", scope))
+}
+
+/// The catalog's boolean functions.
+///
+/// `None` is "this build could not evaluate the rule" and always comes with
+/// a note. The rule then does not gate: failing *closed* would show a user a
+/// message they cannot satisfy on a control they cannot use, over a rule
+/// nobody could evaluate. Failing open with a **broken** note keeps the
+/// surface usable and still tells the caller a rule the stream asked for is
+/// not being enforced, so `any_broken` fires and nothing passes silently.
+fn eval_bool_call(
+    ctx: &Ctx,
+    id: &str,
+    call: &FunctionCall,
+    scope: Option<&str>,
+    depth: usize,
+) -> Option<bool> {
+    if depth >= MAX_CONDITION_DEPTH {
+        ctx.note(
+            id,
+            NoteKind::DepthCap,
+            format!("condition nests deeper than {MAX_CONDITION_DEPTH}; it does not gate"),
+        );
+        return None;
+    }
+    match call.call.as_str() {
+        "required" => Some(checks::required(&arg_subject(ctx, id, call, scope)?)),
+        "email" => Some(checks::email(&functions::display(&arg_subject(
+            ctx, id, call, scope,
+        )?))),
+        "length" => {
+            let value = functions::display(&arg_subject(ctx, id, call, scope)?);
+            let (min, max) = arg_bounds(ctx, id, call, scope, true)?;
+            #[expect(
+                clippy::cast_sign_loss,
+                clippy::cast_possible_truncation,
+                reason = "arg_bounds accepts only finite, non-negative whole numbers here"
+            )]
+            Some(checks::length(
+                &value,
+                min.map(|n| n as u64),
+                max.map(|n| n as u64),
+            ))
+        }
+        "numeric" => {
+            let value = arg_subject(ctx, id, call, scope)?;
+            let (min, max) = arg_bounds(ctx, id, call, scope, false)?;
+            Some(checks::numeric(&value, min, max))
+        }
+        "regex" => {
+            let value = functions::display(&arg_subject(ctx, id, call, scope)?);
+            let Some(pattern) = call.args.get("pattern").and_then(Value::as_str) else {
+                ctx.note(
+                    id,
+                    NoteKind::InvalidValue,
+                    "`regex` needs a string `pattern`; the check does not gate",
+                );
+                return None;
+            };
+            match ctx.pattern(pattern) {
+                Ok(re) => Some(checks::matches(&re, &value)),
+                Err(why) => {
+                    note_bad_pattern(ctx, id, "pattern", pattern, &why, "the check does not gate");
+                    None
+                }
+            }
+        }
+        "not" => Some(!arg_bool(ctx, id, call, "value", scope, depth)?),
+        "and" | "or" => {
+            let all = call.call == "and";
+            let Some(Value::Array(values)) = call.args.get("values") else {
+                ctx.note(
+                    id,
+                    NoteKind::InvalidValue,
+                    format!(
+                        "`{}` needs a `values` list; the check does not gate",
+                        call.call
+                    ),
+                );
+                return None;
+            };
+            // The catalog requires at least two operands. Below that the
+            // result is vacuous rather than meaningful — and `or` over an
+            // empty list is vacuously *false*, which gates. A stream that
+            // sends a composition before its operands (the same progressive
+            // delivery the modal fix was written for) would lock the form
+            // with no diagnostic at all.
+            if values.len() < 2 {
+                ctx.note(
+                    id,
+                    NoteKind::InvalidValue,
+                    format!(
+                        "`{}` needs at least two operands, got {}; the check does not gate",
+                        call.call,
+                        values.len()
+                    ),
+                );
+                return None;
+            }
+            // Evaluated in full rather than short-circuited: a later operand
+            // that cannot be evaluated has a note to record, and stopping
+            // early would hide it on exactly the streams where it matters.
+            let mut known = Vec::with_capacity(values.len());
+            for v in values {
+                match operand(v) {
+                    Some(d) => known.push(eval_bool(ctx, id, &d, scope, depth + 1)),
+                    None => {
+                        ctx.note(
+                            id,
+                            NoteKind::BindingType,
+                            format!(
+                                "`{}` was given something that is not a condition; \
+                                 that operand does not gate",
+                                call.call
+                            ),
+                        );
+                        known.push(None);
+                    }
+                }
+            }
+            // Operands this build could not evaluate drop out rather than
+            // poisoning the whole composition: `and(required(x), unknown())`
+            // still enforces `required`, which is more of the stream's
+            // intent than enforcing nothing. If none survive there is no
+            // answer to give.
+            let answered: Vec<bool> = known.into_iter().flatten().collect();
+            if answered.is_empty() {
+                return None;
+            }
+            Some(if all {
+                answered.iter().all(|b| *b)
+            } else {
+                answered.iter().any(|b| *b)
+            })
+        }
+        other => {
+            ctx.note(
+                id,
+                NoteKind::UnimplementedFunction,
+                format!("boolean function {other:?} is not implemented; the check does not gate"),
+            );
+            None
+        }
+    }
+}
+
+/// Explains a pattern that would not compile, without guessing at why.
+///
+/// Blaming every failure on the missing lookaround and backreferences sends
+/// an agent to rewrite its *client* when what it actually typed was `[a-`.
+/// The engine already knows the difference; [`checks::PatternError`] carries
+/// it, and this says only what is true.
+fn note_bad_pattern(
+    ctx: &Ctx,
+    id: &str,
+    field: &str,
+    pattern: &str,
+    why: &crate::checks::PatternError,
+    consequence: &str,
+) {
+    let cause = if why.unsupported_here {
+        "; this engine runs in linear time and has no backreferences or lookaround, \
+         so a pattern written for a browser client may need rewriting"
+    } else {
+        "; the pattern itself is malformed"
+    };
+    ctx.note(
+        id,
+        NoteKind::InvalidValue,
+        format!(
+            "{field} {} does not compile ({}){cause}, so {consequence}",
+            quoted(pattern),
+            why.message
+        ),
+    );
+}
+
+/// The first failing check's message, or `None` when the value is valid.
+///
+/// Order is the stream's: a control shows one message at a time, and the
+/// first rule written is the one an author expects to see first.
+fn evaluate_checks(ctx: &Ctx, id: &str, checks: &Checks, scope: Option<&str>) -> Option<String> {
+    let mut failure = None;
+    for check in &checks.0 {
+        match check {
+            Check::Rule(rule) => {
+                // `None` — could not be evaluated — deliberately does not
+                // gate; whatever produced it has already recorded a note.
+                if eval_bool(ctx, id, &rule.condition, scope, 0) == Some(false) && failure.is_none()
+                {
+                    failure = Some(rule.message.clone());
+                }
+            }
+            Check::Malformed(raw) => ctx.note(
+                id,
+                NoteKind::MalformedComponent,
+                format!(
+                    "check {} is not a {{condition, message}} rule; it does not gate",
+                    quoted(&raw.to_string())
+                ),
+            ),
+        }
+    }
+    failure
+}
+
+/// Wraps a control in its label and, when a check fails, its message.
+///
+/// One helper for every input in the catalog: `field` already renders a
+/// danger-toned error line and the kit's controls already have an invalid
+/// ring, so the alternative was five slightly different hand-rolled
+/// versions of the same thing.
+fn labeled_control(
+    label: Option<String>,
+    control: Element<A2uiMsg>,
+    failure: Option<String>,
+    theme: &Theme,
+) -> Element<A2uiMsg> {
+    match (label, failure) {
+        (Some(label), failure) => {
+            let mut f = field(label).child(control);
+            if let Some(message) = failure {
+                f = f.error(message);
+            }
+            f.into()
+        }
+        // No label means no `field` to hang an error line off, so the
+        // message goes directly beneath rather than being dropped.
+        (None, Some(message)) => col().gap(4.0).children((
+            control,
+            text(message).size(TextSize::Sm).color(theme.danger.text),
+        )),
+        (None, None) => control,
     }
 }
 
@@ -645,24 +1134,26 @@ fn note_unhonored(ctx: &Ctx, id: &str, field: &str, instead: &str) {
     );
 }
 
-/// `checks` and `validationRegexp` parse but gate nothing yet. Say so, so a
-/// stream never believes its validation is running when it is not — the
-/// difference between "this form is validated" and "this form looks
-/// validated" is exactly what a fidelity note is for.
-fn note_unenforced_validation(ctx: &Ctx, id: &str, checks: Option<&Value>, regexp: Option<&str>) {
-    if checks.is_some_and(|c| !c.is_null()) {
-        ctx.note(
-            id,
-            NoteKind::Unsupported,
-            "`checks` parsed but does not gate this control yet",
-        );
-    }
-    if regexp.is_some() {
-        ctx.note(
-            id,
-            NoteKind::Unsupported,
-            "`validationRegexp` parsed but is not enforced yet",
-        );
+/// TextField's `validationRegexp`, as a failure message or nothing.
+///
+/// The catalog gives no message for this one — unlike a `checks` rule,
+/// which carries its own — so the field says what is wrong in the plainest
+/// terms available.
+fn pattern_failure(ctx: &Ctx, id: &str, pattern: Option<&str>, current: &str) -> Option<String> {
+    let pattern = pattern?;
+    match ctx.pattern(pattern) {
+        Ok(re) => (!checks::matches(&re, current)).then(|| "Invalid format.".to_owned()),
+        Err(why) => {
+            note_bad_pattern(
+                ctx,
+                id,
+                "validationRegexp",
+                pattern,
+                &why,
+                "the field is not validated",
+            );
+            None
+        }
     }
 }
 
@@ -758,11 +1249,30 @@ fn children_of(
                     ),
                 );
             }
+            // Per-expansion cap, then the render-wide one: nesting templates
+            // over the same list multiplies, and each level alone is
+            // perfectly reasonable.
+            let wanted = items.len().min(MAX_TEMPLATE_CHILDREN);
+            let budget = ctx.template_budget.get();
+            let allowed = wanted.min(budget);
+            ctx.template_budget.set(budget - allowed);
+            if allowed < wanted {
+                ctx.note(
+                    id,
+                    NoteKind::Truncated,
+                    format!(
+                        "this render has materialized {} of {MAX_TEMPLATE_TOTAL} template \
+                         children; {} more here were dropped (nested templates multiply)",
+                        MAX_TEMPLATE_TOTAL - ctx.template_budget.get(),
+                        wanted - allowed
+                    ),
+                );
+            }
             // The canonical join: an absolute template path stays absolute
             // even inside a collection scope (a naive `{scope}/{path}` join
             // used to corrupt it into a `//` pointer).
             let base = absolute(path, scope);
-            (0..items.len().min(MAX_TEMPLATE_CHILDREN))
+            (0..allowed)
                 .map(|i| {
                     let item_scope = format!("{base}/{i}");
                     render_by_id(ctx, component_id, Some(&item_scope), depth + 1)
@@ -1026,8 +1536,23 @@ fn render_component(
         Kind::Modal { trigger, content } => {
             let modal_key = ui_key(id, scope);
             let open = ctx.surface.ui.open_modals.contains(&modal_key);
+            // Arm the trigger only while it is genuinely being rendered as
+            // one, so a Modal nothing reaches cannot vouch for a button it
+            // will never wrap. Popped straight after: a trigger that is
+            // itself inside another Modal's trigger must not stay armed for
+            // its siblings.
+            ctx.armed_triggers.borrow_mut().push(trigger.clone());
+            ctx.blocked_trigger.set(false);
             let trigger_el = render_by_id(ctx, trigger, scope, depth + 1);
-            let opener = open_modal_trigger(ctx, id, &modal_key, trigger_el);
+            ctx.armed_triggers.borrow_mut().pop();
+            // A trigger whose own checks fail stays as rendered: disabled,
+            // showing why. Arming it would hand the press to the wrapper
+            // around the dead button and open the dialog regardless.
+            let opener = if ctx.blocked_trigger.replace(false) {
+                trigger_el
+            } else {
+                open_modal_trigger(ctx, id, &modal_key, trigger_el)
+            };
             if open {
                 col().children((
                     opener,
@@ -1053,7 +1578,7 @@ fn render_component(
             action,
             checks,
         } => {
-            note_unenforced_validation(ctx, id, checks.as_ref(), None);
+            let failure = evaluate_checks(ctx, id, checks, scope);
             // Extract a text label when the child is a Text component; any
             // other child renders inside an icon button.
             let child_component = ctx.surface.components.get(child);
@@ -1074,13 +1599,28 @@ fn render_component(
                 }
             };
             let msg = action.as_ref().map(|a| action_msg(ctx, id, a, scope));
-            let opens_a_modal = ctx.modal_triggers.contains(id);
+            // Only the Modal currently rendering *this* component as its
+            // trigger counts. `last()` is the innermost one, which is the
+            // Modal that will wrap what we are building right now.
+            let opens_a_modal = ctx
+                .armed_triggers
+                .borrow()
+                .last()
+                .is_some_and(|armed| armed == id);
             // An action that resolved to nothing leaves the button just as
             // dead as no action at all — `Ignored` is what an unimplemented
             // function or an unresolvable openUrl becomes. Both answers to
             // "can this button do anything?" have to be the same, or the
             // note below is true of one path and a lie about the other.
             let inert = !opens_a_modal && matches!(msg, None | Some(A2uiMsg::Ignored));
+            // A failing check is the whole point of putting one on a
+            // button: it must not carry out its action. Decided here, before
+            // the widget is built, because the kit bakes disabled styling in
+            // at build time.
+            let blocked = failure.is_some();
+            if blocked && opens_a_modal {
+                ctx.blocked_trigger.set(true);
+            }
             if inert {
                 ctx.note(
                     id,
@@ -1094,13 +1634,13 @@ fn render_component(
                     let mut b = button(label).variant(kit_variant);
                     // A modal trigger has something to do even without an
                     // action of its own, so it must not be *built* disabled
-                    // — see `Ctx::modal_triggers`.
-                    if inert {
+                    // — see `Ctx::armed_triggers`.
+                    if inert || blocked {
                         b = b.disabled(true);
                     } else if let Some(m) = msg {
                         b = b.on_click(m);
                     }
-                    b.into()
+                    labeled_control(None, b.into(), failure, ctx.theme)
                 }
                 None => {
                     let inner = render_by_id(ctx, child, scope, depth + 1);
@@ -1108,12 +1648,12 @@ fn render_component(
                     // Same rule as the labeled branch — an inert button
                     // must *look* inert, or the note above is a lie and the
                     // user presses a live-looking control that does nothing.
-                    if inert {
+                    if inert || blocked {
                         b = b.disabled(true);
                     } else if let Some(m) = msg {
                         b = b.on_click(m);
                     }
-                    b.into()
+                    labeled_control(None, b.into(), failure, ctx.theme)
                 }
             }
         }
@@ -1124,7 +1664,6 @@ fn render_component(
             validation_regexp,
             checks,
         } => {
-            note_unenforced_validation(ctx, id, checks.as_ref(), validation_regexp.as_deref());
             let label = resolve_value(ctx, id, label, scope);
             let (current, write) = input_state(ctx, id, value.as_ref(), scope);
             match variant.as_deref() {
@@ -1148,19 +1687,22 @@ fn render_component(
                      contain the value the stream asked to hide",
                 );
             }
+            let failure = evaluate_checks(ctx, id, checks, scope)
+                .or_else(|| pattern_failure(ctx, id, validation_regexp.as_deref(), &current));
+            let invalid = failure.is_some();
             let control: Element<A2uiMsg> = if variant.as_deref() == Some("longText") {
-                text_area(current).on_input(write).into()
+                text_area(current).invalid(invalid).on_input(write).into()
             } else {
-                text_input(current).on_input(write).into()
+                text_input(current).invalid(invalid).on_input(write).into()
             };
-            field(label).child(control).into()
+            labeled_control(Some(label), control, failure, ctx.theme)
         }
         Kind::CheckBox {
             label,
             value,
             checks,
         } => {
-            note_unenforced_validation(ctx, id, checks.as_ref(), None);
+            let failure = evaluate_checks(ctx, id, checks, scope);
             let label = resolve_value(ctx, id, label, scope);
             let (checked, path) = match value {
                 Dyn::Binding { path } => (
@@ -1192,7 +1734,7 @@ fn render_component(
                     value: Value::Bool(!checked),
                 }),
             };
-            cb.into()
+            labeled_control(None, cb.into(), failure, ctx.theme)
         }
         Kind::ChoicePicker {
             label,
@@ -1203,7 +1745,7 @@ fn render_component(
             filterable,
             checks,
         } => {
-            note_unenforced_validation(ctx, id, checks.as_ref(), None);
+            let failure = evaluate_checks(ctx, id, checks, scope);
             if display_style.is_some() {
                 note_unhonored(
                     ctx,
@@ -1218,11 +1760,14 @@ fn render_component(
             render_choice_picker(
                 ctx,
                 id,
-                label.as_ref(),
-                variant.as_deref(),
-                options,
-                value,
                 scope,
+                PickerSpec {
+                    label: label.as_ref(),
+                    variant: variant.as_deref(),
+                    options,
+                    value,
+                    failure,
+                },
             )
         }
         Kind::Slider {
@@ -1232,7 +1777,7 @@ fn render_component(
             value,
             checks,
         } => {
-            note_unenforced_validation(ctx, id, checks.as_ref(), None);
+            let failure = evaluate_checks(ctx, id, checks, scope);
             let requested_min = min.unwrap_or(0.0);
             let requested_max = *max;
             // `Slider::range` ignores anything that is not max > min, and it
@@ -1306,10 +1851,12 @@ fn render_component(
                     })
                 }
             };
-            match label {
-                Some(l) => field(resolve_value(ctx, id, l, scope)).child(s).into(),
-                None => s.into(),
-            }
+            labeled_control(
+                label.as_ref().map(|l| resolve_value(ctx, id, l, scope)),
+                s.into(),
+                failure,
+                ctx.theme,
+            )
         }
         Kind::DateTimeInput {
             value,
@@ -1320,7 +1867,7 @@ fn render_component(
             max,
             checks,
         } => {
-            note_unenforced_validation(ctx, id, checks.as_ref(), None);
+            let failure = evaluate_checks(ctx, id, checks, scope);
             if enable_time == &Some(true) || enable_date == &Some(false) {
                 note_unhonored(
                     ctx,
@@ -1340,11 +1887,14 @@ fn render_component(
             let (current, write) = input_state(ctx, id, Some(value), scope);
             let input = text_input(current)
                 .placeholder("YYYY-MM-DD")
+                .invalid(failure.is_some())
                 .on_input(write);
-            match label {
-                Some(l) => field(resolve_value(ctx, id, l, scope)).child(input).into(),
-                None => input.into(),
-            }
+            labeled_control(
+                label.as_ref().map(|l| resolve_value(ctx, id, l, scope)),
+                input.into(),
+                failure,
+                ctx.theme,
+            )
         }
         Kind::Unknown(raw) => {
             let name = raw
@@ -1520,15 +2070,31 @@ fn resolve_context(ctx: &Ctx, value: &Value, scope: Option<&str>) -> Value {
     }
 }
 
+/// Everything a ChoicePicker renders from, gathered so the renderer takes
+/// a subject rather than a parameter list.
+struct PickerSpec<'a> {
+    label: Option<&'a Dyn<String>>,
+    variant: Option<&'a str>,
+    options: &'a [ChoiceOption],
+    /// The selection: a list, a single string, or a `{"path"}` binding.
+    value: &'a Value,
+    /// The failing check's message, when one failed.
+    failure: Option<String>,
+}
+
 fn render_choice_picker(
     ctx: &Ctx,
     id: &str,
-    label: Option<&Dyn<String>>,
-    variant: Option<&str>,
-    options: &[ChoiceOption],
-    value: &Value,
     scope: Option<&str>,
+    spec: PickerSpec<'_>,
 ) -> Element<A2uiMsg> {
+    let PickerSpec {
+        label,
+        variant,
+        options,
+        value,
+        failure,
+    } = spec;
     let labels: Vec<String> = options
         .iter()
         .map(|o| resolve_value(ctx, id, &o.label, scope))
@@ -1676,10 +2242,10 @@ fn render_choice_picker(
         }
         sel.into()
     };
-    match label {
-        Some(l) => field(resolve_value(ctx, id, l, scope))
-            .child(control)
-            .into(),
-        None => control,
-    }
+    labeled_control(
+        label.map(|l| resolve_value(ctx, id, l, scope)),
+        control,
+        failure,
+        ctx.theme,
+    )
 }

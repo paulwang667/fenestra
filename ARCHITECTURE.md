@@ -3805,3 +3805,125 @@ Decisions of record:
   thread silently. Surface notes deduplicate and cap. These join the
   existing depth and template caps as one habit: an unbounded loop driven by
   input is a hang waiting to happen.
+
+## The publish order is derived, not remembered (2026-08-06)
+
+Cutting 0.41.0 turned up two release-blocking mistakes in machinery nothing
+was checking, both of the same shape: a version or an ordering written down
+by hand in one place and left behind when the tree moved.
+
+`fenestra-render` depends on `fenestra-a2ui`, but `release.yml` carried its
+publish list literally and never gained the new crate — and it ordered
+`fenestra-markdown` *after* the crate that reaches it through a2ui. crates.io
+publishes one crate at a time and nothing can be unpublished, so either
+mistake strands a tag halfway: some crates live at the new version, the rest
+never make it, and the only way forward is another version.
+
+Separately, the facade's dev-dependency on `fenestra-looks` restated
+`version = "0.40.0"` instead of going through the workspace table. A bump to
+0.41.0 makes that requirement unsatisfiable by the crate sitting next to it,
+and cargo's answer is not an error — it quietly resolves the *published*
+0.40.0 from crates.io, so the examples build against a copy of the crate that
+is not in the checkout.
+
+Decisions of record:
+
+- **`.github/scripts/publish-order.py` derives the order** from `cargo
+  metadata`, topologically, with dev- and build-dependencies as edges
+  (`cargo publish` verifies by building, and that build resolves them from
+  the registry — which is why shell must precede kit). Both the publish loop
+  and the attestation packaging loop read it, so they cannot disagree.
+- **The same script refuses to print an order** when any in-workspace
+  dependency names a version its target no longer has. The release fails
+  before publishing anything, rather than after publishing three crates.
+- **CI runs it on every PR** and diffs its output against the workspace's
+  publishable members, so a crate added without a home fails on the branch
+  rather than on the tag.
+- **`fenestra-anim` joined the loop.** It is versioned independently and is
+  usually already published, which the idempotent skip handles — but leaving
+  it out meant a change to anim could ship a `fenestra-core` depending on a
+  version of it that was never published.
+- **`fenestra-mcp` rejoins the workspace number at 0.41.0.** It stays a
+  literal (the 2026-07-10 decoupling still stands — it may need a
+  metadata-only bump again), but 0.40.1 is already on crates.io, so leaving
+  it there would have made the release skip it silently and strand an MCP
+  server built against 0.41.0 crates. Its `server.json` deliberately still
+  says 0.40.1: that file describes a *published `.mcpb` artifact* with a
+  recorded SHA-256, and bumping it without building a new bundle would point
+  the MCP Registry at a release URL that does not exist.
+
+## Validation gates, and the two ways a short stream did unbounded harm (2026-08-06)
+
+A fourth adversarial review of the A2UI renderer, and the largest gap it had
+left: `checks` and `validationRegexp` parsed and gated nothing. A stream that
+said "accept the terms before submitting" got a submit button that submitted.
+
+Decisions of record:
+
+- **The catalog's boolean functions are the point of `DynamicBoolean`.** The
+  basic catalog defines eight — `required`, `regex`, `length`, `numeric`,
+  `email`, `and`, `or`, `not` — and the renderer implemented none, treating a
+  function call in a boolean slot as a type error worth a note and a `false`.
+  That had it backwards: the slot exists for those calls. Fixing `checks`
+  fixed `CheckBox.value` with it.
+- **The leaf predicates defer to `fenestra_kit::validation`.** The kit's
+  engine already mirrors the web's Constraint Validation API, which is what
+  an agent authoring for a browser client expects — including "every check
+  but `required` passes on an empty value". Re-deriving email and length
+  semantics next to it would have been a second copy to drift. The kit
+  deliberately has no `regex` dependency, so pattern matching is the one
+  predicate that lives in a2ui; `regex` was already a direct dependency of
+  `fenestra-describe`, so this is a workspace edge, not a new crate.
+- **An unevaluable rule fails open, loudly.** A pattern needing ECMAScript
+  lookaround does not compile in Rust's linear-time engine, and a newer
+  catalog's function is not implemented here. Failing *closed* would show a
+  message the user cannot satisfy on a control they cannot use; failing open
+  with a **broken** note keeps the surface usable and still fires
+  `any_broken`. The rule is: never block a user over a rule nobody can
+  satisfy, never let the caller believe a rule is enforced when it is not.
+- **"Could not evaluate" is a third answer, not a sentinel value.** The
+  first cut of the above used `true` to mean "does not gate" — and `not`
+  inverted it into `false`, which gates. Whether an unevaluable rule blocked
+  the user came down to the parity of the `not`s around it, and a test with
+  an even count passed. Booleans that can be composed cannot carry an
+  out-of-band meaning in one of their two values; evaluation returns
+  `Option<bool>` and `None` propagates through `not`, `and` and `or`.
+  Operands that answer `None` drop out of a composition rather than
+  poisoning it, so `and(required(x), unknown())` still enforces `required` —
+  more of the stream's intent than enforcing nothing.
+- **"Absent" and "present but unusable" are different arguments.** Folding
+  them together let `{"call": "length", "min": "eight"}` render a password
+  field with no minimum length, no note, and `any_broken() == false` — the
+  exact "this form looks validated" failure the note system exists to
+  prevent. Same for a rule naming no `value` at all, which `required` read
+  as "nothing was provided" and used to block the control over.
+- **A wrapper changes who receives the press.** Adding the validation
+  message put the Button inside a column, and the Modal armed *that*, so a
+  control painted dead and marked invalid opened the dialog anyway. Anything
+  that composes an element after the fact has to ask whether it is still
+  composing onto the same node — this is the second bug of that exact shape
+  in this crate (the first was the modal trigger wrapping its own
+  interactive child).
+- **`required` reads an unticked box as nothing provided.** `false` is not
+  "empty" by a literal reading, but `required` on a CheckBox is how a stream
+  says "you must accept the terms", and the other reading leaves that
+  inexpressible.
+- **`checks` cannot fail to parse.** `Component` degrades any parse error to
+  a `Kind::Unknown` placeholder for the whole component, so one mistyped rule
+  used to erase the control it was meant to guard. `Checks` accepts any JSON:
+  unrecognized entries become `Check::Malformed`, reported individually while
+  their well-formed siblings still gate.
+- **Caps bound products, not just factors.** `MAX_TEMPLATE_CHILDREN` bounded
+  one expansion; nested templates over the same absolute path multiplied to
+  1.65 million elements in 3.4 seconds from half a kilobyte of JSON, without
+  repeating a component id and so without tripping cycle detection. The new
+  render-wide budget is the general form of the lesson: when a cap is
+  per-occurrence and occurrences nest, the cap does not bound the work.
+- **Only a Modal that renders can arm its trigger.** The pre-scanned trigger
+  set answered a question one step off from the real one, and a Modal nothing
+  referenced armed a button no Modal would wrap — leaving it enabled, silent,
+  and dead. The arming now happens inside the traversal, where "is this
+  actually on screen" is not a guess.
+- **Notes need somewhere to go when no surface owns them.** A stream-level
+  message naming no live surface had no home and was dropped with `Ok(())`.
+  `Client::notes()` is that home.

@@ -35,6 +35,18 @@ jobs:
           toolchain: stable
           components: rustfmt
       - run: cargo fmt --all --check
+      # A release tag publishes crates one at a time and cannot take any of
+      # them back, so an unpublishable order must fail here, on the PR, rather
+      # than halfway through the tag.
+      - name: Release publish order covers every publishable crate
+        run: |
+          set -euo pipefail
+          order=$(python3 .github/scripts/publish-order.py)
+          members=$(cargo metadata --no-deps --format-version 1 | python3 -c \
+            'import json,sys; p=json.load(sys.stdin)["packages"]; print("\n".join(
+             q["name"] for q in p if q.get("publish") is None or q["publish"]))')
+          diff <(sort <<<"$order") <(sort <<<"$members")
+          echo "$order"
 
   clippy:
     name: clippy

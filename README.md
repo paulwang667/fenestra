@@ -264,7 +264,7 @@ via `.rounded_full()`).
 
 ## Status
 
-fenestra is at 0.40.0. [ARCHITECTURE.md](ARCHITECTURE.md) records how it got
+fenestra is at 0.41.0. [ARCHITECTURE.md](ARCHITECTURE.md) records how it got
 there, decision by decision.
 
 Shipped: the interactive widget kit in light and dark themes; six ready-made

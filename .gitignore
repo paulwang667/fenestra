@@ -12,3 +12,4 @@ CLAUDE.local.md
 
 # mdBook build output.
 /book/book/
+__pycache__/

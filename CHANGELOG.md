@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.41.0 — 2026-08-06
+
+Three adversarial review rounds over the A2UI renderer, and what they turned
+up: notes an agent can branch on instead of a bag of strings, a dozen places
+that rendered something plausible in silence, and a handful of controls that
+destroyed the data they were bound to. Plus the release machinery itself —
+the publish order is derived now, because the hand-written one had already
+gone stale in a way that would have failed a tag halfway through.
 
 ### A2UI: typed fidelity notes, and the bugs two reviews found
 
@@ -14,7 +21,12 @@ action), and returning an `Option` meant silently dropping one.
 carries template scope as well as the component id. An unimplemented action
 function no longer emits an `unimplemented:<fn>` event to the agent; it does
 nothing, with a note. `parse_size` (CLI, scenario runner, MCP) rejects a
-zero dimension that previously clamped silently to a 1px render.
+zero dimension that previously clamped silently to a 1px render. The
+`checks` field on the six catalog components that carry it
+(`Button`, `TextField`, `CheckBox`, `ChoicePicker`, `Slider`,
+`DateTimeInput`) is a typed `Checks` rather than `Option<Value>`, so code
+matching `Kind::TextField { checks, .. }` and reading it as JSON needs
+updating; `Client` gained `notes()`.
 
 **Notes are machine-readable.** `Note { component_id, kind, detail }` with a
 `NoteKind` a caller can branch on and a `NoteSeverity` separating "the
@@ -181,8 +193,86 @@ further (all regression-tested):
   ARCHITECTURE.md: it is a second paint backend today, not a fallback
   flag.)
 
+- **A2UI client-side validation actually validates.** `checks` and
+  `validationRegexp` used to parse and then gate nothing, which meant a
+  stream saying "accept the terms before submitting" rendered a submit
+  button that submitted. A control's `checks` now run on every render: the
+  first failing rule shows its own message with the control marked invalid,
+  and a Button whose checks fail carries no action at all. All eight of the
+  basic catalog's boolean functions are implemented — `required`, `regex`,
+  `length`, `numeric`, `email`, and `and`/`or`/`not` to compose them — which
+  also fixes a `DynamicBoolean` slot rejecting the function calls the spec
+  says belong in it (`CheckBox.value` included: a call there was reported as
+  a type error and read as `false`). The leaf predicates defer to
+  `fenestra_kit::validation` rather than re-deriving email/length/number
+  semantics, so they behave like the web's Constraint Validation API an
+  agent is authoring against — including "every check but `required` passes
+  on an empty value". A rule this build cannot evaluate does not gate and
+  records a **broken** note: the user is never blocked by a rule nobody can
+  satisfy, and the caller is still told the rule is not being enforced.
+  That covers patterns needing ECMAScript lookaround or backreferences,
+  which Rust's linear-time engine does not have. `checks` in any shape at
+  all is now impossible to fail parsing — a mistyped rule used to sink its
+  whole component into an unknown-component placeholder, erasing the
+  control it was meant to guard.
+- **A golden PNG for every component in the A2UI basic catalog.** The two
+  composite conformance goldens were a coarse net — a component that appears
+  in neither could lose its border, its disabled tint or its label spacing
+  with every test still green. All 18 entries are now pinned individually, so
+  a kit styling regression names the component it broke, and a drift guard
+  fails if a catalog entry ever arrives without one. The fixtures are checked
+  for their own soundness first: a typo would otherwise deserialize to
+  `Kind::Unknown`, render a plausible placeholder, and pin *that* as the
+  golden for a component that never rendered at all.
+
 ### Fixed
 
+- **A nested template could hang any render.** `MAX_TEMPLATE_CHILDREN`
+  bounded each expansion at 1000 and nothing bounded their product. An
+  absolute template path is scope-invariant by design, so every level of
+  nesting re-expands the same list, and cycle detection never fires because
+  each level is a distinct component id. Four levels over a 30-item list
+  built **1 647 931 elements in 3.4 seconds from ~500 bytes of JSON**, and
+  the depth cap of 16 allowed far worse — reachable through `Surface::render`
+  from the MCP server, the CLI, and the live window on agent-supplied input.
+  A render-wide budget now bounds the product and reports what it dropped.
+- **An unreachable Modal silently disarmed a live-looking Button.** The
+  trigger set was pre-scanned from every component the surface had ever
+  defined, which answers "does *some* Modal name this id?" rather than "is
+  that Modal on screen?". A Modal nothing references — the ordinary state of
+  a progressively-delivered stream, or two Modals sharing a trigger id like
+  `close` — marked a Button as a trigger no Modal would ever wrap. The
+  button came out neither inert (so no note and no disabled paint) nor
+  clickable, and `any_broken()` returned false for a control that does
+  nothing. Only the Modal actually rendering a trigger can arm one now.
+- **A message belonging to no surface vanished without a trace.** An unknown
+  message type is recorded on the surface it names; one with no `surfaceId`,
+  or naming a surface not yet created or already deleted, matched nothing
+  and returned `Ok(())` with nothing written anywhere. New `Client::notes()`
+  carries stream-level notes so the "silence means fidelity" contract holds
+  for the whole stream, not just per surface.
+- **A foreign `catalogId` is reported.** The docs promised a note for a
+  catalog this build does not implement and no code ever produced one. Both
+  spellings of the basic catalog — the bare id and the spec URL — stay
+  silent, so conforming streams do not cry wolf.
+- **The release would have failed halfway through a tag.** `fenestra-render`
+  depends on `fenestra-a2ui`, but the workflow's hand-written publish list
+  never gained the new crate, and it ordered `fenestra-markdown` *after* the
+  crate that reaches it through a2ui. Since crates.io publishes one at a time
+  and nothing can be unpublished, either mistake strands a release mid-flight.
+  The order is derived from `cargo metadata` now
+  (`.github/scripts/publish-order.py`, dev- and build-dependencies included
+  because `cargo publish` resolves them during verification), CI fails the PR
+  if it is uncoverable or cyclic, and `fenestra-anim` joins the loop so a
+  change to it can no longer publish a `fenestra-core` that depends on a
+  stale copy. `fenestra-a2ui` and the facade's `fenestra-looks`
+  dev-dependency stopped restating their versions by hand and go through the
+  workspace table — the second one mattered immediately: `^0.40.0` against a
+  0.41.0 crate is not an error to cargo, it is an instruction to resolve the
+  published copy instead of the one in the checkout, so the examples would
+  have built against a `fenestra-looks` that is not in this tree. The script
+  now refuses to print an order at all while any internal requirement names a
+  version its target no longer has.
 - The web runner now installs a real clipboard: in-app copy/paste works
   and copy-out reaches the system clipboard via `navigator.clipboard`
   (paste-in from other apps remains the documented gap — see

@@ -39,9 +39,23 @@
 //!
 //! The current inexact cases: remote images, video and audio render as
 //! labeled placeholders (a deterministic render never touches the
-//! network), `DateTimeInput` is an ISO text field rather than a calendar,
-//! and `checks`/`validationRegexp` parse but do not gate anything yet.
-//! Those are `approximate` — the surface still does its job.
+//! network), and `DateTimeInput` is an ISO text field rather than a
+//! calendar. Those are `approximate` — the surface still does its job.
+//!
+//! Client-side validation *is* enforced. A control's `checks` are
+//! evaluated every render and the first failing rule shows its own
+//! message beneath the control; a Button whose checks fail carries no
+//! action at all, which is the entire point of putting one there, and a
+//! Modal trigger whose checks fail does not open its dialog. TextField and
+//! DateTimeInput also take the kit's invalid ring — CheckBox, ChoicePicker
+//! and Slider show the message without one, because the kit's controls for
+//! those have no invalid state yet. All eight of the catalog's boolean functions work — `required`,
+//! `regex`, `length`, `numeric`, `email`, and `and`/`or`/`not` to compose
+//! them — as does TextField's `validationRegexp`. A rule this build cannot
+//! evaluate (a pattern needing ECMAScript lookaround, a function from a
+//! newer catalog) does not gate and records a `broken` note, so the
+//! surface stays usable and the caller still learns the rule is not being
+//! enforced.
 //!
 //! Two gaps are `broken` rather than inexact, because they leave the
 //! surface unable to do what the stream described: an `obscured` field
@@ -55,6 +69,7 @@
 //! fidelity.
 
 pub mod catalog;
+pub mod checks;
 pub mod functions;
 pub mod messages;
 pub mod note;
