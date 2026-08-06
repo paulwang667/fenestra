@@ -233,7 +233,8 @@ pub enum Kind {
         /// `shortText` (default), `longText`, `number`, `obscured`.
         #[serde(default)]
         variant: Option<String>,
-        /// Client-side validation regexp (parsed; enforcement noted).
+        /// Client-side validation regexp, enforced on the current value.
+        /// Unanchored, like a browser's `RegExp.test`.
         #[serde(default, rename = "validationRegexp")]
         validation_regexp: Option<String>,
         /// Client-side validation rules; a failing one blocks the

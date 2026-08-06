@@ -66,6 +66,9 @@ pub enum NoteKind {
     Approximated,
     /// A catalog feature parsed but not honored yet.
     Unsupported,
+    /// The surface is built on a component catalog this build does not
+    /// implement, so its components render best-effort.
+    UnknownCatalog,
 }
 
 /// How much a note should worry the caller.
@@ -115,7 +118,14 @@ impl NoteKind {
             | Self::RejectedWrite
             | Self::UnknownMessage
             | Self::SecretExposed
-            | Self::Unreachable => NoteSeverity::Broken,
+            | Self::Unreachable
+            // The dangerous case is the quiet one: another catalog that
+            // reuses basic's component *names* with different meanings.
+            // Every component then parses, no per-component note fires, and
+            // this is the only signal there is — so it has to be the kind
+            // that fails `any_broken`, or a CI check passes green over a
+            // surface whose every control may mean something else.
+            | Self::UnknownCatalog => NoteSeverity::Broken,
         }
     }
 }

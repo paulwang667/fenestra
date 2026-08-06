@@ -211,9 +211,15 @@ fn a_foreign_catalog_id_is_reported() {
         rendered
             .notes
             .iter()
-            .any(|n| n.kind == NoteKind::Unsupported && n.detail.contains("catalog")),
+            .any(|n| n.kind == NoteKind::UnknownCatalog),
         "an unimplemented catalog must be reported, got: {:?}",
         rendered.notes
+    );
+    // Asserting only the kind would let the severity drift to `approximate`,
+    // and `any_broken` is the check the book tells people to build CI on.
+    assert!(
+        any_broken(&rendered.notes),
+        "a surface whose components may mean something else is not 'approximate'"
     );
 }
 

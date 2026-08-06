@@ -44,9 +44,12 @@
 //!
 //! Client-side validation *is* enforced. A control's `checks` are
 //! evaluated every render and the first failing rule shows its own
-//! message, with the control marked invalid; a Button whose checks fail
-//! carries no action at all, which is the entire point of putting one
-//! there. All eight of the catalog's boolean functions work — `required`,
+//! message beneath the control; a Button whose checks fail carries no
+//! action at all, which is the entire point of putting one there, and a
+//! Modal trigger whose checks fail does not open its dialog. TextField and
+//! DateTimeInput also take the kit's invalid ring — CheckBox, ChoicePicker
+//! and Slider show the message without one, because the kit's controls for
+//! those have no invalid state yet. All eight of the catalog's boolean functions work — `required`,
 //! `regex`, `length`, `numeric`, `email`, and `and`/`or`/`not` to compose
 //! them — as does TextField's `validationRegexp`. A rule this build cannot
 //! evaluate (a pattern needing ECMAScript lookaround, a function from a

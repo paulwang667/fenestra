@@ -31,19 +31,40 @@ use serde_json::Value;
 /// so, never quietly pass.
 ///
 /// # Errors
-/// Returns the engine's message when `pattern` does not compile.
-pub fn compile_pattern(pattern: &str) -> Result<regex::Regex, String> {
+/// Returns a [`PatternError`] when `pattern` does not compile.
+pub fn compile_pattern(pattern: &str) -> Result<regex::Regex, PatternError> {
     regex::Regex::new(pattern).map_err(|e| {
         let reason = e.to_string();
-        // The engine's own message is a multi-line diagram; the first
-        // meaningful line is what a note can carry.
-        reason
+        // The engine's own message is a multi-line diagram; the last
+        // meaningful line is the part a note can carry.
+        let message = reason
             .lines()
             .rfind(|l| !l.trim().is_empty())
             .unwrap_or("pattern did not compile")
             .trim()
-            .to_owned()
+            .to_owned();
+        PatternError {
+            // The engine says "not supported" for the constructs it
+            // deliberately omits (look-around, backreferences) and gives an
+            // ordinary syntax diagnostic for a pattern that is simply
+            // wrong. Reporting the first as the second sends an agent to
+            // rewrite its client; the second as the first sends it to
+            // rewrite a client that was fine.
+            unsupported_here: reason.contains("not supported"),
+            message,
+        }
     })
+}
+
+/// Why a validation pattern could not be compiled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatternError {
+    /// The engine's diagnostic, trimmed to one line.
+    pub message: String,
+    /// True when the pattern is valid elsewhere and unsupported *here* —
+    /// the constructs Rust's linear-time engine omits by design. False for
+    /// a pattern that is malformed in any engine.
+    pub unsupported_here: bool,
 }
 
 /// Whether `value` matches `pattern`, unanchored — the same reading a
@@ -210,8 +231,30 @@ mod tests {
         // The point is that this is an Err a caller must note, not a
         // silently-passing check.
         let err = compile_pattern(r"(?=.*[A-Z]).{8,}").expect_err("no lookaround in this engine");
-        assert!(!err.is_empty(), "the note needs something to say");
-        assert!(!err.contains('\n'), "a note is one line, got:\n{err}");
+        assert!(!err.message.is_empty(), "the note needs something to say");
+        assert!(
+            !err.message.contains('\n'),
+            "a note is one line, got:\n{}",
+            err.message
+        );
+        assert!(
+            err.unsupported_here,
+            "lookahead is valid in a browser; blaming the pattern would send an agent \
+             to rewrite something that is fine"
+        );
+    }
+
+    #[test]
+    fn a_malformed_pattern_is_not_called_unsupported() {
+        // Wrong in every engine, not missing from this one.
+        for pattern in [r"[a-", r"(", r"a{2,1}"] {
+            let err = compile_pattern(pattern).expect_err("malformed");
+            assert!(
+                !err.unsupported_here,
+                "{pattern:?} is malformed, not unsupported: {}",
+                err.message
+            );
+        }
     }
 
     #[test]

@@ -3881,6 +3881,29 @@ Decisions of record:
   with a **broken** note keeps the surface usable and still fires
   `any_broken`. The rule is: never block a user over a rule nobody can
   satisfy, never let the caller believe a rule is enforced when it is not.
+- **"Could not evaluate" is a third answer, not a sentinel value.** The
+  first cut of the above used `true` to mean "does not gate" — and `not`
+  inverted it into `false`, which gates. Whether an unevaluable rule blocked
+  the user came down to the parity of the `not`s around it, and a test with
+  an even count passed. Booleans that can be composed cannot carry an
+  out-of-band meaning in one of their two values; evaluation returns
+  `Option<bool>` and `None` propagates through `not`, `and` and `or`.
+  Operands that answer `None` drop out of a composition rather than
+  poisoning it, so `and(required(x), unknown())` still enforces `required` —
+  more of the stream's intent than enforcing nothing.
+- **"Absent" and "present but unusable" are different arguments.** Folding
+  them together let `{"call": "length", "min": "eight"}` render a password
+  field with no minimum length, no note, and `any_broken() == false` — the
+  exact "this form looks validated" failure the note system exists to
+  prevent. Same for a rule naming no `value` at all, which `required` read
+  as "nothing was provided" and used to block the control over.
+- **A wrapper changes who receives the press.** Adding the validation
+  message put the Button inside a column, and the Modal armed *that*, so a
+  control painted dead and marked invalid opened the dialog anyway. Anything
+  that composes an element after the fact has to ask whether it is still
+  composing onto the same node — this is the second bug of that exact shape
+  in this crate (the first was the modal trigger wrapping its own
+  interactive child).
 - **`required` reads an unticked box as nothing provided.** `false` is not
   "empty" by a literal reading, but `required` on a CheckBox is how a stream
   says "you must accept the terms", and the other reading leaves that

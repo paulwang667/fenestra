@@ -8,6 +8,7 @@ use fenestra_kit::{
     ButtonVariant, button, card, checkbox, field, icon_button, modal, multi_select, select, slider,
     tabs, text_area, text_input,
 };
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::catalog::{
@@ -23,6 +24,10 @@ use crate::{checks, functions};
 /// tree stays well inside `fenestra_core::MAX_TREE_DEPTH` (each catalog
 /// component lowers to roughly 1–3 element levels).
 const MAX_DEPTH: usize = 16;
+
+/// The catalog this build implements, by its canonical spec URL. Streams
+/// name it either this way or with the bare id `basic`.
+const BASIC_CATALOG_URL: &str = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json";
 
 /// The most children one template expansion materializes.
 const MAX_TEMPLATE_CHILDREN: usize = 1000;
@@ -205,6 +210,15 @@ struct Ctx<'a> {
     /// that does nothing. Only the Modal arm renders a trigger, so only it
     /// can arm one.
     armed_triggers: std::cell::RefCell<Vec<String>>,
+    /// Set by a Button that rendered *blocked by a failing check* while it
+    /// was armed as a Modal's trigger.
+    ///
+    /// A blocked button is built disabled and then wrapped, with its
+    /// message, in a column — and it was that column the Modal armed, so
+    /// clicking a control painted dead and marked invalid opened the dialog
+    /// anyway. The check has to win: it is the stream's own instruction not
+    /// to act yet.
+    blocked_trigger: std::cell::Cell<bool>,
     /// How many more template-generated children this render may build.
     ///
     /// [`MAX_TEMPLATE_CHILDREN`] bounds one expansion; this bounds their
@@ -220,7 +234,9 @@ struct Ctx<'a> {
     /// inside a thousand-row list compiles the same pattern a thousand
     /// times per frame otherwise. `Err` is cached too — a pattern this
     /// engine cannot take does not get cheaper on the second try.
-    patterns: std::cell::RefCell<std::collections::HashMap<String, Result<regex::Regex, String>>>,
+    patterns: std::cell::RefCell<
+        std::collections::HashMap<String, Result<regex::Regex, crate::checks::PatternError>>,
+    >,
     notes: std::cell::RefCell<Vec<Note>>,
     /// The id chain currently being rendered: exact cycle detection
     /// (`a → b → a` trips on re-entry, not after burning stack).
@@ -233,6 +249,20 @@ impl Ctx<'_> {
             &mut self.notes.borrow_mut(),
             Note::new(id, kind, detail.to_string()),
         );
+    }
+
+    /// A compiled validation pattern, from the cache or freshly compiled.
+    ///
+    /// Returns a clone of the compiled `Regex` — `regex::Regex` is an
+    /// `Arc` inside, so this is a refcount bump, not a recompile, and it
+    /// keeps the `RefCell` borrow from spanning the note that a failure
+    /// wants to record.
+    fn pattern(&self, pattern: &str) -> Result<regex::Regex, crate::checks::PatternError> {
+        self.patterns
+            .borrow_mut()
+            .entry(pattern.to_owned())
+            .or_insert_with(|| checks::compile_pattern(pattern))
+            .clone()
     }
 
     /// Reports an enum string the catalog does not define.
@@ -262,17 +292,22 @@ impl Surface {
         let Some(catalog) = self.catalog_id() else {
             return;
         };
-        let basic = catalog == "basic"
-            || catalog
-                .trim_end_matches('/')
-                .ends_with("/catalogs/basic/catalog.json");
+        // Matched whole, not by suffix. A suffix test accepts
+        // `.../v1_5/catalogs/basic/catalog.json` and any host's copy — and a
+        // later revision of the *basic* catalog is precisely the case this
+        // note exists for, since the component names stay the same while
+        // their meanings move.
+        let basic = matches!(
+            catalog.trim_end_matches('/'),
+            "basic" | BASIC_CATALOG_URL | "https://a2ui.org/specification/v0_9/catalogs/basic"
+        );
         if !basic {
             ctx.note(
                 "",
-                NoteKind::Unsupported,
+                NoteKind::UnknownCatalog,
                 format!(
                     "surface declares catalog {}; this build implements the v0.9 basic \
-                     catalog, so its components render best-effort",
+                     catalog ({BASIC_CATALOG_URL}), so its components render best-effort",
                     quoted(catalog)
                 ),
             );
@@ -288,6 +323,7 @@ impl Surface {
             surface: self,
             theme,
             armed_triggers: std::cell::RefCell::new(Vec::new()),
+            blocked_trigger: std::cell::Cell::new(false),
             template_budget: std::cell::Cell::new(MAX_TEMPLATE_TOTAL),
             patterns: std::cell::RefCell::new(std::collections::HashMap::new()),
             notes: std::cell::RefCell::new(Vec::new()),
@@ -482,7 +518,11 @@ fn bound_f64(ctx: &Ctx, id: &str, path: &str, scope: Option<&str>, fallback: f64
 }
 
 fn resolve_bool(ctx: &Ctx, id: &str, d: &Dyn<bool>, scope: Option<&str>) -> bool {
-    eval_bool(ctx, id, d, scope, 0)
+    // A value slot needs an answer, so an unevaluable condition reads as
+    // `false` here — it has already recorded why. Only `checks` can afford
+    // the third answer, because a rule that does not apply is a coherent
+    // thing for a *rule* to be.
+    eval_bool(ctx, id, d, scope, 0).unwrap_or(false)
 }
 
 /// The most nested `and`/`or`/`not` levels one condition may use.
@@ -492,17 +532,37 @@ fn resolve_bool(ctx: &Ctx, id: &str, d: &Dyn<bool>, scope: Option<&str>) -> bool
 const MAX_CONDITION_DEPTH: usize = 16;
 
 /// A `DynamicBoolean`: a literal, a binding, or one of the catalog's
-/// boolean functions.
+/// boolean functions. `None` means *this build could not evaluate it*.
+///
+/// That third answer is the whole design. `true` cannot stand in for "does
+/// not apply", because `not` inverts it into `false` — which gates, showing
+/// the user a message they cannot act on, over a rule nobody could evaluate
+/// in the first place. Whether that happened came down to the parity of the
+/// surrounding `not`s. `None` propagates through every composition instead,
+/// and a note is recorded wherever it is produced.
 ///
 /// A function call here used to be reported as a type error and read as
 /// `false`, which had it backwards — the catalog defines eight functions
 /// that return booleans and exist precisely to go in this slot.
-fn eval_bool(ctx: &Ctx, id: &str, d: &Dyn<bool>, scope: Option<&str>, depth: usize) -> bool {
+fn eval_bool(
+    ctx: &Ctx,
+    id: &str,
+    d: &Dyn<bool>,
+    scope: Option<&str>,
+    depth: usize,
+) -> Option<bool> {
     match d {
-        Dyn::Lit(b) => *b,
-        Dyn::Binding { path } => bound_bool(ctx, id, path, scope),
+        Dyn::Lit(b) => Some(*b),
+        Dyn::Binding { path } => Some(bound_bool(ctx, id, path, scope)),
         Dyn::Call(call) => eval_bool_call(ctx, id, call, scope, depth),
     }
+}
+
+/// Deserializes a `DynamicBoolean` operand without cloning it: the JSON
+/// subtree is borrowed, not copied, which matters when a checked control
+/// sits inside a template and every row re-reads the same condition.
+fn operand(v: &Value) -> Option<Dyn<bool>> {
+    Dyn::<bool>::deserialize(v).ok()
 }
 
 /// Reads one argument as a `DynamicBoolean` and evaluates it.
@@ -513,11 +573,11 @@ fn arg_bool(
     key: &str,
     scope: Option<&str>,
     depth: usize,
-) -> bool {
+) -> Option<bool> {
     match call.args.get(key) {
-        Some(v) => match serde_json::from_value::<Dyn<bool>>(v.clone()) {
-            Ok(d) => eval_bool(ctx, id, &d, scope, depth + 1),
-            Err(_) => {
+        Some(v) => match operand(v) {
+            Some(d) => eval_bool(ctx, id, &d, scope, depth + 1),
+            None => {
                 ctx.note(
                     id,
                     NoteKind::BindingType,
@@ -527,7 +587,7 @@ fn arg_bool(
                         call.call
                     ),
                 );
-                true
+                None
             }
         },
         None => {
@@ -539,107 +599,160 @@ fn arg_bool(
                     call.call
                 ),
             );
-            true
+            None
         }
     }
 }
 
-/// A numeric argument, absent when the stream omitted it.
-fn arg_f64(
+/// A bound the stream may or may not have given, and may have given badly.
+enum Bound {
+    /// The stream omitted it; there is no bound to enforce.
+    Absent,
+    /// A usable number.
+    Given(f64),
+    /// Present, and not a number this build can use — an unresolvable
+    /// binding, a bool, an object, text that does not parse.
+    Unusable,
+}
+
+/// A numeric argument as one of those three.
+///
+/// The distinction is the point: folding "present but unusable" into
+/// "absent" silently drops the bound, so `{"call": "length", "min":
+/// "eight"}` renders a password field with no minimum length, no note, and
+/// `any_broken() == false`. That is the "this form looks validated" failure
+/// the note system exists to prevent.
+fn arg_bound(ctx: &Ctx, id: &str, call: &FunctionCall, key: &str, scope: Option<&str>) -> Bound {
+    if !call.args.contains_key(key) {
+        return Bound::Absent;
+    }
+    match arg_value(ctx, id, &call.args, key, scope) {
+        Value::Number(n) => n.as_f64().map_or(Bound::Unusable, Bound::Given),
+        Value::String(s) => s.trim().parse().map_or(Bound::Unusable, Bound::Given),
+        _ => Bound::Unusable,
+    }
+}
+
+/// Reads `min`/`max` for one predicate. `None` means at least one of them
+/// was given and could not be used, so the caller must not gate.
+fn arg_bounds(
     ctx: &Ctx,
     id: &str,
     call: &FunctionCall,
-    key: &str,
     scope: Option<&str>,
-) -> Option<f64> {
-    match call.args.get(key) {
-        None => None,
-        Some(_) => match arg_value(ctx, id, &call.args, key, scope) {
-            Value::Number(n) => n.as_f64(),
-            Value::String(s) => s.trim().parse().ok(),
-            _ => None,
-        },
+    whole: bool,
+) -> Option<(Option<f64>, Option<f64>)> {
+    let read = |key: &str| match arg_bound(ctx, id, call, key, scope) {
+        Bound::Absent => Some(None),
+        // `length` bounds are counts: a negative or fractional one is not a
+        // length, and rounding it would enforce a limit nobody wrote.
+        Bound::Given(n) if n.is_finite() && (!whole || (n >= 0.0 && n.fract() == 0.0)) => {
+            Some(Some(n))
+        }
+        Bound::Given(_) | Bound::Unusable => {
+            ctx.note(
+                id,
+                NoteKind::InvalidValue,
+                format!(
+                    "`{}` bound {key:?} is not a usable {}; the check does not gate",
+                    call.call,
+                    if whole { "count" } else { "number" }
+                ),
+            );
+            None
+        }
+    };
+    // Both are read before either is judged, so a stream with two bad
+    // bounds hears about both rather than only the first.
+    let (min, max) = (read("min"), read("max"));
+    Some((min?, max?))
+}
+
+/// A predicate's subject value. `None` means the rule never named one,
+/// which is a malformed rule rather than "the value is null" — `required`
+/// read the latter as "nothing provided" and blocked the control with no
+/// note at all.
+fn arg_subject(ctx: &Ctx, id: &str, call: &FunctionCall, scope: Option<&str>) -> Option<Value> {
+    if !call.args.contains_key("value") {
+        ctx.note(
+            id,
+            NoteKind::InvalidValue,
+            format!(
+                "`{}` names no `value` to check; the check does not gate",
+                call.call
+            ),
+        );
+        return None;
     }
+    Some(arg_value(ctx, id, &call.args, "value", scope))
 }
 
 /// The catalog's boolean functions.
 ///
-/// Every unevaluable case returns `true` — the check does not gate — and
-/// records a Broken note. Failing closed would show the user a message
-/// they cannot satisfy on a control they cannot use; failing open with a
-/// note keeps the surface usable and still tells the caller that a rule
-/// the stream asked for is not being enforced, so `any_broken` fires and
-/// nothing passes silently.
+/// `None` is "this build could not evaluate the rule" and always comes with
+/// a note. The rule then does not gate: failing *closed* would show a user a
+/// message they cannot satisfy on a control they cannot use, over a rule
+/// nobody could evaluate. Failing open with a **broken** note keeps the
+/// surface usable and still tells the caller a rule the stream asked for is
+/// not being enforced, so `any_broken` fires and nothing passes silently.
 fn eval_bool_call(
     ctx: &Ctx,
     id: &str,
     call: &FunctionCall,
     scope: Option<&str>,
     depth: usize,
-) -> bool {
+) -> Option<bool> {
     if depth >= MAX_CONDITION_DEPTH {
         ctx.note(
             id,
             NoteKind::DepthCap,
             format!("condition nests deeper than {MAX_CONDITION_DEPTH}; it does not gate"),
         );
-        return true;
+        return None;
     }
     match call.call.as_str() {
-        "required" => checks::required(&arg_value(ctx, id, &call.args, "value", scope)),
-        "email" => checks::email(&functions::display(&arg_value(
-            ctx, id, &call.args, "value", scope,
-        ))),
+        "required" => Some(checks::required(&arg_subject(ctx, id, call, scope)?)),
+        "email" => Some(checks::email(&functions::display(&arg_subject(
+            ctx, id, call, scope,
+        )?))),
         "length" => {
-            let value = functions::display(&arg_value(ctx, id, &call.args, "value", scope));
-            let bound = |key| {
-                arg_f64(ctx, id, call, key, scope).and_then(|n| {
-                    // Lengths are counts. A negative or fractional bound is
-                    // not one, and silently rounding it would enforce a
-                    // limit the stream did not write.
-                    (n.is_finite() && n >= 0.0 && n.fract() == 0.0).then_some(n as u64)
-                })
-            };
-            checks::length(&value, bound("min"), bound("max"))
+            let value = functions::display(&arg_subject(ctx, id, call, scope)?);
+            let (min, max) = arg_bounds(ctx, id, call, scope, true)?;
+            #[expect(
+                clippy::cast_sign_loss,
+                clippy::cast_possible_truncation,
+                reason = "arg_bounds accepts only finite, non-negative whole numbers here"
+            )]
+            Some(checks::length(
+                &value,
+                min.map(|n| n as u64),
+                max.map(|n| n as u64),
+            ))
         }
-        "numeric" => checks::numeric(
-            &arg_value(ctx, id, &call.args, "value", scope),
-            arg_f64(ctx, id, call, "min", scope),
-            arg_f64(ctx, id, call, "max", scope),
-        ),
+        "numeric" => {
+            let value = arg_subject(ctx, id, call, scope)?;
+            let (min, max) = arg_bounds(ctx, id, call, scope, false)?;
+            Some(checks::numeric(&value, min, max))
+        }
         "regex" => {
-            let value = functions::display(&arg_value(ctx, id, &call.args, "value", scope));
+            let value = functions::display(&arg_subject(ctx, id, call, scope)?);
             let Some(pattern) = call.args.get("pattern").and_then(Value::as_str) else {
                 ctx.note(
                     id,
                     NoteKind::InvalidValue,
                     "`regex` needs a string `pattern`; the check does not gate",
                 );
-                return true;
+                return None;
             };
-            let mut cache = ctx.patterns.borrow_mut();
-            let compiled = cache
-                .entry(pattern.to_owned())
-                .or_insert_with(|| checks::compile_pattern(pattern));
-            match compiled {
-                Ok(re) => checks::matches(re, &value),
+            match ctx.pattern(pattern) {
+                Ok(re) => Some(checks::matches(&re, &value)),
                 Err(why) => {
-                    let why = why.clone();
-                    drop(cache);
-                    ctx.note(
-                        id,
-                        NoteKind::InvalidValue,
-                        format!(
-                            "pattern {} does not compile here ({why}); Rust's engine has no \
-                             backreferences or lookaround, so the check does not gate",
-                            quoted(pattern)
-                        ),
-                    );
-                    true
+                    note_bad_pattern(ctx, id, "pattern", pattern, &why, "the check does not gate");
+                    None
                 }
             }
         }
-        "not" => !arg_bool(ctx, id, call, "value", scope, depth),
+        "not" => Some(!arg_bool(ctx, id, call, "value", scope, depth)?),
         "and" | "or" => {
             let all = call.call == "and";
             let Some(Value::Array(values)) = call.args.get("values") else {
@@ -651,35 +764,61 @@ fn eval_bool_call(
                         call.call
                     ),
                 );
-                return true;
+                return None;
             };
-            // Evaluated in full rather than short-circuited: a later
-            // argument that cannot be evaluated has a note to record, and
-            // stopping early would hide it on exactly the streams where it
-            // matters most.
-            let results: Vec<bool> = values
-                .iter()
-                .map(|v| match serde_json::from_value::<Dyn<bool>>(v.clone()) {
-                    Ok(d) => eval_bool(ctx, id, &d, scope, depth + 1),
-                    Err(_) => {
+            // The catalog requires at least two operands. Below that the
+            // result is vacuous rather than meaningful — and `or` over an
+            // empty list is vacuously *false*, which gates. A stream that
+            // sends a composition before its operands (the same progressive
+            // delivery the modal fix was written for) would lock the form
+            // with no diagnostic at all.
+            if values.len() < 2 {
+                ctx.note(
+                    id,
+                    NoteKind::InvalidValue,
+                    format!(
+                        "`{}` needs at least two operands, got {}; the check does not gate",
+                        call.call,
+                        values.len()
+                    ),
+                );
+                return None;
+            }
+            // Evaluated in full rather than short-circuited: a later operand
+            // that cannot be evaluated has a note to record, and stopping
+            // early would hide it on exactly the streams where it matters.
+            let mut known = Vec::with_capacity(values.len());
+            for v in values {
+                match operand(v) {
+                    Some(d) => known.push(eval_bool(ctx, id, &d, scope, depth + 1)),
+                    None => {
                         ctx.note(
                             id,
                             NoteKind::BindingType,
                             format!(
                                 "`{}` was given something that is not a condition; \
-                                 that argument does not gate",
+                                 that operand does not gate",
                                 call.call
                             ),
                         );
-                        all
+                        known.push(None);
                     }
-                })
-                .collect();
-            if all {
-                results.iter().all(|b| *b)
-            } else {
-                results.iter().any(|b| *b)
+                }
             }
+            // Operands this build could not evaluate drop out rather than
+            // poisoning the whole composition: `and(required(x), unknown())`
+            // still enforces `required`, which is more of the stream's
+            // intent than enforcing nothing. If none survive there is no
+            // answer to give.
+            let answered: Vec<bool> = known.into_iter().flatten().collect();
+            if answered.is_empty() {
+                return None;
+            }
+            Some(if all {
+                answered.iter().all(|b| *b)
+            } else {
+                answered.iter().any(|b| *b)
+            })
         }
         other => {
             ctx.note(
@@ -687,9 +826,40 @@ fn eval_bool_call(
                 NoteKind::UnimplementedFunction,
                 format!("boolean function {other:?} is not implemented; the check does not gate"),
             );
-            true
+            None
         }
     }
+}
+
+/// Explains a pattern that would not compile, without guessing at why.
+///
+/// Blaming every failure on the missing lookaround and backreferences sends
+/// an agent to rewrite its *client* when what it actually typed was `[a-`.
+/// The engine already knows the difference; [`checks::PatternError`] carries
+/// it, and this says only what is true.
+fn note_bad_pattern(
+    ctx: &Ctx,
+    id: &str,
+    field: &str,
+    pattern: &str,
+    why: &crate::checks::PatternError,
+    consequence: &str,
+) {
+    let cause = if why.unsupported_here {
+        "; this engine runs in linear time and has no backreferences or lookaround, \
+         so a pattern written for a browser client may need rewriting"
+    } else {
+        "; the pattern itself is malformed"
+    };
+    ctx.note(
+        id,
+        NoteKind::InvalidValue,
+        format!(
+            "{field} {} does not compile ({}){cause}, so {consequence}",
+            quoted(pattern),
+            why.message
+        ),
+    );
 }
 
 /// The first failing check's message, or `None` when the value is valid.
@@ -701,7 +871,10 @@ fn evaluate_checks(ctx: &Ctx, id: &str, checks: &Checks, scope: Option<&str>) ->
     for check in &checks.0 {
         match check {
             Check::Rule(rule) => {
-                if !eval_bool(ctx, id, &rule.condition, scope, 0) && failure.is_none() {
+                // `None` — could not be evaluated — deliberately does not
+                // gate; whatever produced it has already recorded a note.
+                if eval_bool(ctx, id, &rule.condition, scope, 0) == Some(false) && failure.is_none()
+                {
                     failure = Some(rule.message.clone());
                 }
             }
@@ -961,10 +1134,6 @@ fn note_unhonored(ctx: &Ctx, id: &str, field: &str, instead: &str) {
     );
 }
 
-/// `checks` and `validationRegexp` parse but gate nothing yet. Say so, so a
-/// stream never believes its validation is running when it is not — the
-/// difference between "this form is validated" and "this form looks
-/// validated" is exactly what a fidelity note is for.
 /// TextField's `validationRegexp`, as a failure message or nothing.
 ///
 /// The catalog gives no message for this one — unlike a `checks` rule,
@@ -972,23 +1141,16 @@ fn note_unhonored(ctx: &Ctx, id: &str, field: &str, instead: &str) {
 /// terms available.
 fn pattern_failure(ctx: &Ctx, id: &str, pattern: Option<&str>, current: &str) -> Option<String> {
     let pattern = pattern?;
-    let mut cache = ctx.patterns.borrow_mut();
-    let compiled = cache
-        .entry(pattern.to_owned())
-        .or_insert_with(|| checks::compile_pattern(pattern));
-    match compiled {
-        Ok(re) => (!checks::matches(re, current)).then(|| "Invalid format.".to_owned()),
+    match ctx.pattern(pattern) {
+        Ok(re) => (!checks::matches(&re, current)).then(|| "Invalid format.".to_owned()),
         Err(why) => {
-            let why = why.clone();
-            drop(cache);
-            ctx.note(
+            note_bad_pattern(
+                ctx,
                 id,
-                NoteKind::InvalidValue,
-                format!(
-                    "validationRegexp {} does not compile here ({why}); Rust's engine has no \
-                     backreferences or lookaround, so the field is not validated",
-                    quoted(pattern)
-                ),
+                "validationRegexp",
+                pattern,
+                &why,
+                "the field is not validated",
             );
             None
         }
@@ -1099,8 +1261,9 @@ fn children_of(
                     id,
                     NoteKind::Truncated,
                     format!(
-                        "this render has materialized {MAX_TEMPLATE_TOTAL} template children; \
-                         {} more here were dropped (nested templates multiply)",
+                        "this render has materialized {} of {MAX_TEMPLATE_TOTAL} template \
+                         children; {} more here were dropped (nested templates multiply)",
+                        MAX_TEMPLATE_TOTAL - ctx.template_budget.get(),
                         wanted - allowed
                     ),
                 );
@@ -1379,9 +1542,17 @@ fn render_component(
             // itself inside another Modal's trigger must not stay armed for
             // its siblings.
             ctx.armed_triggers.borrow_mut().push(trigger.clone());
+            ctx.blocked_trigger.set(false);
             let trigger_el = render_by_id(ctx, trigger, scope, depth + 1);
             ctx.armed_triggers.borrow_mut().pop();
-            let opener = open_modal_trigger(ctx, id, &modal_key, trigger_el);
+            // A trigger whose own checks fail stays as rendered: disabled,
+            // showing why. Arming it would hand the press to the wrapper
+            // around the dead button and open the dialog regardless.
+            let opener = if ctx.blocked_trigger.replace(false) {
+                trigger_el
+            } else {
+                open_modal_trigger(ctx, id, &modal_key, trigger_el)
+            };
             if open {
                 col().children((
                     opener,
@@ -1447,6 +1618,9 @@ fn render_component(
             // the widget is built, because the kit bakes disabled styling in
             // at build time.
             let blocked = failure.is_some();
+            if blocked && opens_a_modal {
+                ctx.blocked_trigger.set(true);
+            }
             if inert {
                 ctx.note(
                     id,

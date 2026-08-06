@@ -637,7 +637,13 @@ pub fn render_a2ui(
     let tree = inspect::frame_access_tree(&frame);
     drop(frame);
     let png = try_render_element(rendered.element, theme, size).map_err(EngineError::Render)?;
-    let mut notes = surface.notes().to_vec();
+    // Three sources, not two. A message belonging to no surface — one with
+    // no `surfaceId`, or naming a surface not yet created or already
+    // deleted — is recorded on the client, and reading only the surface's
+    // notes would drop it again right at the boundary where every real
+    // consumer (the MCP tool, the CLI) reads them.
+    let mut notes = client.notes().to_vec();
+    notes.extend_from_slice(surface.notes());
     notes.extend(rendered.notes);
     Ok(A2uiRenderOut {
         surface_id: surface.id().to_owned(),
@@ -666,6 +672,51 @@ mod size_tests {
         assert!(
             parse_size(Some("0x600")).is_err(),
             "a zero dimension is never intended; it used to clamp silently to 1px"
+        );
+    }
+}
+
+#[cfg(test)]
+mod a2ui_note_tests {
+    use fenestra_a2ui::NoteKind;
+
+    /// A stream-level note has to survive the boundary. `Client::notes()`
+    /// exists so a message belonging to no surface is not dropped with
+    /// `Ok(())` — and this is the one place every real consumer (the MCP
+    /// `render_a2ui` tool, the CLI) reads notes from, so a note that stops
+    /// here has not been reported at all.
+    #[test]
+    fn a_stream_level_note_reaches_the_engine_output() {
+        let stream = r#"[
+          {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+          {"version":"v0.9","ping":{}},
+          {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Text","text":"hi"}
+          ]}}
+        ]"#;
+        let msgs = fenestra_a2ui::parse_stream(stream).expect("parses");
+        let mut client = fenestra_a2ui::Client::new();
+        client.apply_all(&msgs).expect("applies");
+        assert!(
+            client
+                .notes()
+                .iter()
+                .any(|n| n.kind == NoteKind::UnknownMessage),
+            "precondition: the client records it"
+        );
+
+        // `render_a2ui` itself needs a GPU, which CI's software adapters
+        // provide but a bare unit test should not require. What is being
+        // pinned is the note *plumbing*, so assemble the same list the
+        // renderer does.
+        let surface = client.surfaces().next().expect("surface");
+        let rendered = surface.render(&fenestra_core::Theme::light());
+        let mut notes = client.notes().to_vec();
+        notes.extend_from_slice(surface.notes());
+        notes.extend(rendered.notes);
+        assert!(
+            notes.iter().any(|n| n.kind == NoteKind::UnknownMessage),
+            "the stream-level note was dropped at the boundary: {notes:?}"
         );
     }
 }

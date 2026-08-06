@@ -151,9 +151,12 @@ touches the network), and `DateTimeInput` is an ISO text field rather than
 a calendar.
 
 Validation is not on that list any more. A control's `checks` run on every
-render, the first failing rule shows its message with the control marked
-invalid, and a Button whose checks fail carries no action — so a form that
-says "accept the terms first" now means it. The catalog's eight boolean
+render, the first failing rule shows its message beneath the control, and a
+Button whose checks fail carries no action — so a form that says "accept the
+terms first" now means it. (A Modal trigger whose checks fail keeps its
+dialog shut, too.) TextField and DateTimeInput also get the kit's invalid
+ring; CheckBox, ChoicePicker and Slider show the message alone, because the
+kit has no invalid state for those controls yet. The catalog's eight boolean
 functions (`required`, `regex`, `length`, `numeric`, `email`, `and`, `or`,
 `not`) and TextField's `validationRegexp` all work. Where a rule can't be
 evaluated here — Rust's regex engine has no lookaround or backreferences,

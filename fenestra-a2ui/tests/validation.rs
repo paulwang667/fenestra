@@ -409,3 +409,239 @@ fn the_failing_state_is_pinned_in_pixels() {
         &img,
     );
 }
+
+// ── Round five: what the review of the validation feature found ──────────
+
+/// `true` was doing double duty — a real answer *and* the "could not
+/// evaluate" sentinel — so `not` inverted the sentinel into a hard block.
+/// A rule this build cannot evaluate must never gate, however it is
+/// wrapped.
+#[test]
+fn not_of_an_unevaluable_rule_still_does_not_gate() {
+    for condition in [
+        r#"{"call":"not","args":{"value":{"call":"isPrime","args":{}}}}"#,
+        r#"{"call":"not","args":{"value":{"call":"regex","args":{
+             "value":{"path":"/v"},"pattern":"(?=.*[A-Z]).{8,}"}}}}"#,
+        r#"{"call":"not","args":{"value":{"call":"not","args":{"value":
+             {"call":"isPrime","args":{}}}}}}"#,
+    ] {
+        let component = format!(
+            r#"{{"id":"subject","component":"TextField","label":"V",
+                 "value":{{"path":"/v"}},
+                 "checks":[{{"condition":{condition},"message":"BLOCKED"}}]}}"#
+        );
+        let rendered = surface_with(r#"{"v":"x"}"#, &component);
+        assert!(
+            !shows_text(&rendered.element, "BLOCKED"),
+            "a rule that could not be evaluated blocked the user: {condition}\nnotes: {:?}",
+            rendered.notes
+        );
+        assert!(
+            any_broken(&rendered.notes),
+            "…and it must still be reported: {condition}"
+        );
+    }
+}
+
+/// An odd number of `not`s around the depth cap used to flip the sentinel;
+/// the existing cap test happens to use an even count, so it passed.
+#[test]
+fn an_odd_nesting_past_the_cap_does_not_gate_either() {
+    let mut condition = "true".to_owned();
+    for _ in 0..25 {
+        condition = format!(r#"{{"call":"not","args":{{"value":{condition}}}}}"#);
+    }
+    let component = format!(
+        r#"{{"id":"subject","component":"TextField","label":"V",
+             "value":{{"path":"/v"}},
+             "checks":[{{"condition":{condition},"message":"BLOCKED"}}]}}"#
+    );
+    let rendered = surface_with(r#"{"v":"x"}"#, &component);
+    assert!(
+        !shows_text(&rendered.element, "BLOCKED"),
+        "notes: {:?}",
+        rendered.notes
+    );
+    assert!(rendered.notes.iter().any(|n| n.kind == NoteKind::DepthCap));
+}
+
+/// A bound that is present but unusable is not the same as an absent one.
+/// Dropping it silently leaves a password field with no minimum length and
+/// a surface claiming full fidelity.
+#[test]
+fn an_unusable_bound_is_reported_and_the_rule_stops_gating() {
+    for bound in [
+        r#""min":8.5"#,
+        r#""min":"eight""#,
+        r#""min":-4"#,
+        r#""min":{"path":"/nowhere"}"#,
+        r#""min":true"#,
+    ] {
+        let component = format!(
+            r#"{{"id":"subject","component":"TextField","label":"Password",
+                 "value":{{"path":"/v"}},
+                 "checks":[{{"condition":{{"call":"length","args":{{
+                    "value":{{"path":"/v"}},{bound}}}}},"message":"Too short."}}]}}"#
+        );
+        let rendered = surface_with(r#"{"v":"abc"}"#, &component);
+        assert!(
+            !rendered.notes.is_empty(),
+            "{bound}: a bound that is not being enforced must be reported"
+        );
+        assert!(
+            any_broken(&rendered.notes),
+            "{bound}: an unenforced validation bound is broken, got: {:?}",
+            rendered.notes
+        );
+    }
+}
+
+/// A rule whose `value` argument is missing is malformed, not "the value is
+/// null" — `required` used to fail closed on it, blocking the control with
+/// no note at all.
+#[test]
+fn a_rule_with_no_value_argument_reports_and_does_not_gate() {
+    let component = r#"{"id":"subject","component":"TextField","label":"V",
+        "value":{"path":"/v"},
+        "checks":[{"condition":{"call":"required","args":{}},"message":"BLOCKED"}]}"#;
+    let rendered = surface_with(r#"{"v":"x"}"#, component);
+    assert!(
+        !shows_text(&rendered.element, "BLOCKED"),
+        "notes: {:?}",
+        rendered.notes
+    );
+    assert!(any_broken(&rendered.notes), "got: {:?}", rendered.notes);
+}
+
+/// The catalog requires at least two operands. An empty `or` used to be
+/// vacuously false, so it gated — silently.
+#[test]
+fn a_composition_with_too_few_operands_reports_and_does_not_gate() {
+    for condition in [
+        r#"{"call":"or","args":{"values":[]}}"#,
+        r#"{"call":"and","args":{"values":[]}}"#,
+        r#"{"call":"or","args":{"values":[false]}}"#,
+    ] {
+        let component = format!(
+            r#"{{"id":"subject","component":"TextField","label":"V",
+                 "value":{{"path":"/v"}},
+                 "checks":[{{"condition":{condition},"message":"BLOCKED"}}]}}"#
+        );
+        let rendered = surface_with(r#"{"v":"x"}"#, &component);
+        assert!(
+            !shows_text(&rendered.element, "BLOCKED"),
+            "{condition} gated: {:?}",
+            rendered.notes
+        );
+        assert!(
+            any_broken(&rendered.notes),
+            "{condition} said nothing: {:?}",
+            rendered.notes
+        );
+    }
+}
+
+/// A Modal trigger whose check fails must not open the dialog. The button
+/// is painted dead and marked invalid; arming the wrapper `labeled_control`
+/// builds around it made the whole thing clickable anyway.
+#[test]
+fn a_blocked_modal_trigger_does_not_open_its_dialog() {
+    let stream = r#"[
+      {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+      {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"terms":false}}},
+      {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+        {"id":"root","component":"Column","children":["dialog"]},
+        {"id":"dialog","component":"Modal","trigger":"btn","content":"sheet"},
+        {"id":"btn","component":"Button","child":"lbl",
+         "checks":[{"condition":{"call":"required","args":{"value":{"path":"/terms"}}},
+                    "message":"Accept the terms first."}]},
+        {"id":"lbl","component":"Text","text":"Open"},
+        {"id":"sheet","component":"Text","text":"Dialog body"}
+      ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(
+        shows_text(&rendered.element, "Accept the terms first."),
+        "the failing check must still be explained"
+    );
+    assert!(
+        !has_click(&rendered.element),
+        "a blocked trigger must not carry the open-modal click, got a clickable tree"
+    );
+}
+
+/// Ticking the box makes the same trigger live again.
+#[test]
+fn an_unblocked_modal_trigger_still_opens() {
+    let stream = r#"[
+      {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+      {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"terms":true}}},
+      {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+        {"id":"root","component":"Column","children":["dialog"]},
+        {"id":"dialog","component":"Modal","trigger":"btn","content":"sheet"},
+        {"id":"btn","component":"Button","child":"lbl",
+         "checks":[{"condition":{"call":"required","args":{"value":{"path":"/terms"}}},
+                    "message":"Accept the terms first."}]},
+        {"id":"lbl","component":"Text","text":"Open"},
+        {"id":"sheet","component":"Text","text":"Dialog body"}
+      ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    assert!(has_click(&rendered.element), "notes: {:?}", rendered.notes);
+    assert!(!any_broken(&rendered.notes), "got: {:?}", rendered.notes);
+}
+
+/// A plain syntax error is not "this engine lacks lookaround". An agent
+/// reads the cause to decide whether to rewrite the pattern or the client.
+#[test]
+fn a_malformed_pattern_is_not_blamed_on_the_engine() {
+    let component = r#"{"id":"subject","component":"TextField","label":"V",
+        "value":{"path":"/v"},"validationRegexp":"[a-"}"#;
+    let rendered = surface_with(r#"{"v":"x"}"#, component);
+    let note = rendered
+        .notes
+        .iter()
+        .find(|n| n.kind == NoteKind::InvalidValue)
+        .unwrap_or_else(|| panic!("expected a note, got {:?}", rendered.notes));
+    assert!(
+        !note.detail.contains("lookaround"),
+        "a syntax error was blamed on the engine: {}",
+        note.detail
+    );
+}
+
+/// A future revision of the basic catalog reuses its component names with
+/// different meanings — the one case the note exists for.
+#[test]
+fn a_different_catalog_revision_is_not_mistaken_for_v0_9() {
+    for catalog in [
+        "https://a2ui.org/specification/v1_5/catalogs/basic/catalog.json",
+        "https://elsewhere.example/catalogs/basic/catalog.json",
+    ] {
+        let stream = format!(
+            r#"[
+              {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"{catalog}"}}}},
+              {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {{"id":"root","component":"Text","text":"hello"}}
+              ]}}}}
+            ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(!rendered.notes.is_empty(), "{catalog} passed as v0.9 basic");
+        assert!(
+            any_broken(&rendered.notes),
+            "{catalog}: a catalog whose components may mean something else cannot be \
+             'approximate', got: {:?}",
+            rendered.notes
+        );
+    }
+}

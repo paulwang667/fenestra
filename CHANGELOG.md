@@ -21,7 +21,12 @@ action), and returning an `Option` meant silently dropping one.
 carries template scope as well as the component id. An unimplemented action
 function no longer emits an `unimplemented:<fn>` event to the agent; it does
 nothing, with a note. `parse_size` (CLI, scenario runner, MCP) rejects a
-zero dimension that previously clamped silently to a 1px render.
+zero dimension that previously clamped silently to a 1px render. The
+`checks` field on the six catalog components that carry it
+(`Button`, `TextField`, `CheckBox`, `ChoicePicker`, `Slider`,
+`DateTimeInput`) is a typed `Checks` rather than `Option<Value>`, so code
+matching `Kind::TextField { checks, .. }` and reading it as JSON needs
+updating; `Client` gained `notes()`.
 
 **Notes are machine-readable.** `Note { component_id, kind, detail }` with a
 `NoteKind` a caller can branch on and a `NoteSeverity` separating "the
