@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Re-fire by hand. A platform incident can drop the push/PR event entirely —
+  # GitHub's 2026-08-06 Actions outage stranded two runs queued for nine hours
+  # that no cancel, force-cancel or re-run could revive, and their own guidance
+  # was to repeat the triggering action. Without this, the only way back to a
+  # verified `main` is an empty commit.
+  workflow_dispatch:
   schedule:
     # Weekly: surfaces new RUSTSEC advisories even with no pushes.
     - cron: "17 6 * * 1"
