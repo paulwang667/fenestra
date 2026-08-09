@@ -16,8 +16,8 @@ pub mod theme_input;
 
 pub use described_app::DescribedApp;
 pub use engine::{
-    EngineError, FilmOut, InteractOut, RenderOut, ScreenshotDiff, Step, diff_images, film,
-    interact, match_screenshot, parse_size, render, validate_masks,
+    BaselineRoot, EngineError, FilmOut, InteractOut, RenderOut, ScreenshotDiff, Step, diff_images,
+    film, interact, match_screenshot, parse_size, render, validate_diff_params,
 };
 pub use preview_app::{PreviewApp, PreviewMsg};
 pub use scenario::{

@@ -587,6 +587,103 @@ fn parsed_but_unhonored_fields_are_reported() {
     }
 }
 
+/// A URL the host will hand to the platform opener cannot be an arbitrary
+/// string from the stream.
+///
+/// `A2uiSignal::OpenUrl` exists to be passed to `open(1)` / `xdg-open` —
+/// that is what the book's host example does with it — and those launch
+/// whatever application has registered the scheme. An A2UI stream is
+/// attacker-influenced input whenever the agent producing it has read
+/// anything untrusted, so a `file:` or a custom app scheme reaching that
+/// call is a way to start programs on the user's machine from JSON. The
+/// renderer classifies the scheme instead of leaving every host to
+/// remember to.
+#[test]
+fn open_url_refuses_a_scheme_the_host_should_not_launch() {
+    for url in [
+        "file:///Applications/Calculator.app",
+        "javascript:alert(1)",
+        "ms-msdt:/id",
+        "smb://attacker.example/share",
+        "data:text/html;base64,PHNjcmlwdD4=",
+    ] {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {{"id":"root","component":"Button","child":"lbl",
+                 "action":{{"functionCall":{{"call":"openUrl","args":{{"url":"{url}"}}}}}}}},
+                {{"id":"lbl","component":"Text","text":"Visit"}}
+            ]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::BlockedUrlScheme),
+            "{url} must be reported as a blocked scheme, got: {:?}",
+            rendered.notes
+        );
+        // And there must be no way to reach the opener: no click message
+        // that could become an OpenUrl signal.
+        let mut surface = apply(&stream);
+        let surface = surface.surface_mut("s").expect("surface");
+        if let Some(msg) = find_click(&surface.render(&Theme::light()).element) {
+            for signal in surface.handle(msg) {
+                assert!(
+                    !matches!(signal, A2uiSignal::OpenUrl(_)),
+                    "{url} reached the host as an OpenUrl signal"
+                );
+            }
+        }
+    }
+}
+
+/// The schemes a link is actually for still work, unchanged.
+#[test]
+fn open_url_still_opens_the_web() {
+    for url in [
+        "https://a2ui.org/spec",
+        "http://localhost:8080/preview",
+        "mailto:someone@example.com",
+    ] {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {{"id":"root","component":"Button","child":"lbl",
+                 "action":{{"functionCall":{{"call":"openUrl","args":{{"url":"{url}"}}}}}}}},
+                {{"id":"lbl","component":"Text","text":"Visit"}}
+            ]}}}}
+        ]"#
+        );
+        let mut client = apply(&stream);
+        let surface = client.surface_mut("s").expect("surface");
+        let rendered = surface.render(&Theme::light());
+        assert!(
+            !rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::BlockedUrlScheme),
+            "{url} is a normal link, got: {:?}",
+            rendered.notes
+        );
+        let msg = find_click(&rendered.element).expect("the link is clickable");
+        let signals = surface.handle(msg);
+        assert!(
+            signals
+                .iter()
+                .any(|s| matches!(s, A2uiSignal::OpenUrl(u) if u == url)),
+            "{url} must reach the host, got: {signals:?}"
+        );
+    }
+}
+
 /// An `openUrl` with nothing to open must do nothing, rather than handing
 /// the host an empty URL it never asked for.
 #[test]

@@ -16,7 +16,7 @@ use fenestra_describe::error::DescribeError;
 use fenestra_describe::format::Description;
 use fenestra_describe::inspect::{self, AriaMode, Selector};
 use fenestra_describe::vocabulary::Vocabulary;
-use fenestra_render::engine::{self, EngineError, Step};
+use fenestra_render::engine::{self, BaselineRoot, EngineError, Step};
 use fenestra_render::resolve_theme;
 use fenestra_render::scenario;
 use rmcp::handler::server::wrapper::Parameters;
@@ -30,16 +30,85 @@ use serde_json::{Value, json};
 
 use crate::content;
 
-/// The stateless fenestra MCP server.
-#[derive(Clone, Default)]
-pub struct FenestraServer;
+/// The environment variable that moves the baseline root off the working
+/// directory. Read once, at startup, by [`FenestraServer::from_env`].
+pub const BASELINE_ROOT_ENV: &str = "FENESTRA_MCP_BASELINE_ROOT";
+
+/// The fenestra MCP server.
+///
+/// Stateless except for one thing: the directory that screenshot baselines
+/// may be read from. Two tools (`match_screenshot`, `run_scenario`) take a
+/// path to a PNG on disk and compare a render against it, and that path
+/// arrives inside a tool call — which is to say, from an agent, which may be
+/// acting on the contents of a web page or a file it read a moment ago. A
+/// server that opened any path it was handed would be a way to read files
+/// through, and the diff image it returns used to be a way to read them
+/// *out*. The underlay fix in `fenestra_render::diff_images` closes the
+/// second half; this root closes the first.
+#[derive(Clone)]
+pub struct FenestraServer {
+    baseline_root: BaselineRoot,
+}
+
+impl Default for FenestraServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[tool_router]
 impl FenestraServer {
-    /// A new server.
+    /// A new server confined to the current working directory — the
+    /// directory the MCP client launched it in, which is the project the
+    /// agent is working on.
+    ///
+    /// Falls back to refusing every baseline read if the working directory
+    /// cannot be resolved. That is deliberately the failure direction: a
+    /// server that could not establish its root and quietly read everywhere
+    /// instead would be at its most permissive exactly when something is
+    /// already wrong.
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            baseline_root: std::env::current_dir()
+                .map_err(|e| e.to_string())
+                .and_then(BaselineRoot::within)
+                .unwrap_or(BaselineRoot::Nowhere),
+        }
+    }
+
+    /// A new server whose baseline root comes from [`BASELINE_ROOT_ENV`],
+    /// falling back to [`FenestraServer::new`]'s working directory.
+    ///
+    /// # Errors
+    /// When the variable is set to something that is not a readable
+    /// directory. Failing to start is the right answer: the operator asked
+    /// for a specific root, and starting with a different one would hand
+    /// them a server they did not configure.
+    pub fn from_env() -> Result<Self, String> {
+        Self::with_root_setting(std::env::var_os(BASELINE_ROOT_ENV))
+    }
+
+    /// [`from_env`](Self::from_env) with the setting passed in rather than
+    /// read, so the decision it makes can be tested without writing to a
+    /// process-global (and `std::env::set_var` is `unsafe`, which this
+    /// workspace forbids outright).
+    ///
+    /// # Errors
+    /// As [`from_env`](Self::from_env).
+    pub fn with_root_setting(dir: Option<std::ffi::OsString>) -> Result<Self, String> {
+        match dir {
+            Some(dir) => Ok(Self {
+                baseline_root: BaselineRoot::within(dir)?,
+            }),
+            None => Ok(Self::new()),
+        }
+    }
+
+    /// The directory screenshot baselines are read from.
+    #[must_use]
+    pub fn baseline_root(&self) -> &BaselineRoot {
+        &self.baseline_root
     }
 
     #[tool(
@@ -243,15 +312,12 @@ surface: {} · fidelity notes: {}",
         let desc = parse_desc(&p.description)?;
         let theme = theme_of(p.theme.as_ref())?;
         let size = parse_size(p.size.as_deref())?;
-        engine::validate_masks(&p.masks).map_err(|e| ErrorData::invalid_params(e, None))?;
-        let baseline = image::open(&p.baseline_path)
-            .map_err(|e| {
-                ErrorData::invalid_params(
-                    format!("cannot read baseline {:?}: {e}", p.baseline_path),
-                    None,
-                )
-            })?
-            .into_rgba8();
+        engine::validate_diff_params(p.tolerance, p.budget, &p.masks)
+            .map_err(|e| ErrorData::invalid_params(e, None))?;
+        let baseline = self
+            .baseline_root
+            .open(&p.baseline_path)
+            .map_err(|e| ErrorData::invalid_params(e, None))?;
         let (tol, budget, masks) = (p.tolerance, p.budget, p.masks.clone());
         let diff = blocking(move || {
             engine::match_screenshot(&desc, &theme, size, &baseline, tol, budget, &masks)
@@ -334,7 +400,8 @@ surface: {} · fidelity notes: {}",
     ) -> Result<CallToolResult, ErrorData> {
         let scenario: scenario::Scenario = serde_json::from_value(p.scenario.clone())
             .map_err(|e| ErrorData::invalid_params(format!("invalid scenario: {e}"), None))?;
-        let out = blocking(move || scenario::verify(&scenario))
+        let root = self.baseline_root.clone();
+        let out = blocking(move || scenario::verify(&scenario, &root))
             .await?
             .map_err(engine_err)?;
         let scenario::VerifyOut {
@@ -666,6 +733,55 @@ mod tests {
         json!({ "schema": "fenestra/1", "root": { "button": { "label": "Go", "on_click": "go" } } })
     }
 
+    /// The two tools that take a path to a PNG on disk read it only under a
+    /// root, because that path arrives from an agent. A default server is
+    /// confined to the directory the MCP client launched it in.
+    #[test]
+    fn the_baseline_root_defaults_to_the_working_directory() {
+        let server = FenestraServer::new();
+        let BaselineRoot::Within(root) = server.baseline_root() else {
+            panic!(
+                "a default server must be confined, got {:?}",
+                server.baseline_root()
+            );
+        };
+        let cwd = std::env::current_dir()
+            .and_then(|d| d.canonicalize())
+            .expect("a working directory");
+        assert_eq!(root, &cwd);
+    }
+
+    /// A baseline outside the root is refused before anything is read, and
+    /// the refusal names the root so an honest caller can retry.
+    #[test]
+    fn a_baseline_outside_the_root_is_refused() {
+        let server = FenestraServer::new();
+        let err = server
+            .baseline_root()
+            .open("/etc/hosts")
+            .expect_err("a path outside the working directory is refused");
+        assert!(err.contains("outside the permitted root"), "{err}");
+    }
+
+    /// An operator who names a root gets that root or a server that does not
+    /// start — never a quietly wider one.
+    #[test]
+    fn a_configured_root_is_honoured_or_fatal() {
+        let bad = FenestraServer::with_root_setting(Some("/no/such/directory/here".into()));
+        assert!(bad.is_err(), "a bad root must stop the server starting");
+
+        let tmp = std::env::temp_dir().canonicalize().expect("a temp dir");
+        let good = FenestraServer::with_root_setting(Some(tmp.clone().into_os_string()))
+            .expect("a real directory is a usable root");
+        let BaselineRoot::Within(root) = good.baseline_root() else {
+            panic!("a configured server must be confined");
+        };
+        assert_eq!(root, &tmp);
+
+        let unset = FenestraServer::with_root_setting(None).expect("falls back to the cwd");
+        assert!(matches!(unset.baseline_root(), BaselineRoot::Within(_)));
+    }
+
     /// The authoritative tool count: `lib.rs`'s module doc points here rather
     /// than naming a number, so adding a fourteenth tool only means adding a
     /// name to this list, not chasing a count through prose elsewhere.
@@ -837,12 +953,16 @@ mod tests {
     /// that fails unmasked passes once the whole frame is masked out.
     #[tokio::test]
     async fn match_screenshot_mask_ignores_region() {
-        let s = FenestraServer::new();
         let theme = resolve_theme(None).unwrap();
         let desc = parse_desc(&good()).unwrap();
         let baseline_png = engine::render(&desc, &theme, (300, 120)).unwrap().png;
-        let path = std::env::temp_dir().join("fenestra_mcp_mask_test_baseline.png");
+        let dir = std::env::temp_dir().canonicalize().unwrap();
+        let path = dir.join("fenestra_mcp_mask_test_baseline.png");
         baseline_png.save(&path).unwrap();
+        // The fixture lives in the temp directory, so the server is rooted
+        // there — the same thing an operator does with the environment
+        // variable when their baselines are not under the working directory.
+        let s = FenestraServer::with_root_setting(Some(dir.into_os_string())).unwrap();
         let baseline_path = path.to_str().unwrap().to_string();
         let other =
             json!({ "schema": "fenestra/1", "root": { "button": { "label": "Different" } } });

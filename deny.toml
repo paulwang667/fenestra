@@ -3,6 +3,14 @@
 
 [advisories]
 yanked = "deny"
+# Assessed 2026-08-10 and deliberately NOT ignored, so they stay visible in
+# every run: RUSTSEC-2026-0221 (event-listener 5.4.1, `!Send` tags crossing a
+# thread boundary via `StackSlot`) and RUSTSEC-2024-0429 (glib 0.18.5,
+# unsoundness in `VariantStrIter`). Both are unsoundness rather than
+# vulnerabilities, and both are transitive: glib arrives through muda's Linux
+# half, which is never compiled for a supported target (see the gtk3 note
+# below). Listing them here would only hide them; this comment records that
+# they were read, not missed.
 # Transitive-only, no upstream fix available as of 2026-07-02 — see
 # ARCHITECTURE.md ("cargo-audit/cargo-deny: unfixable transitive advisories")
 # for the dependency chains and revisit trigger. Re-run `cargo tree -i

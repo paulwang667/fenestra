@@ -14,6 +14,7 @@ use fenestra_shell::testing::{clamp_strip_scale, filmstrip_image};
 use fenestra_shell::{Harness, MAX_FILM_INTERVAL_MS, ShellError, try_render_element};
 use image::{Rgba, RgbaImage};
 use serde::Deserialize;
+use std::path::{Component, Path, PathBuf};
 
 use crate::described_app::DescribedApp;
 
@@ -426,7 +427,8 @@ pub struct ScreenshotDiff {
     pub max_delta: u8,
     /// Coordinate of the worst pixel.
     pub worst: (u32, u32),
-    /// A diff image (offending pixels in red over the dimmed baseline), when not ok.
+    /// A diff image (offending pixels in red over the dimmed *render*), when
+    /// not ok. Deliberately never the baseline: see [`diff_images`].
     pub diff_png: Option<RgbaImage>,
 }
 
@@ -450,16 +452,211 @@ pub fn match_screenshot(
     Ok(diff_images(baseline, &actual, channel_tol, budget, masks))
 }
 
-/// Validates a mask list before it reaches [`diff_images`]. Diffing itself
-/// never panics on a stray mask — a `NaN` comparison is simply false, a
-/// negative extent matches nothing — but a boundary that accepts masks from an
-/// untrusted caller (the CLI, the MCP tool) should reject the mistake rather
-/// than silently ignore it, so both call `validate_masks` first.
+/// Where a baseline PNG may be read from.
+///
+/// The two front doors are in genuinely different positions. The CLI's
+/// baseline path comes from the command line, so the person choosing the file
+/// is the person running the tool, and confining them to a directory would
+/// only be in the way. The MCP server's path arrives inside a tool call from
+/// an agent — a party that may be acting on a web page, an issue comment, or
+/// a source file it read a moment ago — so there the path is untrusted input
+/// and gets a root.
+///
+/// One type for both, because the alternative is a plain `&Path` at every
+/// call site and a comment asking people to remember which door they are.
+#[derive(Debug, Clone)]
+pub enum BaselineRoot {
+    /// Any path this process can read.
+    Anywhere,
+    /// Only paths resolving inside this directory, which is canonical (see
+    /// [`BaselineRoot::within`]).
+    Within(PathBuf),
+    /// No path at all. The posture for a caller that cannot establish a
+    /// root, and for an embedder who wants file baselines off entirely.
+    ///
+    /// This exists because the obvious spelling of "no root" — an empty
+    /// [`Within`](Self::Within) — is the opposite of what it looks like:
+    /// every path is inside the empty prefix, so it would permit
+    /// everything while reading as if it permitted nothing.
+    Nowhere,
+}
+
+impl BaselineRoot {
+    /// A root confined to `dir`.
+    ///
+    /// The directory is canonicalized once, here, so that later containment
+    /// checks compare like with like — on macOS `/tmp` is a symlink to
+    /// `/private/tmp`, and a root that skipped this would reject its own
+    /// files.
+    ///
+    /// # Errors
+    /// When `dir` does not exist, cannot be canonicalized, or is not a
+    /// directory.
+    pub fn within(dir: impl AsRef<Path>) -> Result<Self, String> {
+        let dir = dir.as_ref();
+        let canon = dir
+            .canonicalize()
+            .map_err(|e| format!("baseline root {}: {e}", dir.display()))?;
+        if !canon.is_dir() {
+            return Err(format!(
+                "baseline root {} is not a directory",
+                dir.display()
+            ));
+        }
+        Ok(Self::Within(canon))
+    }
+
+    /// Opens `path` as an RGBA image, refusing anything outside the root.
+    ///
+    /// # Errors
+    /// A ready-to-show message when the path escapes the root, or when the
+    /// file cannot be read or decoded.
+    pub fn open(&self, path: impl AsRef<Path>) -> Result<RgbaImage, String> {
+        let path = path.as_ref();
+        let resolved = match self {
+            Self::Anywhere => path.to_path_buf(),
+            Self::Within(root) => Self::resolve_within(root, path)?,
+            Self::Nowhere => return Err(Self::nowhere(path)),
+        };
+        Ok(image::open(&resolved)
+            .map_err(|e| format!("cannot read baseline {}: {e}", path.display()))?
+            .into_rgba8())
+    }
+
+    /// The refusal from a [`Nowhere`](Self::Nowhere) root.
+    fn nowhere(path: &Path) -> String {
+        format!(
+            "baseline {} cannot be used: this caller has no permitted \
+             directory to read baselines from",
+            path.display()
+        )
+    }
+
+    /// Resolves `path` as a *write* target, refusing anything outside the
+    /// root.
+    ///
+    /// Writing needs its own resolver because the file is allowed not to
+    /// exist yet, and `canonicalize` answers only for paths that do. So the
+    /// parent directory is what gets canonicalized and contained, and the
+    /// file name is joined back on afterwards. Blessing a baseline is a CLI
+    /// operation today and no MCP tool reaches it — this exists so that
+    /// stays true by construction if one ever does, rather than by nobody
+    /// having noticed that the write side never grew a root.
+    ///
+    /// # Errors
+    /// A ready-to-show message when the path escapes the root, names no
+    /// file, or has no reachable parent directory.
+    pub fn resolve_write(&self, path: impl AsRef<Path>) -> Result<PathBuf, String> {
+        let path = path.as_ref();
+        let root = match self {
+            Self::Anywhere => return Ok(path.to_path_buf()),
+            Self::Nowhere => return Err(Self::nowhere(path)),
+            Self::Within(root) => root,
+        };
+        let name = path
+            .file_name()
+            .ok_or_else(|| format!("baseline {} names no file", path.display()))?;
+        let parent = Self::resolve_within(root, path.parent().unwrap_or(Path::new("")))?;
+        Ok(parent.join(name))
+    }
+
+    /// Resolves `path` against `root`, refusing to leave it. A relative path
+    /// is taken from the root; an absolute one is accepted only if it is
+    /// already inside it.
+    ///
+    /// Two passes, and both are load-bearing. The lexical pass runs first and
+    /// touches no filesystem, so anything outside the root is refused with a
+    /// message that cannot depend on whether the target exists — a refusal
+    /// that said "no such file" for one path outside the root and "permission
+    /// denied" for another would still answer questions about a disk the
+    /// caller is not allowed to read. Only paths that pass it are
+    /// canonicalized, and that second pass catches what lexical analysis
+    /// cannot: a symlink *inside* the root whose target is outside it.
+    ///
+    /// The root is canonical, so an absolute path must be spelled that way
+    /// too — on macOS `/tmp/x` does not match a root of `/private/tmp`. That
+    /// is why the refusal names the root: it is the retry instruction.
+    fn resolve_within(root: &Path, path: &Path) -> Result<PathBuf, String> {
+        let outside = || {
+            format!(
+                "baseline {} is outside the permitted root {}",
+                path.display(),
+                root.display()
+            )
+        };
+        let mut out = if path.is_absolute() {
+            PathBuf::new()
+        } else {
+            root.to_path_buf()
+        };
+        for comp in path.components() {
+            match comp {
+                Component::Prefix(p) => out.push(p.as_os_str()),
+                Component::RootDir => out.push(Component::RootDir.as_os_str()),
+                Component::Normal(c) => out.push(c),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if !out.pop() {
+                        return Err(outside());
+                    }
+                }
+            }
+        }
+        if !out.starts_with(root) {
+            return Err(outside());
+        }
+        // Neutral wording: this resolver serves both the read and the write
+        // side, and "cannot read" would be a lie on one of them.
+        let canon = out
+            .canonicalize()
+            .map_err(|e| format!("baseline {}: {e}", path.display()))?;
+        if !canon.starts_with(root) {
+            return Err(outside());
+        }
+        Ok(canon)
+    }
+}
+
+/// Validates a comparison's parameters before they reach [`diff_images`].
+///
+/// Diffing itself never panics on a stray input — a `NaN` comparison is
+/// simply false, a negative extent matches nothing — but a boundary that
+/// accepts them from an untrusted caller (the CLI, the MCP tools, a scenario
+/// file) should reject the mistake rather than silently ignore it, so every
+/// such boundary calls this first. One validator rather than one per door:
+/// the reason `budget` and `channel_tol` are checked here at all is that
+/// they were checked *nowhere*, and the pair of them was the whole exploit
+/// against the old baseline underlay (see [`diff_images`]).
+///
+/// # Errors
+/// A ready-to-show message for a budget that is not a finite fraction, a
+/// tolerance that compares nothing, or (path-pointed, `mask[i].field`) the
+/// first non-finite coordinate or negative extent in `masks`.
+pub fn validate_diff_params(channel_tol: u8, budget: f64, masks: &[Bounds]) -> Result<(), String> {
+    if !budget.is_finite() || !(0.0..=1.0).contains(&budget) {
+        return Err(format!(
+            "budget must be a finite fraction between 0 and 1, got {budget}"
+        ));
+    }
+    // A per-channel delta cannot exceed 255, so this tolerance passes every
+    // pixel of every image. A caller who meant "ignore small differences"
+    // wants a number; a caller who meant "compare nothing" wants a mask.
+    if channel_tol == u8::MAX {
+        return Err(
+            "tolerance 255 accepts every pixel, so the comparison checks nothing; \
+             use a mask to exclude a region"
+                .to_owned(),
+        );
+    }
+    validate_masks(masks)
+}
+
+/// The mask half of [`validate_diff_params`].
 ///
 /// # Errors
 /// A path-pointed message (`mask[i].field`) for the first non-finite
 /// coordinate or negative width/height found.
-pub fn validate_masks(masks: &[Bounds]) -> Result<(), String> {
+fn validate_masks(masks: &[Bounds]) -> Result<(), String> {
     for (i, m) in masks.iter().enumerate() {
         for (field, v) in [("x", m.x), ("y", m.y), ("w", m.w), ("h", m.h)] {
             if !v.is_finite() {
@@ -486,10 +683,22 @@ fn masked(x: u32, y: u32, masks: &[Bounds]) -> bool {
 
 /// Compares two images, producing the diff stats and (on failure) a diff image:
 /// offending pixels (those whose per-channel delta exceeds `channel_tol`) in red
-/// over the dimmed baseline, masked rectangles excluded. `ok` when the differing
-/// fraction is within `budget`. Exposed so a caller that already holds the actual
-/// pixels (e.g. a driven scenario's post-interaction render) can diff against a
-/// baseline without re-rendering.
+/// over the dimmed *rendered* image, masked rectangles excluded. `ok` when the
+/// differing fraction is within `budget`. Exposed so a caller that already holds
+/// the actual pixels (e.g. a driven scenario's post-interaction render) can diff
+/// against a baseline without re-rendering.
+///
+/// The underlay is `actual`, never `golden`, and that is a security property
+/// rather than a style choice. A caller may be allowed to *name* a baseline
+/// without being allowed to *read* it — that is exactly the MCP server's
+/// position, where the path arrives from an agent. Drawing the baseline
+/// underneath the markers turned "compare my render against this file" into
+/// "hand me the contents of any PNG on this disk", one call, no iteration:
+/// a `channel_tol` of 255 marks nothing as differing, so every pixel fell
+/// through to the underlay, and a negative `budget` still reported failure,
+/// which is what releases the image. Both of those are now rejected at the
+/// boundary by [`validate_diff_params`], but the underlay is what makes the
+/// leak impossible rather than merely inconvenient.
 #[must_use]
 pub fn diff_images(
     golden: &RgbaImage,
@@ -535,7 +744,14 @@ pub fn diff_images(
             differing += 1;
             diff.put_pixel(x, y, Rgba([255, 0, 0, 255]));
         } else {
-            let p = g.0;
+            // The *rendered* pixel, not the baseline's. A caller who can
+            // choose the baseline path but not read the file — the MCP
+            // server's agent — would otherwise get the file's contents back
+            // as an image, which is a way to read any PNG on the disk. The
+            // render is the caller's own output, so drawing it leaks
+            // nothing, and it is the more useful underlay anyway: the marks
+            // land on the thing being diagnosed.
+            let p = a.0;
             diff.put_pixel(x, y, Rgba([p[0] / 3, p[1] / 3, p[2] / 3, 255]));
         }
     }

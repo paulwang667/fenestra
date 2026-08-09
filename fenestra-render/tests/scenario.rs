@@ -6,7 +6,12 @@
 use std::path::PathBuf;
 
 use fenestra_render::engine::EngineError;
-use fenestra_render::{Scenario, bless, verify};
+use fenestra_render::{BaselineRoot, Scenario, bless, verify};
+
+/// The CLI's posture: these tests name their own baseline paths, the way a
+/// person running the command does. Confinement is exercised in
+/// `baseline_root.rs`.
+const ROOT: &BaselineRoot = &BaselineRoot::Anywhere;
 
 fn scenario(json: &str) -> Scenario {
     serde_json::from_str(json).expect("valid scenario")
@@ -35,7 +40,7 @@ fn verify_static_form_all_checks_pass() {
         }
     }"#,
     );
-    let out = verify(&s).expect("scenario runs");
+    let out = verify(&s, ROOT).expect("scenario runs");
     assert!(
         out.report.ok,
         "all checks should pass: {:?}",
@@ -62,7 +67,7 @@ fn verify_focus_order_expectation() {
         r#"{{ "schema": "fenestra/1", "description": {DESC}, "size": "400x300",
             "expect": {{ "focus_order": ["email", "go"] }} }}"#
     ));
-    let out = verify(&s).expect("scenario runs");
+    let out = verify(&s, ROOT).expect("scenario runs");
     assert!(
         out.report.ok,
         "focus order matches: {:?}",
@@ -76,7 +81,7 @@ fn verify_focus_order_expectation() {
         r#"{{ "schema": "fenestra/1", "description": {DESC}, "size": "400x300",
             "expect": {{ "focus_order": ["go", "email"] }} }}"#
     ));
-    let out = verify(&bad).expect("scenario runs");
+    let out = verify(&bad, ROOT).expect("scenario runs");
     assert!(
         !out.report.ok,
         "reversed order should fail: {:?}",
@@ -95,7 +100,7 @@ fn verify_layout_flags_offscreen() {
             ] } } },
             "size": "800x600", "expect": { "layout": true } }"#,
     );
-    let out = verify(&off).expect("runs");
+    let out = verify(&off, ROOT).expect("runs");
     assert!(
         !out.report.ok,
         "an off-screen control fails the layout gate: {:?}",
@@ -107,7 +112,7 @@ fn verify_layout_flags_offscreen() {
             "button": { "label": "Save", "on_click": "save" } } },
             "size": "800x600", "expect": { "layout": true } }"#,
     );
-    let out_ok = verify(&ok).expect("runs");
+    let out_ok = verify(&ok, ROOT).expect("runs");
     assert!(
         out_ok.report.ok,
         "a normal button passes the layout gate: {:?}",
@@ -129,7 +134,7 @@ fn verify_a11y_strict_catches_authored_low_contrast() {
             "expect": {{ "a11y": true }} }}"#
     ));
     assert!(
-        verify(&relaxed).expect("runs").report.ok,
+        verify(&relaxed, ROOT).expect("runs").report.ok,
         "relaxed a11y passes a legible theme with no unlabeled controls"
     );
 
@@ -137,7 +142,7 @@ fn verify_a11y_strict_catches_authored_low_contrast() {
         r#"{{ "schema": "fenestra/1", "description": {DESC}, "size": "300x120",
             "expect": {{ "a11y_strict": true }} }}"#
     ));
-    let out = verify(&strict).expect("runs");
+    let out = verify(&strict, ROOT).expect("runs");
     assert!(
         !out.report.ok,
         "strict a11y catches the low-contrast text: {:?}",
@@ -159,7 +164,7 @@ fn verify_emitted_intent_from_click() {
         "expect": { "emitted": ["add"] }
     }"#,
     );
-    let out = verify(&s).expect("scenario runs");
+    let out = verify(&s, ROOT).expect("scenario runs");
     assert!(out.report.ok, "{:?}", out.report.checks);
     assert_eq!(out.report.emitted, vec!["add".to_string()]);
     let emitted = out
@@ -186,7 +191,7 @@ fn verify_reports_failing_check() {
         "expect": { "emitted": ["WRONG"] }
     }"#,
     );
-    let out = verify(&s).expect("scenario runs");
+    let out = verify(&s, ROOT).expect("scenario runs");
     assert!(!out.report.ok, "the overall report should fail");
     let emitted = out
         .report
@@ -222,13 +227,13 @@ fn verify_screenshot_compares_post_interaction_pixels() {
     ));
 
     // Bless captures the *after-click* (checked) render as the baseline.
-    let written = bless(&driven).expect("bless writes the baseline");
+    let written = bless(&driven, ROOT).expect("bless writes the baseline");
     assert_eq!(written, baseline);
     assert!(baseline.exists(), "baseline file should exist");
 
     // The driven scenario matches its own post-interaction baseline, and the
     // screenshot check genuinely ran (a passing scenario carries no diff image).
-    let ok = verify(&driven).expect("scenario runs");
+    let ok = verify(&driven, ROOT).expect("scenario runs");
     assert!(
         ok.report.ok,
         "driven render should match its blessed baseline: {:?}",
@@ -259,7 +264,7 @@ fn verify_screenshot_compares_post_interaction_pixels() {
         "expect": {{ "screenshot": {{ "baseline": "{static_baseline_str}", "tolerance": 3, "budget": 0.002 }} }}
     }}"#,
     ));
-    bless(&static_).expect("bless the static baseline");
+    bless(&static_, ROOT).expect("bless the static baseline");
     assert_ne!(
         std::fs::read(&baseline).unwrap(),
         std::fs::read(&static_baseline).unwrap(),
@@ -279,7 +284,7 @@ fn verify_screenshot_compares_post_interaction_pixels() {
         "expect": {{ "screenshot": {{ "baseline": "{baseline_str}", "tolerance": 3, "budget": 0.002 }} }}
     }}"#,
     ));
-    let mismatch = verify(&static_).expect("scenario runs");
+    let mismatch = verify(&static_, ROOT).expect("scenario runs");
     assert!(
         !mismatch.report.ok,
         "static unchecked render should differ from the checked baseline"
@@ -309,7 +314,7 @@ fn bless_without_screenshot_is_error() {
         "expect": { "a11y": true }
     }"#,
     );
-    let err = bless(&s).expect_err("nothing to bless");
+    let err = bless(&s, ROOT).expect_err("nothing to bless");
     assert!(matches!(err, EngineError::Scenario(_)), "{err:?}");
 }
 
@@ -324,7 +329,7 @@ fn verify_finds_button_with_empty_label() {
         "expect": { "queries": [ { "selector": { "role": "button" }, "count": 1 } ] }
     }"#,
     );
-    let out = verify(&s).expect("scenario runs");
+    let out = verify(&s, ROOT).expect("scenario runs");
     let q = out
         .report
         .checks
@@ -348,7 +353,7 @@ fn verify_parse_error_surfaces() {
         "expect": {}
     }"#,
     );
-    let err = verify(&s).expect_err("an unknown color role is a parse error");
+    let err = verify(&s, ROOT).expect_err("an unknown color role is a parse error");
     assert!(matches!(err, EngineError::Parse(_)), "{err:?}");
 }
 
@@ -366,7 +371,7 @@ fn verify_step_miss_is_self_explaining() {
         "expect": {}
     }"#,
     );
-    match verify(&s).expect_err("the step misses") {
+    match verify(&s, ROOT).expect_err("the step misses") {
         EngineError::Step { index, tree, .. } => {
             assert_eq!(index, 0);
             assert!(tree.contains("button"), "tree carried for self-correction");
@@ -385,7 +390,7 @@ fn verify_unknown_schema_is_error() {
         "expect": {}
     }"#,
     );
-    let err = verify(&s).expect_err("unknown schema");
+    let err = verify(&s, ROOT).expect_err("unknown schema");
     assert!(matches!(err, EngineError::Scenario(_)), "{err:?}");
 }
 
@@ -400,7 +405,7 @@ fn verify_empty_expect_is_smoke_gate() {
         "expect": {}
     }"#,
     );
-    let out = verify(&s).expect("scenario runs");
+    let out = verify(&s, ROOT).expect("scenario runs");
     assert!(out.report.ok, "empty expect is vacuously ok");
     assert!(out.report.checks.is_empty(), "no checks requested");
 }
@@ -412,7 +417,7 @@ fn verify_empty_expect_is_smoke_gate() {
 fn golden_login_scenario_verifies() {
     let s: Scenario = serde_json::from_str(include_str!("scenarios/login.json"))
         .expect("the login fixture parses");
-    let out = verify(&s).expect("scenario runs");
+    let out = verify(&s, ROOT).expect("scenario runs");
     assert!(
         out.report.ok,
         "the login scenario should pass: {:#?}",
@@ -449,7 +454,7 @@ fn verify_a11y_flags_unlabeled_control() {
         "expect": { "a11y": true }
     }"#,
     );
-    let out = verify(&s).expect("scenario runs");
+    let out = verify(&s, ROOT).expect("scenario runs");
     assert!(!out.report.ok, "an unlabeled button should fail a11y");
     let a = out
         .report
@@ -476,7 +481,7 @@ fn verify_aria_mismatch_fails() {
         "expect": { "aria": { "snapshot": "- button \"Nope\"" } }
     }"#,
     );
-    let out = verify(&s).expect("scenario runs");
+    let out = verify(&s, ROOT).expect("scenario runs");
     assert!(!out.report.ok);
     let aria = out
         .report
@@ -500,7 +505,7 @@ fn verify_aria_strict_mode_is_threaded() {
         "expect": {{ "aria": {{ "snapshot": "- button \"Add\"", "mode": "partial" }} }} }}"#
     ));
     assert!(
-        verify(&partial)
+        verify(&partial, ROOT)
             .unwrap()
             .report
             .checks
@@ -515,7 +520,7 @@ fn verify_aria_strict_mode_is_threaded() {
         "expect": {{ "aria": {{ "snapshot": "- button \"Add\"", "mode": "strict" }} }} }}"#
     ));
     assert!(
-        !verify(&strict)
+        !verify(&strict, ROOT)
             .unwrap()
             .report
             .checks
@@ -537,7 +542,7 @@ fn verify_aria_bad_regex_is_scenario_error() {
         "expect": { "aria": { "snapshot": "- button \"(\"", "mode": "regex" } }
     }"#,
     );
-    let err = verify(&s).expect_err("a bad regex is a scenario error");
+    let err = verify(&s, ROOT).expect_err("a bad regex is a scenario error");
     assert!(
         matches!(&err, EngineError::Scenario(m) if m.contains("expect.aria")),
         "{err:?}"
@@ -555,7 +560,7 @@ fn verify_query_miss_reports_nearest() {
         "expect": { "queries": [ { "selector": { "role": "button" }, "count": 1 } ] }
     }"#,
     );
-    let out = verify(&s).expect("scenario runs");
+    let out = verify(&s, ROOT).expect("scenario runs");
     assert!(!out.report.ok);
     let q = out
         .report
@@ -586,7 +591,7 @@ fn verify_query_wrong_count_fails() {
         "expect": { "queries": [ { "selector": { "role": "button" }, "count": 5 } ] }
     }"#,
     );
-    let out = verify(&s).expect("scenario runs");
+    let out = verify(&s, ROOT).expect("scenario runs");
     assert!(!out.report.ok);
     let q = out
         .report
@@ -612,7 +617,7 @@ fn verify_missing_baseline_is_scenario_error() {
     }}"#,
         missing.to_str().unwrap()
     ));
-    let err = verify(&s).expect_err("an unreadable baseline is a setup error");
+    let err = verify(&s, ROOT).expect_err("an unreadable baseline is a setup error");
     assert!(
         matches!(&err, EngineError::Scenario(m) if m.contains("cannot read baseline")),
         "{err:?}"
@@ -632,14 +637,14 @@ fn verify_dimension_mismatch_reports_size_not_pixels() {
         "size": "200x80",
         "expect": {{ "screenshot": {{ "baseline": "{b}", "tolerance": 3, "budget": 0.002 }} }} }}"#
     ));
-    bless(&small).expect("bless a 200x80 baseline");
+    bless(&small, ROOT).expect("bless a 200x80 baseline");
     let tall = scenario(&format!(
         r#"{{ "schema": "fenestra/1",
         "description": {{ "schema": "fenestra/1", "root": {{ "button": {{ "label": "Go" }} }} }},
         "size": "200x120",
         "expect": {{ "screenshot": {{ "baseline": "{b}", "tolerance": 3, "budget": 0.002 }} }} }}"#
     ));
-    let out = verify(&tall).expect("scenario runs");
+    let out = verify(&tall, ROOT).expect("scenario runs");
     assert!(!out.report.ok);
     let shot = out
         .report
@@ -677,7 +682,7 @@ fn verify_screenshot_masks_are_threaded() {
         "steps": [ {{ "click": {{ "id": "c" }} }} ],
         "expect": {{ "screenshot": {{ "baseline": "{b}", "tolerance": 3, "budget": 0.002 }} }} }}"#
     ));
-    bless(&driven).expect("bless the checked baseline");
+    bless(&driven, ROOT).expect("bless the checked baseline");
     // The static (unchecked) render WOULD differ at tol/budget 0, but a full-canvas
     // mask ignores every pixel — so this passes only if masks are wired through.
     let masked = scenario(&format!(
@@ -689,7 +694,7 @@ fn verify_screenshot_masks_are_threaded() {
         "expect": {{ "screenshot": {{ "baseline": "{b}", "tolerance": 0, "budget": 0.0,
             "masks": [ {{ "x": 0, "y": 0, "w": 200, "h": 80 }} ] }} }} }}"#
     ));
-    let out = verify(&masked).expect("scenario runs");
+    let out = verify(&masked, ROOT).expect("scenario runs");
     assert!(
         out.report.ok,
         "a full-canvas mask ignores all differences: {:?}",
@@ -711,7 +716,7 @@ fn verify_steps_with_empty_expect_is_smoke_gate() {
         "expect": {}
     }"#,
     );
-    let out = verify(&s).expect("scenario runs");
+    let out = verify(&s, ROOT).expect("scenario runs");
     assert!(out.report.ok, "no expectations is vacuously ok");
     assert!(out.report.checks.is_empty());
     assert_eq!(

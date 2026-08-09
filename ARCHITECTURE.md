@@ -3927,3 +3927,97 @@ Decisions of record:
 - **Notes need somewhere to go when no surface owns them.** A stream-level
   message naming no live surface had no home and was dropped with `Ok(())`.
   `Client::notes()` is that home.
+
+## Naming a file is not reading it (2026-08-10)
+
+A security scan of the whole tree, code injection included. The dependency
+side was clean — `cargo audit` and `cargo deny` both pass, no process is
+spawned from anything an agent controls, no library crate opens a socket,
+and the JSON grammars carry no filesystem paths at all. What it found was
+one high-severity file disclosure in the MCP server, and one place where the
+book told hosts to do something unsafe.
+
+The disclosure is worth writing down carefully, because both halves of it
+looked reasonable on their own.
+
+`match_screenshot` takes a path to a baseline PNG and returns a diff image
+when the comparison fails. The diff drew offending pixels in red *over the
+dimmed baseline* — a sensible way to see what changed against what was
+expected, and the CLI, where the person picking the file is the person
+running the command, had every right to it. The MCP server reused the same
+function, and there the path comes from an agent. So a tool call could name
+any PNG on the disk and get its contents back as an image, at a third
+brightness, one call, no iteration: `tolerance: 255` marks nothing as
+differing so every pixel falls through to the underlay, and `budget: -1`
+still reports failure, which is what releases the image. Neither parameter
+was validated. `run_scenario` reached the identical code through
+`expect.screenshot.baseline`.
+
+Decisions of record:
+
+- **The underlay is the render, never the baseline.** This is the fix that
+  makes the leak impossible rather than inconvenient, and it costs nothing:
+  the caller authored the render and already has it, the red markers carry
+  the location information either way, and marks land on the thing being
+  diagnosed. A parameter to choose the underlay was considered and rejected —
+  a call site that can get it wrong eventually will.
+- **`BaselineRoot` is one type with three postures**, so the question "which
+  door am I?" is answered by the type rather than by a comment. `Anywhere`
+  for the CLI, `Within(dir)` for the MCP server, `Nowhere` for a caller that
+  could not establish a root. `Nowhere` exists because the obvious spelling
+  of "no root" — an empty `Within` — permits everything while reading as if
+  it permits nothing, and that is exactly the kind of fallback a server
+  reaches for when something has already gone wrong.
+- **Resolution is lexical first, canonical second, and both are
+  load-bearing.** The lexical pass touches no filesystem, so a path outside
+  the root is refused with a message that cannot depend on whether the target
+  exists — otherwise the refusal itself answers questions about a disk the
+  caller may not read. Only paths that survive it get canonicalized, which is
+  what catches a symlink inside the root pointing out of it.
+- **`verify` and `bless` take the root as an argument rather than defaulting
+  it.** The safe answer differs per caller and only the caller knows it; a
+  default would be right for one door and silently wrong for the other. The
+  write side (`bless`) is confined too, though no MCP tool reaches it today —
+  so that stays true by construction rather than by nobody having noticed.
+- **The comparison parameters are validated at the boundary, in one place.**
+  `validate_diff_params` replaces `validate_masks` and covers budget and
+  tolerance with it, because the reason those two were unchecked is that
+  nothing owned the question. A tolerance of 255 is rejected outright: it
+  accepts every pixel of every image, so it is not a loose comparison but the
+  absence of one.
+- **A misconfigured root stops the server starting.** An operator who names a
+  root gets that root or an error, never a quietly wider one. The env
+  variable is parsed by a function taking the value, not reading it, because
+  `std::env::set_var` is `unsafe` in edition 2024 and this workspace forbids
+  unsafe — a testability constraint that produced a better shape anyway.
+
+The A2UI half is smaller but the same species. `A2uiSignal::OpenUrl` carried
+whatever string the stream named, and the book's host example passed it
+straight to `opener::open`. Those openers launch whichever application
+registered the scheme, so `file:` or an installed app's custom scheme is a
+stream choosing a program to start on the user's machine.
+
+- **The renderer classifies the scheme, so every host does not have to
+  remember to.** An allowlist (`http`, `https`, `mailto`), because the set of
+  schemes a desktop will launch is open — every installed application may add
+  one. A scheme-less URL is refused too: `open(1)` treats a bare path as a
+  local file, so a "relative" URL is a `file:` in disguise.
+- **A blocked scheme is `broken`, not `approximate`.** The stream described a
+  link and the user gets something inert. That the refusal is deliberate does
+  not make the surface complete, and an author who meant a plain web link
+  needs `any_broken()` to say so.
+
+Also fixed, and lower: the MCP server's full-resolution temp PNGs were named
+`fenestra-mcp-<pid>-<counter>.png`, every part predictable, and written with
+`save()`, which follows a symlink already sitting at that path. On a shared
+`/tmp` — Linux, where this server also runs — that is a write-through
+primitive for anyone who can guess the name. They are created with
+`create_new` (`O_CREAT | O_EXCL`) now, mode `0o600`, with an unpredictable
+suffix, and the retention GC remembers what it wrote instead of
+reconstructing names it can no longer predict.
+
+Two RustSec advisories (`RUSTSEC-2026-0221` event-listener,
+`RUSTSEC-2024-0429` glib) are unsoundness warnings rather than
+vulnerabilities and are deliberately *not* in the ignore lists: they should
+stay visible. The comment blocks in `deny.toml` and `.cargo/audit.toml` say
+so, so a later reader knows they were assessed rather than missed.

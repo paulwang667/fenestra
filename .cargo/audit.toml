@@ -6,6 +6,10 @@
 # advisories") for the dependency chains and revisit triggers.
 
 [advisories]
+# Assessed 2026-08-10 and deliberately left OUT of this list so they keep
+# printing: RUSTSEC-2026-0221 (event-listener) and RUSTSEC-2024-0429 (glib).
+# Both are unsoundness warnings, not vulnerabilities. See deny.toml for the
+# reasoning; the two files stay in lockstep.
 ignore = [
   "RUSTSEC-2026-0194", # quick-xml: quadratic run time on duplicate attrs
   "RUSTSEC-2026-0195", # quick-xml: unbounded namespace-decl allocation

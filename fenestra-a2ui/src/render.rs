@@ -170,10 +170,47 @@ pub enum A2uiSignal {
         source_id: String,
     },
     /// Open a URL with the platform opener.
+    ///
+    /// Safe to hand to `open(1)`, `xdg-open`, or the browser: the scheme is
+    /// one of [`OPENABLE_SCHEMES`], checked when the action was resolved.
+    /// A stream naming anything else never reaches here — it renders as an
+    /// inert control with a [`NoteKind::BlockedUrlScheme`] note — because
+    /// those openers launch whichever application registered the scheme,
+    /// and the stream that named it is only as trustworthy as whatever the
+    /// agent writing it last read.
     OpenUrl(
-        /// The URL.
+        /// The URL, scheme-checked.
         String,
     ),
+}
+
+/// The URL schemes [`A2uiSignal::OpenUrl`] may carry.
+///
+/// An allowlist rather than a blocklist, because the set of schemes a
+/// desktop will launch is open — every installed application may add one,
+/// and none of them are known here. These three are what a link in a
+/// generated surface is for.
+pub const OPENABLE_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
+
+/// Whether `url` is something the host may hand to a platform opener.
+///
+/// A URL with no scheme at all is refused too. `open(1)` and `xdg-open`
+/// both treat a bare path as a local file, so a "relative" URL is a `file:`
+/// in disguise — and a surface meaning to link to the web can say so.
+fn is_openable(url: &str) -> bool {
+    // A scheme is `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"` (RFC
+    // 3986). Anything before a `:` that does not fit that shape is not a
+    // scheme, so the string has none.
+    let Some((scheme, _)) = url.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    let well_formed = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    well_formed
+        && OPENABLE_SCHEMES
+            .iter()
+            .any(|s| scheme.eq_ignore_ascii_case(s))
 }
 
 /// A rendered surface: the element tree plus render-time fidelity notes.
@@ -2021,6 +2058,18 @@ fn action_msg(ctx: &Ctx, id: &str, action: &Action, scope: Option<&str>) -> A2ui
                     id,
                     NoteKind::UnresolvedBinding,
                     "openUrl has no URL to open; the action does nothing",
+                );
+                return A2uiMsg::Ignored;
+            }
+            if !is_openable(&url) {
+                ctx.note(
+                    id,
+                    NoteKind::BlockedUrlScheme,
+                    format!(
+                        "openUrl {} is not a scheme this renderer will open; \
+                         the control does nothing",
+                        quoted(&url)
+                    ),
                 );
                 return A2uiMsg::Ignored;
             }
