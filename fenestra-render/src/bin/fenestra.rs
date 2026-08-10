@@ -23,7 +23,7 @@ use fenestra_describe::inspect::{
 use fenestra_describe::parse::validate;
 use fenestra_describe::vocabulary::describe_vocabulary;
 use fenestra_render::engine::{
-    self, Step, film, interact, match_screenshot, render, validate_masks,
+    self, BaselineRoot, Step, film, interact, match_screenshot, render, validate_diff_params,
 };
 use fenestra_render::scenario::{Scenario, bless, verify};
 use fenestra_render::{PreviewApp, resolve_theme};
@@ -469,9 +469,12 @@ fn cmd_match_png(
         Ok(m) => m,
         Err(c) => return c,
     };
-    let baseline = match image::open(baseline) {
-        Ok(img) => img.into_rgba8(),
-        Err(e) => return err(&format!("error reading baseline: {e}")),
+    if let Err(e) = validate_diff_params(tolerance, budget, &masks) {
+        return err(&e);
+    }
+    let baseline = match BaselineRoot::Anywhere.open(baseline) {
+        Ok(img) => img,
+        Err(e) => return err(&e),
     };
     match match_screenshot(&desc, &theme, size, &baseline, tolerance, budget, &masks) {
         Ok(diff) => {
@@ -593,8 +596,12 @@ fn cmd_verify(scenario: Option<PathBuf>, out: Option<&Path>, do_bless: bool) -> 
         Ok(s) => s,
         Err(e) => return err(&format!("invalid scenario json: {e}")),
     };
+    // The person who typed the scenario path is the person running the
+    // command, so the CLI reads and writes baselines wherever they can.
+    // The MCP server, whose scenarios arrive from an agent, does not.
+    let root = BaselineRoot::Anywhere;
     if do_bless {
-        return match bless(&scenario) {
+        return match bless(&scenario, &root) {
             Ok(path) => {
                 eprintln!("blessed {}", path.display());
                 ExitCode::SUCCESS
@@ -602,7 +609,7 @@ fn cmd_verify(scenario: Option<PathBuf>, out: Option<&Path>, do_bless: bool) -> 
             Err(e) => fail(&e),
         };
     }
-    match verify(&scenario) {
+    match verify(&scenario, &root) {
         Ok(v) => {
             print_json(&v.report);
             if let (Some(path), Some(diff)) = (out, v.diff_png.as_ref()) {
@@ -768,16 +775,15 @@ fn parse_mask(s: &str) -> Result<Bounds, String> {
     })
 }
 
-/// Parses every `--mask` value and rejects hostile rectangles (non-finite
-/// coordinates, negative width/height) before they reach the engine.
+/// Parses every `--mask` value. Validation of the parsed rectangles happens
+/// with the rest of the comparison parameters, in `validate_diff_params`, so
+/// there is one place that decides what a usable comparison is.
 fn parse_masks(masks: &[String]) -> Result<Vec<Bounds>, ExitCode> {
-    let parsed: Vec<Bounds> = masks
+    masks
         .iter()
         .map(|s| parse_mask(s))
         .collect::<Result<_, _>>()
-        .map_err(|e| err(&e))?;
-    validate_masks(&parsed).map_err(|e| err(&e))?;
-    Ok(parsed)
+        .map_err(|e| err(&e))
 }
 
 /// Prints a value as pretty JSON to stdout.

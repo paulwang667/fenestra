@@ -7,7 +7,9 @@ use rmcp::{ServiceExt, transport::stdio};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let service = FenestraServer::new().serve(stdio()).await?;
+    // Refuses to start on a misconfigured baseline root rather than falling
+    // back to a wider one than the operator asked for.
+    let service = FenestraServer::from_env()?.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

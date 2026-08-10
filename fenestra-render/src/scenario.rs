@@ -24,7 +24,7 @@ use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::engine::{self, EngineError, Step};
+use crate::engine::{self, BaselineRoot, EngineError, Step};
 use crate::theme_input::resolve_theme;
 
 /// The scenario schema tag, mirroring the description's `fenestra/1`.
@@ -186,14 +186,40 @@ impl std::fmt::Debug for VerifyOut {
 /// one [`VerifyReport`]. A failed *check* is a normal report (`ok: false`), not
 /// an error; an [`EngineError`] means the scenario could not run at all.
 ///
+/// `root` decides where `expect.screenshot.baseline` may point. Callers whose
+/// scenario came from the person running them (the CLI) pass
+/// [`BaselineRoot::Anywhere`]; callers taking scenarios from an agent (the
+/// MCP server) pass a confined root. It is a required argument rather than a
+/// defaulted one because the safe answer depends on the caller and only the
+/// caller knows it — a default here would be right for one door and wrong,
+/// silently, for the other.
+///
 /// # Errors
 /// [`EngineError::Parse`] when the description does not parse, [`EngineError::Step`]
 /// when an interaction target does not resolve, or [`EngineError::Scenario`] for a
-/// setup problem (bad schema/theme/size, an unreadable baseline, a bad pattern).
-pub fn verify(scenario: &Scenario) -> Result<VerifyOut, EngineError> {
+/// setup problem (bad schema/theme/size, an unreadable or out-of-root baseline,
+/// an invalid tolerance/budget/mask, a bad pattern).
+pub fn verify(scenario: &Scenario, root: &BaselineRoot) -> Result<VerifyOut, EngineError> {
+    let expect = &scenario.expect;
+    // Everything that can be refused without rendering is refused before
+    // rendering. A scenario can arrive from an agent through the MCP server,
+    // so its comparison parameters and its baseline path are untrusted input
+    // and get the same checks the direct `match_screenshot` tool applies —
+    // and a caller probing where the root ends should not get a free GPU
+    // render per probe, any more than an author with a typo'd tolerance
+    // should wait for one to be told a number is wrong.
+    let baseline = expect
+        .screenshot
+        .as_ref()
+        .map(|shot| {
+            engine::validate_diff_params(shot.tolerance, shot.budget, &shot.masks)
+                .and_then(|()| root.open(&shot.baseline))
+                .map_err(|e| EngineError::Scenario(format!("expect.screenshot: {e}")))
+        })
+        .transpose()?;
+
     let (theme, size) = scenario_env(scenario)?;
     let p = produce(scenario, &theme, size)?;
-    let expect = &scenario.expect;
     let mut checks = Vec::new();
     let mut diff_png = None;
 
@@ -232,13 +258,8 @@ pub fn verify(scenario: &Scenario) -> Result<VerifyOut, EngineError> {
         checks.push(outcome("aria", diff.ok, detail));
     }
 
-    if let Some(shot) = &expect.screenshot {
-        let baseline = image::open(&shot.baseline)
-            .map_err(|e| {
-                EngineError::Scenario(format!("cannot read baseline {:?}: {e}", shot.baseline))
-            })?
-            .into_rgba8();
-        let diff = engine::diff_images(&baseline, &p.png, shot.tolerance, shot.budget, &shot.masks);
+    if let (Some(shot), Some(baseline)) = (&expect.screenshot, &baseline) {
+        let diff = engine::diff_images(baseline, &p.png, shot.tolerance, shot.budget, &shot.masks);
         let detail = if diff.ok {
             String::new()
         } else if baseline.dimensions() != p.png.dimensions() {
@@ -320,22 +341,28 @@ pub fn verify(scenario: &Scenario) -> Result<VerifyOut, EngineError> {
 /// path — the authoring affordance that lets you capture a baseline once, then
 /// verify against it. Returns the path written.
 ///
+/// `root` confines where the baseline may be written, exactly as it confines
+/// where [`verify`] may read one.
+///
 /// # Errors
 /// [`EngineError::Scenario`] when the scenario has no screenshot expectation to
-/// bless or the baseline cannot be written, plus the same parse/step/setup errors
-/// as [`verify`].
-pub fn bless(scenario: &Scenario) -> Result<PathBuf, EngineError> {
+/// bless, the path escapes `root`, or the baseline cannot be written, plus the
+/// same parse/step/setup errors as [`verify`].
+pub fn bless(scenario: &Scenario, root: &BaselineRoot) -> Result<PathBuf, EngineError> {
     let Some(shot) = &scenario.expect.screenshot else {
         return Err(EngineError::Scenario(
             "nothing to bless: the scenario has no expect.screenshot baseline".into(),
         ));
     };
+    let target = root
+        .resolve_write(&shot.baseline)
+        .map_err(|e| EngineError::Scenario(format!("expect.screenshot: {e}")))?;
     let (theme, size) = scenario_env(scenario)?;
     let p = produce(scenario, &theme, size)?;
-    p.png.save(&shot.baseline).map_err(|e| {
-        EngineError::Scenario(format!("cannot write baseline {:?}: {e}", shot.baseline))
+    p.png.save(&target).map_err(|e| {
+        EngineError::Scenario(format!("cannot write baseline {}: {e}", target.display()))
     })?;
-    Ok(shot.baseline.clone())
+    Ok(target)
 }
 
 // --------------------------------------------------------------- internals

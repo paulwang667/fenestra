@@ -6,6 +6,12 @@
 # advisories") for the dependency chains and revisit triggers.
 
 [advisories]
+# RUSTSEC-2024-0429 (glib) is assessed 2026-08-10 and deliberately left OUT
+# of this list so it keeps printing: unsoundness, not a vulnerability, and
+# unreachable on every supported target. RUSTSEC-2026-0221 (event-listener)
+# is absent for a different reason — it is *fixed*, by pinning 5.4.2 in the
+# lockfile; it does reach Linux. See deny.toml for both, in full; the two
+# files stay in lockstep.
 ignore = [
   "RUSTSEC-2026-0194", # quick-xml: quadratic run time on duplicate attrs
   "RUSTSEC-2026-0195", # quick-xml: unbounded namespace-decl allocation

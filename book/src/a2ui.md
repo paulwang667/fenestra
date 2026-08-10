@@ -104,7 +104,7 @@ which mutates the surface and hands back an `A2uiSignal` for anything the
 host has to carry out:
 
 ```rust,ignore
-if let Some(signal) = surface.handle(msg) {
+for signal in surface.handle(msg) {
     match signal {
         A2uiSignal::Event { name, context, data_model, source_id } => {
             let msg = surface.action_message(&name, &source_id, &context, &now_iso);
@@ -114,6 +114,21 @@ if let Some(signal) = surface.handle(msg) {
     }
 }
 ```
+
+`handle` returns a `Vec` because one interaction can legitimately mean two
+things — a Modal trigger that is also a Button opens the dialog *and*
+reports its action.
+
+Handing that `url` straight to the platform opener is safe, and it is worth
+knowing why, because it would not be if the string came through unchecked.
+`open(1)` and `xdg-open` launch whichever application has registered the
+scheme, so a stream that said `file:` or some installed app's custom scheme
+would be choosing a program to start on your user's machine — and a stream
+is only ever as trustworthy as whatever the agent writing it last read. So
+the renderer classifies the scheme when it resolves the action: `http`,
+`https` and `mailto` become `OpenUrl`, and everything else renders as a
+visible, inert control carrying a `blockedUrlScheme` note. By the time a URL
+reaches you it has been checked.
 
 Inputs bound to a path write straight back into the data model, so the
 next render reads what the user typed. `action_message` takes the

@@ -3,6 +3,22 @@
 
 [advisories]
 yanked = "deny"
+# RUSTSEC-2024-0429 (glib 0.18.5, unsoundness in `VariantStrIter`) is
+# assessed 2026-08-10 and deliberately NOT ignored, so it stays visible in
+# every run. It is unsoundness rather than a vulnerability, and it arrives
+# through muda's Linux half, which is never compiled for a supported target
+# (see the gtk3 note below). Listing it here would only hide it; this comment
+# records that it was read, not missed.
+#
+# RUSTSEC-2026-0221 (event-listener, `!Send` tags crossing a thread boundary
+# via `StackSlot`) was briefly filed under the same reasoning, and that was
+# wrong: `cargo tree -i event-listener --target x86_64-unknown-linux-gnu`
+# runs fenestra-shell -> accesskit_winit -> accesskit_unix -> zbus ->
+# async-broadcast -> event-listener, so it compiles and runs on Linux, which
+# CI tests. It is fixed rather than justified — the lockfile pins 5.4.2, the
+# patched release. The lesson is the one this file exists to prevent: an
+# advisory inherits nothing from the advisory listed next to it, and
+# "transitive" is not a synonym for "unreachable".
 # Transitive-only, no upstream fix available as of 2026-07-02 — see
 # ARCHITECTURE.md ("cargo-audit/cargo-deny: unfixable transitive advisories")
 # for the dependency chains and revisit trigger. Re-run `cargo tree -i

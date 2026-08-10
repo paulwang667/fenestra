@@ -69,6 +69,16 @@ pub enum NoteKind {
     /// The surface is built on a component catalog this build does not
     /// implement, so its components render best-effort.
     UnknownCatalog,
+    /// An `openUrl` action named a URL scheme the renderer will not hand to
+    /// the host's platform opener.
+    ///
+    /// The signal exists to be passed to `open(1)` / `xdg-open`, which
+    /// launch whatever application registered the scheme — so a stream that
+    /// says `file:` or a custom app scheme is asking to start a program on
+    /// the user's machine, and a stream is only ever as trustworthy as
+    /// whatever the agent writing it last read. The control stays visible
+    /// and inert, and this note says why.
+    BlockedUrlScheme,
 }
 
 /// How much a note should worry the caller.
@@ -119,6 +129,11 @@ impl NoteKind {
             | Self::UnknownMessage
             | Self::SecretExposed
             | Self::Unreachable
+            // Broken, not approximate: the stream described a link and the
+            // user gets something that does nothing when clicked. That the
+            // refusal is deliberate does not make the surface complete, and
+            // an author who meant a plain web link needs to see it in CI.
+            | Self::BlockedUrlScheme
             // The dangerous case is the quiet one: another catalog that
             // reuses basic's component *names* with different meanings.
             // Every component then parses, no per-component note fires, and

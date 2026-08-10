@@ -1,5 +1,78 @@
 # Changelog
 
+## Unreleased
+
+A security pass over the whole tree, and the one serious thing it found: the
+MCP server would read any PNG on the disk and hand back its contents.
+
+### Security
+
+**A tool call could read files it named but was never allowed to open.**
+`match_screenshot` and `run_scenario` take a path to a baseline PNG, and the
+diff image they return on a mismatch drew the offending pixels in red *over
+the dimmed baseline*. That is a good way to see what changed when the person
+choosing the file is the person running the command, which is the CLI's
+position — but the MCP server's path arrives from an agent. A single call
+with `tolerance: 255` (nothing can exceed it, so every pixel falls through
+to the underlay) and `budget: -1` (the comparison still reports failure,
+which is what releases the image) returned the whole file. Three changes,
+each of which would have been enough on its own and none of which is
+sufficient by itself against the next mistake:
+
+- The diff image's underlay is now the **rendered** image, never the
+  baseline. `ScreenshotDiff::diff_png` changes appearance for every caller;
+  the red markers are unchanged. This closes the bulk dump. It does not make
+  the baseline unknowable — `max_delta`, `worst` and `differing` are still
+  computed against it, so a caller who masks all but one pixel can read that
+  pixel, and repeat. That is inherent in answering "how different are
+  these?", which is why the root below is the control that matters.
+- **`BaselineRoot`** confines where a baseline may be read. The MCP server
+  is rooted at its working directory by default, or at
+  `FENESTRA_MCP_BASELINE_ROOT`; a root that is not a readable directory
+  stops the server starting. Symlinks out of the root are refused, and a
+  refusal cannot be used to test whether a file outside the root exists.
+- **`validate_diff_params`** replaces `validate_masks`, adding the budget
+  and tolerance checks that never existed. A negative, non-finite or
+  greater-than-one budget is rejected, as is a tolerance of 255.
+
+**An A2UI stream could choose a program to launch.** `A2uiSignal::OpenUrl`
+carried any string the stream named, and the book's host example passed it
+to the platform opener — which starts whichever application registered the
+scheme. The renderer now resolves `openUrl` only for `http`, `https` and
+`mailto` (see `OPENABLE_SCHEMES`); anything else, including a URL with no
+scheme, renders as a visible but inert control with a new
+`NoteKind::BlockedUrlScheme` note, whose severity is `broken`.
+
+**MCP temp files are no longer predictable.** Full-resolution renders were
+written to `fenestra-mcp-<pid>-<counter>.png` with `save()`, which follows a
+symlink already at that path — a write-through primitive on a shared `/tmp`.
+They are created with `O_CREAT | O_EXCL`, mode `0o600`, with an
+unpredictable suffix.
+
+A review round over the fix itself found more, all of it fixed here: the
+write resolver canonicalized the parent and joined the file name back on
+unexamined, so a symlink at that name aimed `File::create` — which follows
+links and truncates — outside the root; the read path checked containment
+and opened by name as two steps, which a caller able to write inside the
+root could race; a root of `/` or `$HOME` was accepted although
+`starts_with` makes it confine nothing; `mailto:` passed the scheme check
+while its `attach=` parameter still named a local file; a blocked scheme
+fired a second, untrue "no action it can carry out" note; a failed temp
+write orphaned a file the new GC could no longer name; and `event-listener`
+was documented as unreachable using glib's reasoning when it in fact
+compiles on Linux — the lockfile now pins the patched 5.4.2.
+
+**Breaking.** `scenario::verify` and `scenario::bless` take a
+`&BaselineRoot`; `validate_masks` is replaced by `validate_diff_params`,
+which takes the tolerance and budget too; `NoteKind` gained a variant.
+`Surface::handle` already returned a `Vec` as of 0.41.0 — the book's host
+example, which still showed the pre-0.41 `Option`, is corrected.
+
+Not affected, and checked: `cargo audit` and `cargo deny` pass; no process
+is spawned from agent-controlled input; no library crate opens a socket; the
+`fenestra/1` and A2UI grammars carry no filesystem paths; workflows have no
+untrusted-context triggers and every action stays SHA-pinned.
+
 ## 0.41.0 — 2026-08-06
 
 Three adversarial review rounds over the A2UI renderer, and what they turned

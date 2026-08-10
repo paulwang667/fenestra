@@ -53,6 +53,26 @@ visual tools also attach a downscaled preview image and a `resource_link` to
 the full-resolution PNG (a `file://` temp path), so a large image never
 bloats the response yet stays one fetch away.
 
+## Where baselines are read from
+
+Two tools take a path to a PNG on disk: `match_screenshot`, and
+`run_scenario` through its `expect.screenshot.baseline`. That path arrives
+inside a tool call, which means it comes from an agent — and an agent is only
+as trustworthy as whatever it last read. So the server reads baselines from
+one directory and no further.
+
+By default that directory is the working directory the MCP client launched
+the server in, which is the project being worked on. Set
+`FENESTRA_MCP_BASELINE_ROOT` to point somewhere else. Paths in a tool call
+may be relative to the root or absolute inside it; anything that resolves
+outside — including a symlink inside the root pointing out of it — is
+refused, and the refusal names the root so a legitimate call can be retried.
+A root that is not a readable directory stops the server from starting rather
+than silently widening to the default.
+
+The diff image a failed comparison returns draws the *rendered* pixels, never
+the baseline's, for the same reason.
+
 ## Registry
 
 - MCP Registry name: `mcp-name: io.github.richer-richard/fenestra-mcp`
