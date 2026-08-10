@@ -200,9 +200,26 @@ impl std::fmt::Debug for VerifyOut {
 /// setup problem (bad schema/theme/size, an unreadable or out-of-root baseline,
 /// an invalid tolerance/budget/mask, a bad pattern).
 pub fn verify(scenario: &Scenario, root: &BaselineRoot) -> Result<VerifyOut, EngineError> {
+    let expect = &scenario.expect;
+    // Everything that can be refused without rendering is refused before
+    // rendering. A scenario can arrive from an agent through the MCP server,
+    // so its comparison parameters and its baseline path are untrusted input
+    // and get the same checks the direct `match_screenshot` tool applies —
+    // and a caller probing where the root ends should not get a free GPU
+    // render per probe, any more than an author with a typo'd tolerance
+    // should wait for one to be told a number is wrong.
+    let baseline = expect
+        .screenshot
+        .as_ref()
+        .map(|shot| {
+            engine::validate_diff_params(shot.tolerance, shot.budget, &shot.masks)
+                .and_then(|()| root.open(&shot.baseline))
+                .map_err(|e| EngineError::Scenario(format!("expect.screenshot: {e}")))
+        })
+        .transpose()?;
+
     let (theme, size) = scenario_env(scenario)?;
     let p = produce(scenario, &theme, size)?;
-    let expect = &scenario.expect;
     let mut checks = Vec::new();
     let mut diff_png = None;
 
@@ -241,16 +258,8 @@ pub fn verify(scenario: &Scenario, root: &BaselineRoot) -> Result<VerifyOut, Eng
         checks.push(outcome("aria", diff.ok, detail));
     }
 
-    if let Some(shot) = &expect.screenshot {
-        // A scenario can arrive from an agent through the MCP server, so its
-        // comparison parameters are untrusted input and get the same check
-        // the direct `match_screenshot` tool applies.
-        engine::validate_diff_params(shot.tolerance, shot.budget, &shot.masks)
-            .map_err(|e| EngineError::Scenario(format!("expect.screenshot: {e}")))?;
-        let baseline = root
-            .open(&shot.baseline)
-            .map_err(|e| EngineError::Scenario(format!("expect.screenshot: {e}")))?;
-        let diff = engine::diff_images(&baseline, &p.png, shot.tolerance, shot.budget, &shot.masks);
+    if let (Some(shot), Some(baseline)) = (&expect.screenshot, &baseline) {
+        let diff = engine::diff_images(baseline, &p.png, shot.tolerance, shot.budget, &shot.masks);
         let detail = if diff.ok {
             String::new()
         } else if baseline.dimensions() != p.png.dimensions() {

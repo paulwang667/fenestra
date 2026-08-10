@@ -4021,3 +4021,62 @@ Two RustSec advisories (`RUSTSEC-2026-0221` event-listener,
 vulnerabilities and are deliberately *not* in the ignore lists: they should
 stay visible. The comment blocks in `deny.toml` and `.cargo/audit.toml` say
 so, so a later reader knows they were assessed rather than missed.
+
+### What the review of the fix found (2026-08-10)
+
+A review pass over the change above, and it landed on the seam every one of
+these fixes shares: a check and the use of what it checked are two different
+moments, and the gap between them is where the bug lives.
+
+- **The write resolver had the same shape as the bug it was written for.**
+  It canonicalized the parent, confirmed containment, and then joined the
+  file name back on *unexamined* — so a symlink sitting at that name pointed
+  `File::create`, which follows links and truncates, at any file on the
+  disk. Contained parent, escaping write. An existing final component must
+  now be a real file, not a link. The doc had claimed the write side "stays
+  true by construction"; it did not, and the claim is what made it easy to
+  stop reading.
+- **Containment and open were two syscalls.** `resolve_within` canonicalizes,
+  so the final component is not a symlink *at that moment* — but the caller
+  supplying the path can usually also write inside the root, since the
+  default root is the working directory. Swapping a symlink in between the
+  check and the open defeats exactly the pass that exists to catch it, and a
+  race that only has to be won sometimes can be retried. The opened handle's
+  identity is now compared against the checked path's, so any substitution
+  is a different file and is refused.
+- **A root has to confine something.** Containment is `starts_with`, and
+  every absolute path starts with `/`, so `BaselineRoot::within("/")` was
+  spelled like a restriction and behaved like none. `$HOME` is the same trap
+  one level down and the likelier accident, since a server launched by a
+  desktop client inherits whatever working directory it was given. Both are
+  refused at construction, where somebody can see the error.
+- **Checking the scheme is not checking the URL.** `mailto:` is a reasonable
+  thing to open and its `attach=` parameter names a local file, which mail
+  clients have historically honoured — the same "a stream chose a file on
+  your disk" problem the scheme allowlist exists to stop, one layer in.
+- **One cause, one diagnosis.** A blocked scheme left the control inert,
+  which fired the generic "no action it can carry out" note as well. For a
+  refused action that detail is untrue, and an agent branching on `NoteKind`
+  — the entire reason the enum exists — saw two Broken notes for one fact.
+- **An unpredictable name has to be remembered.** Registering the temp file
+  in the retention set *after* writing it meant a failed write orphaned a
+  file the GC could no longer name, precisely because the naming scheme had
+  just been made unguessable. Registration moved ahead of the write. The
+  `sync_all` that came with it also went: on macOS that is `F_FULLFSYNC`, a
+  drive-cache flush on every visual tool call, for a file read back locally
+  seconds later.
+- **An advisory inherits nothing from the one listed beside it.**
+  `RUSTSEC-2026-0221` was filed under glib's "never compiled for a supported
+  target" reasoning. `cargo tree -i event-listener --target
+  x86_64-unknown-linux-gnu` runs straight through `fenestra-shell ->
+  accesskit_winit -> accesskit_unix -> zbus -> async-broadcast`, so it
+  compiles and runs on a platform CI tests. It is fixed, not justified: the
+  lockfile pins 5.4.2.
+
+And one correction of the record rather than the code: the claim that the
+underlay change makes the leak "impossible" was too strong. `max_delta`,
+`worst` and `differing` are computed against the baseline and returned, so a
+caller who masks all but one pixel and calls twice can read that pixel, and
+repeat. That is inherent in answering "how different are these?" at all.
+What it means is that `BaselineRoot` is not hardening layered around the
+underlay fix — it is the half that scales, and the docs say so now.

@@ -45,7 +45,7 @@ pub const BASELINE_ROOT_ENV: &str = "FENESTRA_MCP_BASELINE_ROOT";
 /// through, and the diff image it returns used to be a way to read them
 /// *out*. The underlay fix in `fenestra_render::diff_images` closes the
 /// second half; this root closes the first.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FenestraServer {
     baseline_root: BaselineRoot,
 }
@@ -97,9 +97,16 @@ impl FenestraServer {
     /// # Errors
     /// As [`from_env`](Self::from_env).
     pub fn with_root_setting(dir: Option<std::ffi::OsString>) -> Result<Self, String> {
-        match dir {
+        // An exported-but-empty variable means "not configured", not "a root
+        // named the empty string". `export FENESTRA_MCP_BASELINE_ROOT="$X"`
+        // with `$X` unset is the ordinary way a launcher spells the former,
+        // and treating it as the latter killed the server with a message
+        // that named no variable.
+        match dir.filter(|d| !d.is_empty()) {
             Some(dir) => Ok(Self {
-                baseline_root: BaselineRoot::within(dir)?,
+                baseline_root: BaselineRoot::within(&dir).map_err(|e| {
+                    format!("{BASELINE_ROOT_ENV} is set to an unusable directory: {e}")
+                })?,
             }),
             None => Ok(Self::new()),
         }
@@ -780,6 +787,17 @@ mod tests {
 
         let unset = FenestraServer::with_root_setting(None).expect("falls back to the cwd");
         assert!(matches!(unset.baseline_root(), BaselineRoot::Within(_)));
+
+        // An exported-but-empty variable is how a launcher spells "not
+        // configured" when the value it meant to pass was itself unset.
+        let empty = FenestraServer::with_root_setting(Some(std::ffi::OsString::new()))
+            .expect("an empty value means unset, not a root named \"\"");
+        assert!(matches!(empty.baseline_root(), BaselineRoot::Within(_)));
+
+        // A failure names the variable, so an operator knows what to fix.
+        let err = FenestraServer::with_root_setting(Some("/no/such/dir".into()))
+            .expect_err("a bad root is fatal");
+        assert!(err.contains(BASELINE_ROOT_ENV), "{err}");
     }
 
     /// The authoritative tool count: `lib.rs`'s module doc points here rather

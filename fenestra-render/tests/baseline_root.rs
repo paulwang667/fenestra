@@ -163,6 +163,49 @@ fn resolve_write_stays_inside_the_root() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The write side had the same hole the read side was fixed for: the parent
+/// was canonicalized and contained, then the file name was joined back on
+/// unexamined — so a symlink sitting at that name aimed `File::create`, which
+/// follows links and truncates, at anything on the disk.
+#[cfg(unix)]
+#[test]
+fn a_symlink_at_the_write_target_is_refused() {
+    let dir = sandbox("writelink");
+    let victim = dir.join("outside/victim.txt");
+    std::fs::write(&victim, "do not overwrite me").expect("write victim");
+    std::os::unix::fs::symlink(&victim, dir.join("inside/base.png")).expect("symlink");
+    let root = BaselineRoot::within(dir.join("inside")).expect("root");
+
+    let err = root
+        .resolve_write("base.png")
+        .expect_err("a symlink at the write target is refused");
+    assert!(err.contains("symbolic link"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&victim).expect("victim still readable"),
+        "do not overwrite me",
+        "the file outside the root was written through"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A root has to confine something. Every absolute path starts with `/`, so a
+/// root of the filesystem root is spelled like a restriction and is none.
+#[test]
+fn a_root_that_confines_nothing_is_refused() {
+    let err = BaselineRoot::within("/").expect_err("the filesystem root is not a root");
+    assert!(err.contains("confines nothing"), "{err}");
+
+    // The home directory is the same trap one level down, and the likelier
+    // accident: a server launched by a desktop client inherits whatever
+    // working directory it was given.
+    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)
+        && let Ok(home) = home.canonicalize()
+    {
+        let err = BaselineRoot::within(&home).expect_err("the home directory is too broad");
+        assert!(err.contains("home directory"), "{err}");
+    }
+}
+
 #[test]
 fn a_root_must_be_a_directory_that_exists() {
     let dir = sandbox("badroot");

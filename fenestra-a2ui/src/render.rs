@@ -190,7 +190,20 @@ pub enum A2uiSignal {
 /// desktop will launch is open — every installed application may add one,
 /// and none of them are known here. These three are what a link in a
 /// generated surface is for.
-pub const OPENABLE_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
+///
+/// A slice, not a fixed-size array: this list is expected to grow (`tel:`
+/// and `sms:` are the obvious candidates), and an array bakes its length
+/// into the public type, so adding one would be a breaking change for no
+/// reason.
+pub const OPENABLE_SCHEMES: &[&str] = &["http", "https", "mailto"];
+
+/// `mailto:` query parameters that name a local file to attach.
+///
+/// Not every mail client honours these, but enough have that it is a known
+/// way to turn "open a link" into "stage a file the user never chose into an
+/// outgoing message". They are the reason checking the scheme is not the
+/// same as checking the URL.
+const MAILTO_ATTACHMENT_PARAMS: &[&str] = &["attach", "attachment"];
 
 /// Whether `url` is something the host may hand to a platform opener.
 ///
@@ -201,16 +214,40 @@ fn is_openable(url: &str) -> bool {
     // A scheme is `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"` (RFC
     // 3986). Anything before a `:` that does not fit that shape is not a
     // scheme, so the string has none.
-    let Some((scheme, _)) = url.split_once(':') else {
+    let Some((scheme, rest)) = url.split_once(':') else {
         return false;
     };
     let mut chars = scheme.chars();
     let well_formed = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
-    well_formed
-        && OPENABLE_SCHEMES
+    if !well_formed
+        || !OPENABLE_SCHEMES
             .iter()
             .any(|s| scheme.eq_ignore_ascii_case(s))
+    {
+        return false;
+    }
+    // The scheme being allowed is not the end of it. A `mailto:` may carry
+    // an attachment parameter naming a path on the user's disk, which is the
+    // same "a stream chose a local file" problem the scheme check exists to
+    // stop, one layer in.
+    if scheme.eq_ignore_ascii_case("mailto") {
+        return !has_attachment_param(rest);
+    }
+    true
+}
+
+/// Whether a `mailto:` body carries an attachment parameter.
+fn has_attachment_param(rest: &str) -> bool {
+    let Some((_, query)) = rest.split_once('?') else {
+        return false;
+    };
+    query.split('&').any(|pair| {
+        let name = pair.split('=').next().unwrap_or(pair).trim();
+        MAILTO_ATTACHMENT_PARAMS
+            .iter()
+            .any(|p| name.eq_ignore_ascii_case(p))
+    })
 }
 
 /// A rendered surface: the element tree plus render-time fidelity notes.
@@ -286,6 +323,20 @@ impl Ctx<'_> {
             &mut self.notes.borrow_mut(),
             Note::new(id, kind, detail.to_string()),
         );
+    }
+
+    /// Whether `id` already carries a note of `kind`.
+    ///
+    /// Used to keep one cause from producing two diagnoses. A control can be
+    /// inert for several reasons and the generic "nothing to do here" note is
+    /// right for most of them, but not when something more specific has
+    /// already said why — an agent branching on [`NoteKind`] should see the
+    /// reason, not the reason plus a vaguer restatement of it.
+    fn noted(&self, id: &str, kind: NoteKind) -> bool {
+        self.notes
+            .borrow()
+            .iter()
+            .any(|n| n.kind == kind && n.component_id == id)
     }
 
     /// A compiled validation pattern, from the cache or freshly compiled.
@@ -1658,7 +1709,12 @@ fn render_component(
             if blocked && opens_a_modal {
                 ctx.blocked_trigger.set(true);
             }
-            if inert {
+            // A blocked URL scheme already recorded *why* this button does
+            // nothing, and it is not "no action it can carry out" — the
+            // action was understood and deliberately refused. Two Broken
+            // notes for one cause, the second of them untrue, is worse than
+            // one.
+            if inert && !ctx.noted(id, NoteKind::BlockedUrlScheme) {
                 ctx.note(
                     id,
                     NoteKind::Unreachable,

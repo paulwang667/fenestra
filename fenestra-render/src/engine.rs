@@ -14,6 +14,8 @@ use fenestra_shell::testing::{clamp_strip_scale, filmstrip_image};
 use fenestra_shell::{Harness, MAX_FILM_INTERVAL_MS, ShellError, try_render_element};
 use image::{Rgba, RgbaImage};
 use serde::Deserialize;
+use std::fs::File;
+use std::io::BufReader;
 use std::path::{Component, Path, PathBuf};
 
 use crate::described_app::DescribedApp;
@@ -452,6 +454,24 @@ pub fn match_screenshot(
     Ok(diff_images(baseline, &actual, channel_tol, budget, masks))
 }
 
+/// The user's home directory, for the root floor in
+/// [`BaselineRoot::within`].
+///
+/// Read from the environment rather than through `std::env::home_dir`, whose
+/// behaviour has changed across releases. An environment variable is a
+/// trusted input, and the answer here only ever *widens* a refusal: when the
+/// variable is missing the check is skipped, never inverted into accepting a
+/// root that would otherwise be refused. The filesystem-root check is the
+/// floor that depends on nothing.
+fn home_dir() -> Option<PathBuf> {
+    let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let raw = std::env::var_os(key)?;
+    if raw.is_empty() {
+        return None;
+    }
+    PathBuf::from(raw).canonicalize().ok()
+}
+
 /// Where a baseline PNG may be read from.
 ///
 /// The two front doors are in genuinely different positions. The CLI's
@@ -503,14 +523,38 @@ impl BaselineRoot {
                 dir.display()
             ));
         }
+        // A root has to actually confine something. Containment is
+        // `starts_with`, and *every* absolute path starts with `/` — so a
+        // root of the filesystem root is spelled like a restriction and
+        // behaves like none at all. The home directory is the same trap one
+        // level down, and it is the likelier accident: a server launched by
+        // a desktop client, a launchd job or a systemd unit inherits
+        // whatever working directory it was given, and `$HOME` is a common
+        // default. Refusing both means a too-wide root is a startup error
+        // somebody can see rather than a silent return to the behaviour this
+        // type exists to remove.
+        if canon.parent().is_none() {
+            return Err(format!(
+                "baseline root {} is the filesystem root, which confines nothing",
+                canon.display()
+            ));
+        }
+        if home_dir().is_some_and(|home| home == canon) {
+            return Err(format!(
+                "baseline root {} is the home directory, which is too broad to be a \
+                 baseline root; name the project directory instead",
+                canon.display()
+            ));
+        }
         Ok(Self::Within(canon))
     }
 
     /// Opens `path` as an RGBA image, refusing anything outside the root.
     ///
     /// # Errors
-    /// A ready-to-show message when the path escapes the root, or when the
-    /// file cannot be read or decoded.
+    /// A ready-to-show message when the path escapes the root, when the file
+    /// changed identity between the containment check and the open, or when
+    /// it cannot be read or decoded.
     pub fn open(&self, path: impl AsRef<Path>) -> Result<RgbaImage, String> {
         let path = path.as_ref();
         let resolved = match self {
@@ -518,9 +562,42 @@ impl BaselineRoot {
             Self::Within(root) => Self::resolve_within(root, path)?,
             Self::Nowhere => return Err(Self::nowhere(path)),
         };
-        Ok(image::open(&resolved)
-            .map_err(|e| format!("cannot read baseline {}: {e}", path.display()))?
-            .into_rgba8())
+        let read = |file: File| {
+            image::ImageReader::new(BufReader::new(file))
+                .with_guessed_format()
+                .map_err(|e| format!("cannot read baseline {}: {e}", path.display()))?
+                .decode()
+                .map_err(|e| format!("cannot read baseline {}: {e}", path.display()))
+        };
+        let file = File::open(&resolved)
+            .map_err(|e| format!("cannot read baseline {}: {e}", path.display()))?;
+        // Confined roots verify that the handle they are about to read is the
+        // file whose containment was checked. `resolve_within` canonicalized
+        // the path, so at that moment its final component was not a symlink —
+        // but canonicalizing and opening are two syscalls, and the caller
+        // supplying the path can often also write inside the root (the
+        // default root is the working directory). Swapping in a symlink
+        // between the two would otherwise defeat the check that the
+        // canonicalizing pass exists for, and a race that only has to be won
+        // sometimes can be retried. Comparing the identity of the opened
+        // handle against the identity of the checked path closes it: any
+        // substitution makes them different files.
+        #[cfg(unix)]
+        if matches!(self, Self::Within(_)) {
+            use std::os::unix::fs::MetadataExt as _;
+            let checked = std::fs::symlink_metadata(&resolved)
+                .map_err(|e| format!("cannot read baseline {}: {e}", path.display()))?;
+            let opened = file
+                .metadata()
+                .map_err(|e| format!("cannot read baseline {}: {e}", path.display()))?;
+            if (checked.dev(), checked.ino()) != (opened.dev(), opened.ino()) {
+                return Err(format!(
+                    "baseline {} changed while it was being opened; refusing to read it",
+                    path.display()
+                ));
+            }
+        }
+        Ok(read(file)?.into_rgba8())
     }
 
     /// The refusal from a [`Nowhere`](Self::Nowhere) root.
@@ -543,9 +620,17 @@ impl BaselineRoot {
     /// stays true by construction if one ever does, rather than by nobody
     /// having noticed that the write side never grew a root.
     ///
+    /// Canonicalizing the parent is not on its own enough, and the first cut
+    /// of this function made exactly that mistake: the final component was
+    /// joined back on unexamined, so a symlink sitting at that name pointed
+    /// the subsequent `File::create` — which follows symlinks and truncates —
+    /// at any file on the disk. Contained parent, escaping write. So an
+    /// existing final component must be a real file, not a link.
+    ///
     /// # Errors
     /// A ready-to-show message when the path escapes the root, names no
-    /// file, or has no reachable parent directory.
+    /// file, has no reachable parent directory, or already exists as a
+    /// symlink.
     pub fn resolve_write(&self, path: impl AsRef<Path>) -> Result<PathBuf, String> {
         let path = path.as_ref();
         let root = match self {
@@ -557,7 +642,20 @@ impl BaselineRoot {
             .file_name()
             .ok_or_else(|| format!("baseline {} names no file", path.display()))?;
         let parent = Self::resolve_within(root, path.parent().unwrap_or(Path::new("")))?;
-        Ok(parent.join(name))
+        let target = parent.join(name);
+        // `symlink_metadata` does not follow the link, which is the whole
+        // point: an `Err` here means nothing is there yet (fine, we are about
+        // to create it) and a symlink means someone put it there to catch
+        // this write.
+        if let Ok(meta) = std::fs::symlink_metadata(&target)
+            && meta.file_type().is_symlink()
+        {
+            return Err(format!(
+                "baseline {} is a symbolic link; refusing to write through it",
+                path.display()
+            ));
+        }
+        Ok(target)
     }
 
     /// Resolves `path` against `root`, refusing to leave it. A relative path
@@ -697,8 +795,19 @@ fn masked(x: u32, y: u32, masks: &[Bounds]) -> bool {
 /// a `channel_tol` of 255 marks nothing as differing, so every pixel fell
 /// through to the underlay, and a negative `budget` still reported failure,
 /// which is what releases the image. Both of those are now rejected at the
-/// boundary by [`validate_diff_params`], but the underlay is what makes the
-/// leak impossible rather than merely inconvenient.
+/// boundary by [`validate_diff_params`].
+///
+/// What that closes is the bulk dump. It is worth being exact about what
+/// remains, because "the image no longer contains the baseline" is not the
+/// same claim as "nothing about the baseline can be learned": `max_delta`,
+/// `worst` and `differing` are all computed against it and returned. A
+/// caller that can mask every pixel but one, choose the rendered colour, and
+/// call twice can read that pixel — and repeat. That is inherent in
+/// answering "how different are these?" at all, and it is why the *root* is
+/// the control that matters rather than a nicety layered on top: it bounds
+/// which files can be interrogated at all, however patiently.
+/// [`BaselineRoot`] is not optional hardening around this function; it is
+/// the half of the fix that scales.
 #[must_use]
 pub fn diff_images(
     golden: &RgbaImage,
