@@ -1,11 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.41.0 — 2026-08-10
 
-A security pass over the whole tree, and the one serious thing it found: the
-MCP server would read any PNG on the disk and hand back its contents.
+Three adversarial review rounds over the A2UI renderer, a security pass over
+the whole tree, and the release machinery itself. This is also the first
+release of `fenestra-a2ui`.
 
 ### Security
+
+A scan of the whole tree, code injection included, and the one serious thing
+it found: the MCP server would read any PNG on the disk and hand back its
+contents.
 
 **A tool call could read files it named but was never allowed to open.**
 `match_screenshot` and `run_scenario` take a path to a baseline PNG, and the
@@ -73,7 +78,7 @@ is spawned from agent-controlled input; no library crate opens a socket; the
 `fenestra/1` and A2UI grammars carry no filesystem paths; workflows have no
 untrusted-context triggers and every action stays SHA-pinned.
 
-## 0.41.0 — 2026-08-06
+### A2UI, and the release machinery
 
 Three adversarial review rounds over the A2UI renderer, and what they turned
 up: notes an agent can branch on instead of a bag of strings, a dozen places
