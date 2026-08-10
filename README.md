@@ -5,39 +5,45 @@
 [![docs.rs](https://img.shields.io/docsrs/fenestra)](https://docs.rs/fenestra)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-**The UI stack built for the agent loop**: describe a UI as JSON, render
-it natively, verify it in CI — no compile step, no screenshot flakiness.
-fenestra is a pure-Rust GUI framework whose headless renderer is
-deterministic, so both humans and AI coding agents can *see* — and prove —
-what they build. It also speaks [A2UI](https://a2ui.org), the open
-Agent-to-UI standard, as its first native Rust renderer
-([`fenestra-a2ui`](fenestra-a2ui)). The web-grade widget kit and design
-system below are the proof of what that loop can produce.
+**A UI stack built for the agent loop.** Describe a UI as JSON, render it
+natively, and check it in CI. There's no compile step in that loop, and no
+flaky screenshots.
+
+fenestra is a pure-Rust GUI framework. Its headless renderer is
+deterministic, which means people and AI coding agents can both look at
+what they built and prove it is right. It also speaks
+[A2UI](https://a2ui.org), the open Agent-to-UI standard — this is its first
+native Rust renderer ([`fenestra-a2ui`](fenestra-a2ui)). The widget kit and
+design system below are what that loop can produce.
 
 **[▶ Try the live demo](https://richer-richard.github.io/fenestra/)** — the
-dashboard and widget galleries running in your browser via WebGPU. No DOM,
-no CSS: every pixel is vello on wgpu, the same code as the native window.
-**[Read the book](https://richer-richard.github.io/fenestra/book/)** for
+dashboard and widget galleries, running in your browser over WebGPU. No
+DOM and no CSS: every pixel is vello on wgpu, from the same code as the
+native window. There's also
+**[the book](https://richer-richard.github.io/fenestra/book/)** if you want
 the guided tour.
 
 | Light | Dark |
 | --- | --- |
 | ![agent-session dashboard, light theme](https://raw.githubusercontent.com/richer-richard/fenestra/main/gallery/agent_dashboard_light.png) | ![agent-session dashboard, dark theme](https://raw.githubusercontent.com/richer-richard/fenestra/main/gallery/agent_dashboard_dark.png) |
 
-*The hero is a real tool — `examples/agent_dashboard.rs`, a live dashboard
-over an AI coding session (virtualized feed, charts, live tail via the
-effect layer). The SaaS-style widget showcase lives on as
-`examples/dashboard.rs`:*
+*That hero shot is a real tool, not a mockup: `examples/agent_dashboard.rs`
+is a live dashboard over an AI coding session, with a virtualized feed,
+charts, and a live tail through the effect layer. The SaaS-style widget
+showcase lives on as `examples/dashboard.rs`:*
 
 | Light | Dark |
 | --- | --- |
 | ![dashboard, light theme](https://raw.githubusercontent.com/richer-richard/fenestra/main/gallery/dashboard_light.png) | ![dashboard, dark theme](https://raw.githubusercontent.com/richer-richard/fenestra/main/gallery/dashboard_dark.png) |
 
-No browser. No webview. No HTML or CSS parser. fenestra draws everything
-itself with [vello] on wgpu, lays out with [taffy] (flexbox + grid), shapes
-text with [parley], and ships a themed widget kit that looks like a polished
-modern web app: layered soft shadows, OKLCH color ramps, real typographic
-hierarchy, hover/focus transitions, and first-class light and dark themes.
+There's no browser here, no webview, and no HTML or CSS parser. fenestra
+draws everything itself with [vello] on wgpu. It lays out with [taffy]
+(flexbox and grid) and shapes text with [parley].
+
+On top of that sits a themed widget kit that looks like a polished modern
+web app: soft layered shadows, OKLCH color ramps, a real typographic
+hierarchy, transitions on hover and focus, and light and dark themes that
+both get first-class treatment.
 
 [vello]: https://github.com/linebender/vello
 [taffy]: https://github.com/DioxusLabs/taffy
@@ -74,11 +80,12 @@ impl App for Counter {
 fn main() { fenestra::run(Counter { n: 0 }, WindowOptions::titled("Counter")) }
 ```
 
-`cargo add fenestra`, paste, `cargo run`. Or start from the template —
-`cargo generate richer-richard/fenestra-template` — which includes a
-headless UI test and CI. The whole view is rebuilt, laid out, and
-repainted on every redraw — no diffing, no macros, everything
-autocompletes.
+Run `cargo add fenestra`, paste that in, then `cargo run`. If you'd rather
+start from a template, `cargo generate richer-richard/fenestra-template`
+gives you one with a headless UI test and CI already set up.
+
+The whole view is rebuilt, laid out and repainted on every redraw. There's
+no diffing and there are no macros, so everything autocompletes.
 
 ## Agents can see what they build
 
@@ -111,43 +118,45 @@ Headless rendering is deterministic (embedded fonts, fixed scale, reduced
 motion), which makes pixel-exact golden tests practical — fenestra's own
 widget kit is tested this way, on CI, with no GPU display attached.
 
-The same pipeline backs a JSON authoring format, `fenestra/1`, for agents and
-tools that don't want to compile Rust. You describe a UI in JSON;
-[`fenestra-describe`](fenestra-describe) parses it into the same `Element`
-tree the builders produce. The format covers the whole kit — data tables,
-trees, popovers, command palettes, the OKLCH color picker, images, charts,
-markdown.
+The same pipeline backs a JSON authoring format called `fenestra/1`, for
+agents and tools that would rather not compile Rust. You describe a UI in
+JSON and [`fenestra-describe`](fenestra-describe) parses it into the same
+`Element` tree the builders produce. The format covers the whole kit: data
+tables, trees, popovers, command palettes, the OKLCH color picker, images,
+charts, and markdown.
 
-From there: `fenestra render` writes a PNG, `fenestra preview <file>` opens a
-window that re-renders on every save, and the
-[`fenestra-mcp`](fenestra-mcp) server hands an agent the whole loop —
-render, query, interact, verify — as fourteen MCP tools, `render_a2ui` among
-them. Motion is watchable too, not just single frames: `Harness::film` (also
-`fenestra film`, also the MCP `film_ui` tool) captures a sequence with real
-motion turned on and composes it into one captioned filmstrip.
+From there you have a few ways in. `fenestra render` writes a PNG.
+`fenestra preview <file>` opens a window that re-renders every time you
+save. And the [`fenestra-mcp`](fenestra-mcp) server hands an agent the whole
+loop — render, query, interact, verify — as fourteen MCP tools, including
+`render_a2ui`. You can watch motion too, not just single frames:
+`Harness::film` (also `fenestra film`, also the MCP `film_ui` tool) captures
+a sequence with real motion turned on and composes it into one captioned
+filmstrip.
 
-**What a headless render does and doesn't cover.** It is a deliberate
-*subset* of the live window — that subset is what makes it deterministic —
-so trust it accordingly.
+**What a headless render does and doesn't cover.** It renders a deliberate
+subset of what a live window shows. That subset is exactly what makes it
+deterministic, so it's worth knowing where the edges are.
 
-Text uses the embedded fonts, so Latin is exact; the real monospace, CJK,
-emoji, and RTL faces come from the OS and only appear in a real window.
-Motion is forced to reduced. Pixels are referenced against macOS/Metal, with
-Linux/lavapipe inside a wider tolerance. Scale is not pinned:
-`render_element_scaled` runs the same two-pass pipeline at any device scale,
-so retina-only regressions (hairlines, blur radii) are verifiable headlessly
-too.
+Text uses the embedded fonts, so Latin comes out exact. The real monospace,
+CJK, emoji and RTL faces come from the OS, and those only show up in a real
+window. Motion is always forced to reduced. Pixels are referenced against
+macOS/Metal, with Linux/lavapipe allowed a wider tolerance. Scale isn't
+pinned — `render_element_scaled` runs the same two-pass pipeline at any
+device scale, so you can catch retina-only regressions like hairlines and
+blur radii headlessly as well.
 
-Two things look different outside that path. The full Liquid-Glass optics —
-backdrop blur, edge lensing, adaptive vibrancy — render in the
-headless/golden path only; a live single-pass window shows the translucent
-tint plus the specular rim and sheen. And on the web, copy-out reaches the
-system clipboard while paste-in from other apps stays in-app, glass matches
-the native live window, and AccessKit is waiting on an upstream web adapter.
+Two things look different outside that path. The full Liquid-Glass optics
+(backdrop blur, edge lensing, adaptive vibrancy) only render in the
+headless golden path; a live single-pass window gives you the translucent
+tint plus the specular rim and sheen. On the web, copying out reaches the
+system clipboard but pasting in from other apps stays inside the app, glass
+matches the native live window, and AccessKit is still waiting on an
+upstream web adapter.
 
-So headless is the right oracle for layout, semantics, color, and the large
-majority of pixels. Confirm non-Latin and monospace text, and full glass, in
-a real window. ARCHITECTURE.md keeps the precise ledger.
+So headless is the right thing to trust for layout, semantics, color, and
+the large majority of pixels. Check non-Latin text, monospace, and full
+glass in a real window. ARCHITECTURE.md keeps the precise ledger.
 
 **Working with an AI agent?** [AGENTS.md](AGENTS.md) is the manual for the
 build → render → look → verify loop (and [llms.txt](llms.txt) for
@@ -155,26 +164,35 @@ context loaders).
 
 ## Philosophy: web aesthetics without the web platform
 
-The web's *look* — soft elevation, tinted neutrals, OKLCH ramps, 4px-grid
-spacing, focus rings, 120–300ms easing — is the best-tested visual language
-in software. The web *platform* is a heavy way to get it. fenestra encodes
-that language as typed Rust values: a `Theme` generated from one accent hue,
-spacing/radius/shadow/motion tokens, and a builder vocabulary (`row()`,
-`.p(SP4)`, `.rounded(R_MD)`, `.shadow(ShadowToken::Sm)`) small enough to
-memorize and regular enough for rust-analyzer (or a language model) to
-autocomplete. Every widget routes every color through the theme; flip one
-`Mode` and the whole app is dark.
+The way the web *looks* — soft elevation, tinted neutrals, OKLCH ramps,
+spacing on a 4px grid, focus rings, easing in the 120–300ms range — is the
+best-tested visual language we have in software. The web *platform* is a
+heavy way to get hold of it.
+
+So fenestra encodes that language as typed Rust values instead. A `Theme`
+is generated from a single accent hue. Spacing, radius, shadow and motion
+come from tokens. The builder vocabulary (`row()`, `.p(SP4)`,
+`.rounded(R_MD)`, `.shadow(ShadowToken::Sm)`) is small enough to memorize
+and regular enough that rust-analyzer — or a language model — can
+autocomplete it. Every widget routes every color through the theme, so
+flipping one `Mode` turns the whole app dark.
 
 ## The kit
 
-Button, IconButton, Checkbox, Switch, Radio, Slider, Color Picker (OKLCH
-lightness×chroma pad, hue/alpha strips, forgiving hex entry), SegmentedControl,
-TextInput (parley editing, clipboard, IME), TextArea (multiline,
-auto-growing), Select, Tooltip, Modal (focus trap + backdrop), Toasts, Tabs,
-Card, StatCard, Badge, Avatar, StatusIndicator (with a live pulse), Kbd
-key-caps, Skeleton loaders, Divider, Progress (including a Material-3
-Expressive wavy bar), Spinner, Table, Callout, and a vendored Lucide icon
-subset — every state, both themes:
+Every widget below ships in every state, in both themes.
+
+**Controls.** Button, IconButton, Checkbox, Switch, Radio, Slider,
+SegmentedControl, Select, and a Color Picker with an OKLCH
+lightness×chroma pad, hue and alpha strips, and forgiving hex entry.
+
+**Text entry.** TextInput (parley editing, clipboard, IME) and TextArea
+(multiline, auto-growing).
+
+**Surfaces and feedback.** Tooltip, Modal (focus trap and backdrop),
+Toasts, Tabs, Card, StatCard, Badge, Avatar, StatusIndicator with a live
+pulse, Kbd key-caps, Skeleton loaders, Divider, Spinner, Table, Callout,
+and Progress — including a Material-3 Expressive wavy bar. Plus a vendored
+subset of Lucide icons.
 
 | | |
 | --- | --- |
@@ -187,11 +205,13 @@ renders headlessly.
 
 ## Motion
 
-`fenestra-motion` renders frame-pure compositions headlessly — no live
-window, no screen recorder — and the same pipeline is what `fenestra film`
-and the MCP `film_ui` tool use to let an agent watch a transition play. A
-`fenestra-charts` bar chart, rebuilt every frame from rank-sorted,
-track-interpolated data:
+`fenestra-motion` renders frame-pure compositions headlessly, with no live
+window and no screen recorder involved. The same pipeline is what `fenestra
+film` and the MCP `film_ui` tool use to let an agent watch a transition
+play.
+
+Below is a `fenestra-charts` bar chart, rebuilt every frame from
+rank-sorted, track-interpolated data:
 
 ![chart race motion demo](https://raw.githubusercontent.com/richer-richard/fenestra/main/gallery/chart_race_demo.gif)
 
@@ -220,12 +240,13 @@ demos render the same way: a broadcast lower-third
 | `fenestra-motion` | Frame-pure motion graphics: timelines, headless frame/video rendering, temporal lints, the `motion` CLI |
 | `fenestra-anim` | Keyframe animation math — easing, springs, an exact rational timebase |
 
-`fenestra-anim` is versioned independently (0.1.x): a standalone leaf crate
-with zero dependency on any fenestra crate, wgpu, vello, parley, taffy, or
-winit, extracted from `fenestra-core` and `fenestra-motion` so any
-frame/tick-based sampler — inside this workspace or out — can depend on the
-animation math alone. `fenestra-mcp` is also versioned independently, so the
-MCP server can ship on its own release cadence.
+`fenestra-anim` is versioned on its own (0.1.x). It's a standalone leaf
+crate that depends on no fenestra crate at all, and not on wgpu, vello,
+parley, taffy or winit either. It was pulled out of `fenestra-core` and
+`fenestra-motion` so that anything sampling by frame or tick — in this
+workspace or well outside it — can depend on just the animation math.
+`fenestra-mcp` is versioned separately too, so the MCP server can ship on
+its own schedule.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pipeline, widget
 identity, transitions, and overlays work — recorded decision-by-decision as
@@ -235,16 +256,21 @@ frame-cost numbers (a full screen rebuilds, lays out, and paints in ~0.3 ms;
 
 ## Design range
 
-The same framework, the same tokens — a different design language. The
-`fenestra-looks` crate bundles six ready voices (product, editorial, terminal,
-console, warm-editorial, playful — enumerate them with `all()`), and one knob
-re-skins the whole kit: `Theme::with_radius(RadiusScale::sharp())` for
-un-rounded tech chrome, `Theme::with_elevation(Elevation::Flat)` for
-border-not-shadow surfaces, and `Theme::duotone` for atmospheric fields instead
-of neutral grays (custom display faces register under font roles via
-`Fonts::register`). The opposite end of the range from the soft default
-dashboard above — a sharp, hairline-ruled **console**: slate with a single lime
-accent and mono numerals, rendered headlessly and golden-tested.
+Same framework, same tokens, a different design language.
+
+The `fenestra-looks` crate bundles six ready-made voices — product,
+editorial, terminal, console, warm-editorial and playful — and you can
+enumerate them with `all()`. Past that, single knobs re-skin the whole kit.
+`Theme::with_radius(RadiusScale::sharp())` gives you un-rounded tech chrome.
+`Theme::with_elevation(Elevation::Flat)` draws surfaces with borders instead
+of shadows. `Theme::duotone` swaps neutral grays for atmospheric fields. If
+you want your own display faces, register them under font roles with
+`Fonts::register`.
+
+Below is the opposite end of the range from the soft default dashboard
+above: a sharp, hairline-ruled **console** in slate, with one lime accent
+and mono numerals. Rendered headlessly and golden-tested, like everything
+else here.
 
 | Light | Dark |
 | --- | --- |
@@ -253,41 +279,51 @@ accent and mono numerals, rendered headlessly and golden-tested.
 ## Composition, commands, accessibility
 
 Components written around their own message type compose with
-`Element::map`. Background work flows in through `App::init`, which hands
-the app a cloneable `Proxy<Msg>` — spawn a thread, send messages, the
-window repaints (`examples/clock.rs`, `examples/toasts.rs`). Every widget
-exposes its role, state, and name: headlessly via `Frame::access_tree()`
-(assert your UI is labeled, in CI), and to real assistive technology
-through AccessKit in the windowed runner. Ambient motion comes from
-looping `Keyframes` timelines; images from `image_rgba8` (round avatars
-via `.rounded_full()`).
+`Element::map`.
+
+Background work comes in through `App::init`, which hands the app a
+cloneable `Proxy<Msg>`. Spawn a thread, send messages back, and the window
+repaints — `examples/clock.rs` and `examples/toasts.rs` both do this.
+
+Every widget exposes its role, state and name in two directions: headlessly
+through `Frame::access_tree()`, so you can assert in CI that your UI is
+labeled, and to real assistive technology through AccessKit in the windowed
+runner.
+
+Ambient motion comes from looping `Keyframes` timelines, and images from
+`image_rgba8` (use `.rounded_full()` for round avatars).
 
 ## Status
 
 fenestra is at 0.41.0. [ARCHITECTURE.md](ARCHITECTURE.md) records how it got
 there, decision by decision.
 
-Shipped: the interactive widget kit in light and dark themes; six ready-made
-design languages (`fenestra-looks`); a frosted-glass material system; charts
-and markdown as reference third-party widget crates; the `fenestra/1` JSON
-format authoring the entire kit, parsed by `fenestra-describe` and rendered
-and verified by the `fenestra` CLI and the fourteen `fenestra-mcp` tools; an
-A2UI v0.9 renderer (`fenestra-a2ui`); an effect layer (`Cmd`/`Sub`) with a
-deterministic test harness; declarative native menus on macOS; hi-DPI
-headless rendering at any scale; a live-reload `fenestra preview` window; and
-`fenestra-motion` for frame-pure motion graphics with temporal lints and
-filmstrip capture.
+Here's what has shipped:
+
+- The interactive widget kit, in light and dark themes.
+- Six ready-made design languages (`fenestra-looks`) and a frosted-glass
+  material system.
+- Charts and markdown, as reference third-party widget crates.
+- The `fenestra/1` JSON format, which can author the entire kit. It's
+  parsed by `fenestra-describe`, then rendered and verified by the
+  `fenestra` CLI and the fourteen `fenestra-mcp` tools.
+- An A2UI v0.9 renderer (`fenestra-a2ui`).
+- An effect layer (`Cmd`/`Sub`) with a deterministic test harness.
+- Declarative native menus on macOS, hi-DPI headless rendering at any
+  scale, and a live-reload `fenestra preview` window.
+- `fenestra-motion`, for frame-pure motion graphics with temporal lints and
+  filmstrip capture.
 
 Every change clears the same gate before it merges: `cargo fmt --check`,
 `clippy -D warnings`, the full test suite, and a headless golden-PNG
-comparison on macOS/Metal and Linux/lavapipe — plus `cargo audit` and
-`cargo deny` on every push and once a week.
+comparison on macOS/Metal and Linux/lavapipe. `cargo audit` and `cargo deny`
+run on every push and once a week on top of that.
 
-Open work is a ranked list in ARCHITECTURE.md's "Deferred" notes. The gaps
-worth knowing about up front: A2UI `checks` parse but don't gate yet, its
-`DateTimeInput` is an ISO text field rather than a calendar, obscured text
-fields render unmasked, and AccessKit on the web is waiting on an upstream
-adapter.
+Open work is kept as a ranked list in ARCHITECTURE.md's "Deferred" notes.
+The gaps worth knowing about up front: A2UI's `DateTimeInput` is an ISO text
+field rather than a calendar, obscured text fields render unmasked (the
+renderer reports this as a note rather than hiding it), and AccessKit on the
+web is waiting on an upstream adapter.
 
 ## License
 
