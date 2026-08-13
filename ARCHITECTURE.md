@@ -4119,6 +4119,27 @@ was where the cost was. `fenestra_core::MAX_TREE_DEPTH` was measured against
 a 2 MiB stack; this cap was derived from that one without inheriting the
 measurement.
 
+**The margin, measured rather than assumed.** At `MAX_DEPTH` the renderer
+now needs somewhere between 1.5 and 2 MiB: it renders at 2048 KiB and
+overflows at 1536. So the default stack carries roughly a quarter to spare,
+which is a fix and not a comfort. `MAX_DEPTH` cannot be raised, and a
+recursive arm cannot grow much, without re-measuring —
+`renders_at_the_full_depth_cap` reads `FENESTRA_PROBE_STACK`, which is how
+those numbers were taken and how the next ones should be.
+
+Where the remaining cost is, is worth writing down because the obvious
+guess is wrong. Extracting `Button` — the largest recursive arm by a wide
+margin — into its own `#[inline(never)]` frame moved the threshold *not at
+all*, so the per-level cost is not dominated by match-arm locals once the
+leaves are gone. It is most likely the `Element` builder chain: every
+`.gap(..)`/`.children(..)` takes `self` by value and returns it, and an
+unoptimized build materializes each intermediate on the stack, so the frame
+scales with `size_of::<Element>()` times the length of the builder chain.
+That extraction was reverted rather than kept — a complication that buys
+nothing measured is worse than none — and shrinking `Element` or breaking
+the recursion into an explicit worklist is the lever if this ever needs
+more headroom.
+
 **One budget, or the bound is not a bound.** `children_of` charged template
 expansions to a render-wide budget and static child lists to nothing at
 all, so the cheaper amplifier was the unbounded one — a static list needs no
