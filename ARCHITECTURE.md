@@ -4080,3 +4080,112 @@ caller who masks all but one pixel and calls twice can read that pixel, and
 repeat. That is inherent in answering "how different are these?" at all.
 What it means is that `BaselineRoot` is not hardening layered around the
 underlay fix — it is the half that scales, and the docs say so now.
+
+## The frame you pay for once per level (2026-08-13)
+
+An adversarial pass over the A2UI renderer, and the finding that mattered
+was not the one it went looking for.
+
+**Rendering aborted the process at seven levels of nesting.**
+`render_by_id -> render_component -> children_of -> render_by_id` is a
+recursive cycle, so `render_component`'s stack frame is paid once per level
+of component nesting. It was a single `match` over all nineteen component
+kinds, and an unoptimized build gives such a frame room for every arm's
+locals at once — arms do not share slots without optimization. So every
+level cost what the *largest* arm needed, and the largest arms
+(`ChoicePicker`, `Slider`, `DateTimeInput`) are leaves that cannot appear
+on the recursive path at all.
+
+Measured on a 2 MiB stack — the `std::thread` and tokio blocking-pool
+default, which is what the MCP server renders on — a strictly linear chain
+of `Column`s overflowed at seven. `MAX_DEPTH` permits sixteen. Seven is not
+an attack: a Card inside a List inside a Tab is already half of it. And a
+stack overflow aborts rather than unwinding, so this was `SIGABRT` for the
+whole server from about seven hundred bytes of JSON, with no note and
+nothing to catch.
+
+`render_component` now holds only the kinds that recurse; every leaf kind
+moved to `render_leaf`, which is `#[inline(never)]` so its locals get a
+frame of their own at the bottom of the recursion instead of at every level
+of it. The full sixteen-level cap now renders on an explicitly 2 MiB
+thread, which is what `renders_at_the_full_depth_cap` pins — on its own
+thread, because the harness's main thread is 8 MiB and would have hidden
+the bug for another four levels.
+
+The general shape is worth keeping: `MAX_DEPTH`'s own doc reasoned about
+the *element tree* it produces staying inside `fenestra_core::MAX_TREE_DEPTH`,
+which was true, and said nothing about the renderer's own recursion, which
+was where the cost was. `fenestra_core::MAX_TREE_DEPTH` was measured against
+a 2 MiB stack; this cap was derived from that one without inheriting the
+measurement.
+
+**The margin, measured rather than assumed.** At `MAX_DEPTH` the renderer
+now needs somewhere between 1.5 and 2 MiB: it renders at 2048 KiB and
+overflows at 1536. So the default stack carries roughly a quarter to spare,
+which is a fix and not a comfort. `MAX_DEPTH` cannot be raised, and a
+recursive arm cannot grow much, without re-measuring —
+`renders_at_the_full_depth_cap` reads `FENESTRA_PROBE_STACK`, which is how
+those numbers were taken and how the next ones should be.
+
+Where the remaining cost is, is worth writing down because the obvious
+guess is wrong. Extracting `Button` — the largest recursive arm by a wide
+margin — into its own `#[inline(never)]` frame moved the threshold *not at
+all*, so the per-level cost is not dominated by match-arm locals once the
+leaves are gone. It is most likely the `Element` builder chain: every
+`.gap(..)`/`.children(..)` takes `self` by value and returns it, and an
+unoptimized build materializes each intermediate on the stack, so the frame
+scales with `size_of::<Element>()` times the length of the builder chain.
+That extraction was reverted rather than kept — a complication that buys
+nothing measured is worse than none — and shrinking `Element` or breaking
+the recursion into an explicit worklist is the lever if this ever needs
+more headroom.
+
+**One budget, or the bound is not a bound.** `children_of` charged template
+expansions to a render-wide budget and static child lists to nothing at
+all, so the cheaper amplifier was the unbounded one — a static list needs no
+data model to expand against. Three `Column`s naming the next one fifty
+times is 127 551 components from a kilobyte of JSON. Both arms now draw on
+one `MAX_RENDERED_CHILDREN`, charged per component in `render_by_id`
+via `Ctx::charge_child`, because two
+counters can be played against each other by alternating the kinds of child
+list.
+
+**A refusal is work too.** The per-component charge landed *after*
+`render_by_id`'s cycle, depth-cap and missing-component early returns —
+each of which builds a placeholder, which is an `Element` and two `String`s.
+That left the bound bypassable about a thousandfold: a `Column` naming one
+undefined id a thousand times costs a single charge and builds a thousand
+`[missing: ..]` placeholders, and every charged component can host another
+such list. Measured against that commit, 2 001 001 elements from 11 KB of
+JSON while the budget reported 1001 of 10 000 spent. The charge is the first
+thing the function does now. The general form: a bound on "components built"
+has to count everything the function can be made to allocate, not the
+subset that reaches the happy path.
+
+**`mailto:` has two halves, and only one was being read.** The field check
+discarded everything before `?`, so `mailto:victim@example.com%0D%0Aattach=…`
+— no query at all — returned safe without inspecting anything. The address
+is `pct-encoded`-capable exactly like the fields, so it smuggles a header
+just as well. Both halves are checked now. In the other direction, banning
+CR/LF in *every* field was too much: RFC 6068 §6.1's own example is
+`?body=send%20current-issue%0D%0Asend%20index`, where `%0D%0A` is how the
+spec spells a newline in a body. A body cannot inject a header — it is the
+payload — so the ban applies to the fields that become headers and not to
+`body`.
+
+**An allowlist, or you are enumerating the attacker's options.**
+`mailto:` URLs were checked against a blocklist of `attach` and
+`attachment`. RFC 6068 writes `hfname` as `*qchar` with `pct-encoded` among
+the `qchar`s, so a conforming client decodes the name before acting on it
+and `%61ttach` is `attach` — invisible to a literal comparison, as is every
+vendor spelling nobody enumerated. The check now percent-decodes and
+compares against the header fields a generated link legitimately needs.
+This is the same argument `OPENABLE_SCHEMES` already makes one layer out;
+it should have been made here at the same time.
+
+**A guarantee at one call site is a property of the call graph.**
+`A2uiSignal::OpenUrl` documents that its URL is safe to hand to a platform
+opener, but the check lived only where the renderer resolved an action, and
+`A2uiMsg::OpenUrl` is a public variant a host can build, replay from a log,
+or round-trip through its own message type. `Surface::handle` re-checks it,
+so the promise belongs to the type.

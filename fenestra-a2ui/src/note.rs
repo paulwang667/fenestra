@@ -45,7 +45,9 @@ pub enum NoteKind {
     UnknownIcon,
     /// A client-side function this build does not implement.
     UnimplementedFunction,
-    /// Output was cut short by a cap (template children).
+    /// Output was cut short by a cap — a child list (static or template)
+    /// past the per-expansion limit, a render past its component budget, or
+    /// the note list itself past its own.
     Truncated,
     /// A data-model write could not be applied; the model kept its
     /// previous value.

@@ -78,5 +78,5 @@ pub mod surface;
 
 pub use messages::{Envelope, MessageStream, parse_stream};
 pub use note::{Note, NoteKind, NoteSeverity, any_broken};
-pub use render::{A2uiMsg, A2uiSignal, Rendered};
+pub use render::{A2uiMsg, A2uiSignal, OPENABLE_SCHEMES, Rendered, is_openable_url};
 pub use surface::{A2uiError, Client, Surface};

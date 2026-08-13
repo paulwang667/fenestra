@@ -125,10 +125,26 @@ knowing why, because it would not be if the string came through unchecked.
 scheme, so a stream that said `file:` or some installed app's custom scheme
 would be choosing a program to start on your user's machine — and a stream
 is only ever as trustworthy as whatever the agent writing it last read. So
-the renderer classifies the scheme when it resolves the action: `http`,
-`https` and `mailto` become `OpenUrl`, and everything else renders as a
-visible, inert control carrying a `blockedUrlScheme` note. By the time a URL
-reaches you it has been checked.
+the renderer classifies the URL: `http`, `https` and `mailto` can become
+`OpenUrl`, and everything else renders as a visible, inert control carrying
+a `blockedUrlScheme` note.
+
+An allowed scheme is not the same as an allowed URL, and `mailto:` is where
+that bites. Mail clients that honour an attachment field will stage a local
+file the user never chose into a pre-addressed message, so a `mailto:` gets
+through only if every header field it carries is one a generated link
+actually needs — `to`, `cc`, `bcc`, `subject`, `body`, `in-reply-to` — with
+no carriage return or newline in the values, which is how an extra header
+gets smuggled into a permitted one. Names and values are percent-decoded
+first, because `%61ttach` is `attach` by the time your mail client reads it.
+A well-formed `mailto:` can therefore come back inert; the note says so.
+
+The check runs twice: once when the renderer resolves the action, and again
+in `Surface::handle`, which will not emit the signal at all for a URL that
+fails. The second one matters because `A2uiMsg` is public — if you build an
+`OpenUrl` message yourself, or replay one from a log, it is still checked
+before it becomes a signal. By the time a URL reaches you it has been
+checked.
 
 Inputs bound to a path write straight back into the data model, so the
 next render reads what the user typed. `action_message` takes the

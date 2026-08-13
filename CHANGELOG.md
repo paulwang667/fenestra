@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+An adversarial pass over the A2UI renderer. One crash, one unbounded
+expansion, and two checks that were narrower than the thing they guarded.
+
+### Fixed
+
+- **Rendering aborted the process at seven levels of nesting.**
+  `render_component` was one `match` over all nineteen component kinds, and
+  it sits on the `render_by_id -> render_component -> children_of ->
+  render_by_id` cycle — so its frame was paid once per level, sized for
+  whichever arm needed most, and the largest arms are leaves that never
+  recurse. On a 2 MiB stack (the `std::thread` and tokio blocking-pool
+  default, which is what the MCP server renders on) a plain chain of
+  `Column`s overflowed at seven levels, against a `MAX_DEPTH` of sixteen.
+  Seven is an ordinary surface, not an attack — a Card in a List in a Tab
+  is half of it — and a stack overflow aborts instead of unwinding, so it
+  was `SIGABRT` for the whole server from ~700 bytes of JSON, uncatchable
+  and unreported. The leaf kinds moved to an `#[inline(never)]`
+  `render_leaf`, so their locals get one frame at the bottom of the
+  recursion rather than a share of every level; the full cap now renders on
+  a 2 MiB thread.
+- **Static child lists were charged to no budget.** `children_of` metered
+  template expansions and let static lists expand freely — the cheaper
+  amplifier of the two, since a static list needs no data model. Three
+  `Column`s naming the next one fifty times is 127 551 components from a
+  kilobyte of JSON. Both arms now draw on one `MAX_RENDERED_CHILDREN`
+  (10 000), and dropped children record a `Truncated` note as before.
+- **A percent-encoded `mailto:` field bypassed the attachment check.** RFC
+  6068 percent-encodes header field names, so `%61ttach=` reaches a
+  conforming mail client as `attach=` and matched neither entry of the
+  `attach`/`attachment` blocklist — nor did any vendor spelling. The check
+  now decodes the name and compares it against the fields a generated link
+  legitimately uses (`to`, `cc`, `bcc`, `subject`, `body`, `in-reply-to`),
+  an allowlist for the same reason `OPENABLE_SCHEMES` is one.
+- **`Surface::handle` re-checks the URL scheme.** `A2uiSignal::OpenUrl`
+  promises its reader a scheme the host may launch, but the check ran only
+  where the renderer resolved an action, and `A2uiMsg::OpenUrl` is public —
+  a host can build one, or replay one. A refused URL now emits no signal
+  and records a `BlockedUrlScheme` note.
+
 ## 0.41.0 — 2026-08-10
 
 Three adversarial review rounds over the A2UI renderer, a security pass over
