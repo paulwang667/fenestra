@@ -32,14 +32,27 @@ const BASIC_CATALOG_URL: &str = "https://a2ui.org/specification/v0_9/catalogs/ba
 /// The most children one template expansion materializes.
 const MAX_TEMPLATE_CHILDREN: usize = 1000;
 
-/// The most template-generated children one whole render materializes.
+/// The most children one whole render materializes, from every source.
 ///
 /// Capping each expansion bounds a factor; this bounds the product. Real
 /// surfaces do not come close — an eagerly-built tree of ten thousand rows
 /// is already past what anyone would put on screen, and nothing here is
-/// virtualized — while a nested template over the same list reaches it in
+/// virtualized — while a nested container over the same list reaches it in
 /// three levels and would otherwise keep going.
-const MAX_TEMPLATE_TOTAL: usize = 10_000;
+///
+/// This counts *every* child [`children_of`] materializes, not only the
+/// ones a template generated. The first cut of this budget charged the
+/// template arm alone, which left the cheaper amplifier of the two running
+/// free: a static child list needs no data model to expand against, so
+/// eleven `Column`s naming the next one three times — under a kilobyte of
+/// JSON — built 265 720 components, and the same shape at `MAX_DEPTH`'s
+/// full 16 levels with a fan-out of ten is past 10^16. Cycle detection does
+/// not fire, because every level is a distinct component id, and
+/// `fenestra_core` guards element-tree *depth* rather than breadth, so
+/// nothing downstream caught it either. One budget over both arms is what
+/// makes the bound hold: two counters can be played against each other by
+/// alternating the kinds of child list.
+const MAX_RENDERED_CHILDREN: usize = 10_000;
 
 /// Identity for one piece of client-side UI state: which component, and —
 /// when it was rendered inside a template expansion — which item.
@@ -197,13 +210,22 @@ pub enum A2uiSignal {
 /// reason.
 pub const OPENABLE_SCHEMES: &[&str] = &["http", "https", "mailto"];
 
-/// `mailto:` query parameters that name a local file to attach.
+/// The `mailto:` header fields a generated link may carry.
 ///
-/// Not every mail client honours these, but enough have that it is a known
-/// way to turn "open a link" into "stage a file the user never chose into an
-/// outgoing message". They are the reason checking the scheme is not the
-/// same as checking the URL.
-const MAILTO_ATTACHMENT_PARAMS: &[&str] = &["attach", "attachment"];
+/// An allowlist, for the same reason [`OPENABLE_SCHEMES`] is one, and
+/// arrived at the same way. The first cut named the two fields known to
+/// stage a local file — `attach` and `attachment` — which is a blocklist,
+/// and it was wrong twice over: mail clients ship their own spellings
+/// (`x-mozilla-attach` and friends), and RFC 6068 writes `hfname` as
+/// `*qchar` with `pct-encoded` among the `qchar`s, so `%61ttach` is
+/// `attach` by the time a conforming client reads it and matched neither
+/// name. Enumerating what a link legitimately needs is finite; enumerating
+/// what a mail client might act on is not.
+///
+/// These are the fields RFC 6068 describes for composing a message. Anything
+/// else — including a field this build simply has not heard of — makes the
+/// URL unopenable rather than being passed through and hoped about.
+const MAILTO_SAFE_FIELDS: &[&str] = &["to", "cc", "bcc", "subject", "body", "in-reply-to"];
 
 /// Whether `url` is something the host may hand to a platform opener.
 ///
@@ -228,26 +250,79 @@ fn is_openable(url: &str) -> bool {
         return false;
     }
     // The scheme being allowed is not the end of it. A `mailto:` may carry
-    // an attachment parameter naming a path on the user's disk, which is the
-    // same "a stream chose a local file" problem the scheme check exists to
+    // header fields naming a path on the user's disk, which is the same
+    // "a stream chose a local file" problem the scheme check exists to
     // stop, one layer in.
     if scheme.eq_ignore_ascii_case("mailto") {
-        return !has_attachment_param(rest);
+        return mailto_fields_are_safe(rest);
     }
     true
 }
 
-/// Whether a `mailto:` body carries an attachment parameter.
-fn has_attachment_param(rest: &str) -> bool {
+/// Whether every header field in a `mailto:` body is one a generated link
+/// may carry (see [`MAILTO_SAFE_FIELDS`]).
+///
+/// A URL with no query carries no fields and is safe. An unparseable or
+/// unknown field fails closed: a name that percent-decodes to something
+/// containing its own `&` or `=` does not match any allowed field, so a
+/// stream cannot smuggle a second field inside the first one's name.
+fn mailto_fields_are_safe(rest: &str) -> bool {
     let Some((_, query)) = rest.split_once('?') else {
-        return false;
+        return true;
     };
-    query.split('&').any(|pair| {
-        let name = pair.split('=').next().unwrap_or(pair).trim();
-        MAILTO_ATTACHMENT_PARAMS
-            .iter()
-            .any(|p| name.eq_ignore_ascii_case(p))
-    })
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .all(|pair| {
+            let raw = pair.split('=').next().unwrap_or(pair);
+            let name = percent_decode(raw);
+            let name = name.trim();
+            MAILTO_SAFE_FIELDS
+                .iter()
+                .any(|f| name.eq_ignore_ascii_case(f))
+        })
+}
+
+/// Percent-decodes a `mailto:` header field name.
+///
+/// RFC 6068 writes `hfname` as `*qchar` and includes `pct-encoded` among
+/// the `qchar`s, so the name a mail client acts on is the *decoded* one —
+/// `%61ttach` is `attach`. Matching the raw text let every encoded spelling
+/// through, which is the hole this closes.
+///
+/// A `%` that does not introduce two hex digits is passed through as a
+/// literal, exactly as a lenient client would read it; the result is
+/// compared against an allowlist, so anything this decodes oddly is refused
+/// rather than admitted. Invalid UTF-8 goes through
+/// [`String::from_utf8_lossy`] — a replacement character matches no ASCII
+/// field name, which is the direction to fail in.
+fn percent_decode(s: &str) -> String {
+    /// One hex digit as its value.
+    fn hex(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // `hi * 16 + lo` cannot overflow: both are at most 15.
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+        {
+            out.push(hi * 16 + lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A rendered surface: the element tree plus render-time fidelity notes.
@@ -293,15 +368,17 @@ struct Ctx<'a> {
     /// anyway. The check has to win: it is the stream's own instruction not
     /// to act yet.
     blocked_trigger: std::cell::Cell<bool>,
-    /// How many more template-generated children this render may build.
+    /// How many more children this render may build, from any source.
     ///
-    /// [`MAX_TEMPLATE_CHILDREN`] bounds one expansion; this bounds their
-    /// product. An absolute template path is scope-invariant by design, so
-    /// nesting templates over the same list multiplies without ever
-    /// repeating a component id — which is what cycle detection watches
-    /// for. Four levels over a 30-item list is 810 000 elements from half a
-    /// kilobyte of JSON.
-    template_budget: std::cell::Cell<usize>,
+    /// [`MAX_TEMPLATE_CHILDREN`] bounds one template expansion; this bounds
+    /// the product of every nesting level, static lists included. An
+    /// absolute template path is scope-invariant by design, so nesting
+    /// templates over the same list multiplies without ever repeating a
+    /// component id — which is what cycle detection watches for. Four levels
+    /// over a 30-item list is 810 000 elements from half a kilobyte of JSON,
+    /// and a static child list does the same thing without needing a data
+    /// model at all. See [`MAX_RENDERED_CHILDREN`].
+    child_budget: std::cell::Cell<usize>,
     /// Compiled validation patterns, keyed by their source text.
     ///
     /// A template renders its component once per item, so a `regex` check
@@ -351,6 +428,34 @@ impl Ctx<'_> {
             .entry(pattern.to_owned())
             .or_insert_with(|| checks::compile_pattern(pattern))
             .clone()
+    }
+
+    /// Charges `wanted` children to the render-wide budget, returning how
+    /// many of them may actually be built.
+    ///
+    /// Both arms of [`children_of`] go through here rather than reading and
+    /// writing the cell themselves: the bound is on the *total*, so a
+    /// second call site that forgot to charge its children — which is
+    /// exactly how the static arm came to be unbounded — silently removes
+    /// the guarantee for every other one.
+    fn take_children(&self, wanted: usize) -> usize {
+        let budget = self.child_budget.get();
+        let allowed = wanted.min(budget);
+        self.child_budget.set(budget - allowed);
+        allowed
+    }
+
+    /// Reports children dropped to stay inside the render-wide budget.
+    fn note_children_dropped(&self, id: &str, dropped: usize) {
+        self.note(
+            id,
+            NoteKind::Truncated,
+            format!(
+                "this render has materialized {} of {MAX_RENDERED_CHILDREN} children; \
+                 {dropped} more here were dropped (nested containers multiply)",
+                MAX_RENDERED_CHILDREN - self.child_budget.get(),
+            ),
+        );
     }
 
     /// Reports an enum string the catalog does not define.
@@ -412,7 +517,7 @@ impl Surface {
             theme,
             armed_triggers: std::cell::RefCell::new(Vec::new()),
             blocked_trigger: std::cell::Cell::new(false),
-            template_budget: std::cell::Cell::new(MAX_TEMPLATE_TOTAL),
+            child_budget: std::cell::Cell::new(MAX_RENDERED_CHILDREN),
             patterns: std::cell::RefCell::new(std::collections::HashMap::new()),
             notes: std::cell::RefCell::new(Vec::new()),
             path_stack: std::cell::RefCell::new(Vec::new()),
@@ -495,7 +600,32 @@ impl Surface {
                 data_model: self.send_data_model.then(|| self.data.clone()),
                 source_id,
             }],
-            A2uiMsg::OpenUrl(url) => vec![A2uiSignal::OpenUrl(url)],
+            A2uiMsg::OpenUrl(url) => {
+                // Checked again here, not only where the action was
+                // resolved. [`A2uiSignal::OpenUrl`] promises its reader that
+                // the URL is safe to hand to a platform opener, and that
+                // promise is what a host acts on — but `A2uiMsg` is public,
+                // so a host holding one it built itself (or replayed from a
+                // log, or round-tripped through its own message type) can
+                // reach this arm without the renderer ever having looked at
+                // the string. One check at the point of construction is a
+                // property of today's call graph; a check here is a property
+                // of the type.
+                if is_openable(&url) {
+                    vec![A2uiSignal::OpenUrl(url)]
+                } else {
+                    self.push_note(Note::new(
+                        "",
+                        NoteKind::BlockedUrlScheme,
+                        format!(
+                            "openUrl {} is not a scheme this renderer will open; \
+                             the signal was not emitted",
+                            quoted(&url)
+                        ),
+                    ));
+                    Vec::new()
+                }
+            }
             A2uiMsg::OpenModal(id) => {
                 self.ui.open_modals.insert(id);
                 Vec::new()
@@ -1314,10 +1444,20 @@ fn children_of(
     depth: usize,
 ) -> Vec<Element<A2uiMsg>> {
     match list {
-        ChildList::Static(ids) => ids
-            .iter()
-            .map(|cid| render_by_id(ctx, cid, scope, depth + 1))
-            .collect(),
+        ChildList::Static(ids) => {
+            // Charged to the same budget as a template expansion. A static
+            // list is enumerated in the stream, so its own length is bounded
+            // by the document — but the *product* across nesting levels is
+            // not, and that is what this bounds.
+            let allowed = ctx.take_children(ids.len());
+            if allowed < ids.len() {
+                ctx.note_children_dropped(id, ids.len() - allowed);
+            }
+            ids[..allowed]
+                .iter()
+                .map(|cid| render_by_id(ctx, cid, scope, depth + 1))
+                .collect()
+        }
         ChildList::Template { component_id, path } => {
             let Some(Value::Array(items)) = lookup(ctx.surface, path, scope) else {
                 ctx.note(
@@ -1341,20 +1481,9 @@ fn children_of(
             // over the same list multiplies, and each level alone is
             // perfectly reasonable.
             let wanted = items.len().min(MAX_TEMPLATE_CHILDREN);
-            let budget = ctx.template_budget.get();
-            let allowed = wanted.min(budget);
-            ctx.template_budget.set(budget - allowed);
+            let allowed = ctx.take_children(wanted);
             if allowed < wanted {
-                ctx.note(
-                    id,
-                    NoteKind::Truncated,
-                    format!(
-                        "this render has materialized {} of {MAX_TEMPLATE_TOTAL} template \
-                         children; {} more here were dropped (nested templates multiply)",
-                        MAX_TEMPLATE_TOTAL - ctx.template_budget.get(),
-                        wanted - allowed
-                    ),
-                );
+                ctx.note_children_dropped(id, wanted - allowed);
             }
             // The canonical join: an absolute template path stays absolute
             // even inside a collection scope (a naive `{scope}/{path}` join
@@ -1419,12 +1548,250 @@ fn apply_flex(
     clippy::too_many_lines,
     reason = "one arm per catalog component; splitting would scatter the mapping"
 )]
+/// Renders one component.
+///
+/// Split in two, and the split is load-bearing rather than cosmetic. This
+/// function holds only the kinds that recurse into children; every leaf
+/// kind lives in [`render_leaf`], which is `#[inline(never)]` so that its
+/// locals get a frame of their own.
+///
+/// The reason is that `render_by_id` -> `render_component` ->
+/// `children_of` -> `render_by_id` is a recursive cycle, so whatever this
+/// frame costs is paid once per level of component nesting. With all
+/// nineteen kinds in one `match`, an unoptimized build gives the frame
+/// room for every arm's locals at once — the arms do not share slots
+/// without optimization — and the biggest arms (`ChoicePicker`, `Slider`,
+/// `DateTimeInput`) are leaves that can never be on the recursive path at
+/// all. Measured on a 2 MiB stack (the `std::thread` and tokio
+/// blocking-pool default, which is what the MCP server renders on), that
+/// arrangement overflowed at **seven** levels of nesting — well under this
+/// module's own `MAX_DEPTH`, and well under what an ordinary surface
+/// nests: a Card in a List in a Tab is already half of it. The overflow
+/// aborts the process rather than unwinding, so it took the whole server
+/// with it and no note or error could describe what happened.
+///
+/// Keeping the leaves off the recursive path is what buys the depth back.
+/// If a new *container* kind is added, it belongs here; if a new leaf is
+/// added, it belongs in `render_leaf`, and putting it in the wrong one is
+/// a stack regression rather than a compile error — which is what
+/// `renders_at_the_full_depth_cap` is watching for.
 fn render_component(
     ctx: &Ctx,
     component: &Component,
     scope: Option<&str>,
     depth: usize,
 ) -> Element<A2uiMsg> {
+    let id = component.id.as_str();
+    match &component.kind {
+        Kind::Row {
+            children,
+            justify,
+            align,
+        } => {
+            let kids = children_of(ctx, id, children, scope, depth);
+            apply_flex(
+                row().gap(8.0).children(kids),
+                justify.as_deref(),
+                align.as_deref(),
+                id,
+                ctx,
+            )
+        }
+        Kind::Column {
+            children,
+            justify,
+            align,
+        } => {
+            let kids = children_of(ctx, id, children, scope, depth);
+            apply_flex(
+                col().gap(8.0).children(kids),
+                justify.as_deref(),
+                align.as_deref(),
+                id,
+                ctx,
+            )
+        }
+        Kind::List {
+            children,
+            direction,
+            align,
+        } => {
+            let kids = children_of(ctx, id, children, scope, depth);
+            if let Some(d) = direction.as_deref()
+                && !matches!(d, "horizontal" | "vertical")
+            {
+                ctx.note_unknown_variant(id, "direction", d, "a vertical list");
+            }
+            let horizontal = direction.as_deref() == Some("horizontal");
+            let el = if horizontal {
+                row().gap(8.0).children(kids).scroll_x()
+            } else {
+                col().gap(8.0).children(kids).scroll_y()
+            };
+            apply_flex(el.id(id), None, align.as_deref(), id, ctx)
+        }
+        Kind::Card { child } => card()
+            .child(render_by_id(ctx, child, scope, depth + 1))
+            .p(16.0),
+        Kind::Tabs { tabs: items } => {
+            let labels: Vec<String> = items
+                .iter()
+                .map(|t| resolve_value(ctx, id, &t.title, scope))
+                .collect();
+            let tabs_key = ui_key(id, scope);
+            let active = ctx
+                .surface
+                .ui
+                .active_tabs
+                .get(&tabs_key)
+                .copied()
+                .unwrap_or(0)
+                .min(items.len().saturating_sub(1));
+            let strip = tabs(active, labels, move |index| A2uiMsg::SelectTab {
+                key: tabs_key.clone(),
+                index,
+            });
+            let mut container = col().gap(8.0).child(strip);
+            if let Some(tab) = items.get(active) {
+                container = container.child(render_by_id(ctx, &tab.child, scope, depth + 1));
+            }
+            container
+        }
+        Kind::Modal { trigger, content } => {
+            let modal_key = ui_key(id, scope);
+            let open = ctx.surface.ui.open_modals.contains(&modal_key);
+            // Arm the trigger only while it is genuinely being rendered as
+            // one, so a Modal nothing reaches cannot vouch for a button it
+            // will never wrap. Popped straight after: a trigger that is
+            // itself inside another Modal's trigger must not stay armed for
+            // its siblings.
+            ctx.armed_triggers.borrow_mut().push(trigger.clone());
+            ctx.blocked_trigger.set(false);
+            let trigger_el = render_by_id(ctx, trigger, scope, depth + 1);
+            ctx.armed_triggers.borrow_mut().pop();
+            // A trigger whose own checks fail stays as rendered: disabled,
+            // showing why. Arming it would hand the press to the wrapper
+            // around the dead button and open the dialog regardless.
+            let opener = if ctx.blocked_trigger.replace(false) {
+                trigger_el
+            } else {
+                open_modal_trigger(ctx, id, &modal_key, trigger_el)
+            };
+            if open {
+                col().children((
+                    opener,
+                    modal("")
+                        .child(render_by_id(ctx, content, scope, depth + 1))
+                        .on_close(A2uiMsg::CloseModal(modal_key.clone())),
+                ))
+            } else {
+                opener
+            }
+        }
+        Kind::Button {
+            child,
+            variant,
+            action,
+            checks,
+        } => {
+            let failure = evaluate_checks(ctx, id, checks, scope);
+            // Extract a text label when the child is a Text component; any
+            // other child renders inside an icon button.
+            let child_component = ctx.surface.components.get(child);
+            let label = match child_component.map(|c| &c.kind) {
+                Some(Kind::Text { text: content, .. }) => {
+                    Some(resolve_value(ctx, id, content, scope))
+                }
+                _ => None,
+            };
+            let kit_variant = match variant.as_deref() {
+                Some("primary") => ButtonVariant::Primary,
+                Some("borderless") => ButtonVariant::Ghost,
+                other => {
+                    if let Some(v) = other {
+                        ctx.note_unknown_variant(id, "variant", v, "a secondary button");
+                    }
+                    ButtonVariant::Secondary
+                }
+            };
+            let msg = action.as_ref().map(|a| action_msg(ctx, id, a, scope));
+            // Only the Modal currently rendering *this* component as its
+            // trigger counts. `last()` is the innermost one, which is the
+            // Modal that will wrap what we are building right now.
+            let opens_a_modal = ctx
+                .armed_triggers
+                .borrow()
+                .last()
+                .is_some_and(|armed| armed == id);
+            // An action that resolved to nothing leaves the button just as
+            // dead as no action at all — `Ignored` is what an unimplemented
+            // function or an unresolvable openUrl becomes. Both answers to
+            // "can this button do anything?" have to be the same, or the
+            // note below is true of one path and a lie about the other.
+            let inert = !opens_a_modal && matches!(msg, None | Some(A2uiMsg::Ignored));
+            // A failing check is the whole point of putting one on a
+            // button: it must not carry out its action. Decided here, before
+            // the widget is built, because the kit bakes disabled styling in
+            // at build time.
+            let blocked = failure.is_some();
+            if blocked && opens_a_modal {
+                ctx.blocked_trigger.set(true);
+            }
+            // A blocked URL scheme already recorded *why* this button does
+            // nothing, and it is not "no action it can carry out" — the
+            // action was understood and deliberately refused. Two Broken
+            // notes for one cause, the second of them untrue, is worse than
+            // one.
+            if inert && !ctx.noted(id, NoteKind::BlockedUrlScheme) {
+                ctx.note(
+                    id,
+                    NoteKind::Unreachable,
+                    "button has no action it can carry out and opens nothing; rendered as a \
+                     disabled control",
+                );
+            }
+            match label {
+                Some(label) => {
+                    let mut b = button(label).variant(kit_variant);
+                    // A modal trigger has something to do even without an
+                    // action of its own, so it must not be *built* disabled
+                    // — see `Ctx::armed_triggers`.
+                    if inert || blocked {
+                        b = b.disabled(true);
+                    } else if let Some(m) = msg {
+                        b = b.on_click(m);
+                    }
+                    labeled_control(None, b.into(), failure, ctx.theme)
+                }
+                None => {
+                    let inner = render_by_id(ctx, child, scope, depth + 1);
+                    let mut b = icon_button(inner);
+                    // Same rule as the labeled branch — an inert button
+                    // must *look* inert, or the note above is a lie and the
+                    // user presses a live-looking control that does nothing.
+                    if inert || blocked {
+                        b = b.disabled(true);
+                    } else if let Some(m) = msg {
+                        b = b.on_click(m);
+                    }
+                    labeled_control(None, b.into(), failure, ctx.theme)
+                }
+            }
+        }
+        // Every other kind is a leaf: it renders no children, so it can
+        // never be on the recursive path, and its locals do not belong in
+        // a frame that is paid for once per level.
+        _ => render_leaf(ctx, component, scope),
+    }
+}
+
+/// The component kinds that render no children.
+///
+/// `#[inline(never)]` on purpose: see [`render_component`]. Inlined back
+/// into the dispatcher, this function's locals would rejoin the recursive
+/// frame and undo the fix.
+#[inline(never)]
+fn render_leaf(ctx: &Ctx, component: &Component, scope: Option<&str>) -> Element<A2uiMsg> {
     let id = component.id.as_str();
     let theme = ctx.theme;
     match &component.kind {
@@ -1547,111 +1914,6 @@ fn render_component(
             );
             placeholder(format!("[audio: {}]", truncate_label(&label, 48)), theme)
         }
-        Kind::Row {
-            children,
-            justify,
-            align,
-        } => {
-            let kids = children_of(ctx, id, children, scope, depth);
-            apply_flex(
-                row().gap(8.0).children(kids),
-                justify.as_deref(),
-                align.as_deref(),
-                id,
-                ctx,
-            )
-        }
-        Kind::Column {
-            children,
-            justify,
-            align,
-        } => {
-            let kids = children_of(ctx, id, children, scope, depth);
-            apply_flex(
-                col().gap(8.0).children(kids),
-                justify.as_deref(),
-                align.as_deref(),
-                id,
-                ctx,
-            )
-        }
-        Kind::List {
-            children,
-            direction,
-            align,
-        } => {
-            let kids = children_of(ctx, id, children, scope, depth);
-            if let Some(d) = direction.as_deref()
-                && !matches!(d, "horizontal" | "vertical")
-            {
-                ctx.note_unknown_variant(id, "direction", d, "a vertical list");
-            }
-            let horizontal = direction.as_deref() == Some("horizontal");
-            let el = if horizontal {
-                row().gap(8.0).children(kids).scroll_x()
-            } else {
-                col().gap(8.0).children(kids).scroll_y()
-            };
-            apply_flex(el.id(id), None, align.as_deref(), id, ctx)
-        }
-        Kind::Card { child } => card()
-            .child(render_by_id(ctx, child, scope, depth + 1))
-            .p(16.0),
-        Kind::Tabs { tabs: items } => {
-            let labels: Vec<String> = items
-                .iter()
-                .map(|t| resolve_value(ctx, id, &t.title, scope))
-                .collect();
-            let tabs_key = ui_key(id, scope);
-            let active = ctx
-                .surface
-                .ui
-                .active_tabs
-                .get(&tabs_key)
-                .copied()
-                .unwrap_or(0)
-                .min(items.len().saturating_sub(1));
-            let strip = tabs(active, labels, move |index| A2uiMsg::SelectTab {
-                key: tabs_key.clone(),
-                index,
-            });
-            let mut container = col().gap(8.0).child(strip);
-            if let Some(tab) = items.get(active) {
-                container = container.child(render_by_id(ctx, &tab.child, scope, depth + 1));
-            }
-            container
-        }
-        Kind::Modal { trigger, content } => {
-            let modal_key = ui_key(id, scope);
-            let open = ctx.surface.ui.open_modals.contains(&modal_key);
-            // Arm the trigger only while it is genuinely being rendered as
-            // one, so a Modal nothing reaches cannot vouch for a button it
-            // will never wrap. Popped straight after: a trigger that is
-            // itself inside another Modal's trigger must not stay armed for
-            // its siblings.
-            ctx.armed_triggers.borrow_mut().push(trigger.clone());
-            ctx.blocked_trigger.set(false);
-            let trigger_el = render_by_id(ctx, trigger, scope, depth + 1);
-            ctx.armed_triggers.borrow_mut().pop();
-            // A trigger whose own checks fail stays as rendered: disabled,
-            // showing why. Arming it would hand the press to the wrapper
-            // around the dead button and open the dialog regardless.
-            let opener = if ctx.blocked_trigger.replace(false) {
-                trigger_el
-            } else {
-                open_modal_trigger(ctx, id, &modal_key, trigger_el)
-            };
-            if open {
-                col().children((
-                    opener,
-                    modal("")
-                        .child(render_by_id(ctx, content, scope, depth + 1))
-                        .on_close(A2uiMsg::CloseModal(modal_key.clone())),
-                ))
-            } else {
-                opener
-            }
-        }
         Kind::Divider { axis } => match axis.as_deref() {
             Some("vertical") => div().w(1.0).h_full().bg(theme.border_subtle),
             Some("horizontal") | None => divider(),
@@ -1660,96 +1922,6 @@ fn render_component(
                 divider()
             }
         },
-        Kind::Button {
-            child,
-            variant,
-            action,
-            checks,
-        } => {
-            let failure = evaluate_checks(ctx, id, checks, scope);
-            // Extract a text label when the child is a Text component; any
-            // other child renders inside an icon button.
-            let child_component = ctx.surface.components.get(child);
-            let label = match child_component.map(|c| &c.kind) {
-                Some(Kind::Text { text: content, .. }) => {
-                    Some(resolve_value(ctx, id, content, scope))
-                }
-                _ => None,
-            };
-            let kit_variant = match variant.as_deref() {
-                Some("primary") => ButtonVariant::Primary,
-                Some("borderless") => ButtonVariant::Ghost,
-                other => {
-                    if let Some(v) = other {
-                        ctx.note_unknown_variant(id, "variant", v, "a secondary button");
-                    }
-                    ButtonVariant::Secondary
-                }
-            };
-            let msg = action.as_ref().map(|a| action_msg(ctx, id, a, scope));
-            // Only the Modal currently rendering *this* component as its
-            // trigger counts. `last()` is the innermost one, which is the
-            // Modal that will wrap what we are building right now.
-            let opens_a_modal = ctx
-                .armed_triggers
-                .borrow()
-                .last()
-                .is_some_and(|armed| armed == id);
-            // An action that resolved to nothing leaves the button just as
-            // dead as no action at all — `Ignored` is what an unimplemented
-            // function or an unresolvable openUrl becomes. Both answers to
-            // "can this button do anything?" have to be the same, or the
-            // note below is true of one path and a lie about the other.
-            let inert = !opens_a_modal && matches!(msg, None | Some(A2uiMsg::Ignored));
-            // A failing check is the whole point of putting one on a
-            // button: it must not carry out its action. Decided here, before
-            // the widget is built, because the kit bakes disabled styling in
-            // at build time.
-            let blocked = failure.is_some();
-            if blocked && opens_a_modal {
-                ctx.blocked_trigger.set(true);
-            }
-            // A blocked URL scheme already recorded *why* this button does
-            // nothing, and it is not "no action it can carry out" — the
-            // action was understood and deliberately refused. Two Broken
-            // notes for one cause, the second of them untrue, is worse than
-            // one.
-            if inert && !ctx.noted(id, NoteKind::BlockedUrlScheme) {
-                ctx.note(
-                    id,
-                    NoteKind::Unreachable,
-                    "button has no action it can carry out and opens nothing; rendered as a \
-                     disabled control",
-                );
-            }
-            match label {
-                Some(label) => {
-                    let mut b = button(label).variant(kit_variant);
-                    // A modal trigger has something to do even without an
-                    // action of its own, so it must not be *built* disabled
-                    // — see `Ctx::armed_triggers`.
-                    if inert || blocked {
-                        b = b.disabled(true);
-                    } else if let Some(m) = msg {
-                        b = b.on_click(m);
-                    }
-                    labeled_control(None, b.into(), failure, ctx.theme)
-                }
-                None => {
-                    let inner = render_by_id(ctx, child, scope, depth + 1);
-                    let mut b = icon_button(inner);
-                    // Same rule as the labeled branch — an inert button
-                    // must *look* inert, or the note above is a lie and the
-                    // user presses a live-looking control that does nothing.
-                    if inert || blocked {
-                        b = b.disabled(true);
-                    } else if let Some(m) = msg {
-                        b = b.on_click(m);
-                    }
-                    labeled_control(None, b.into(), failure, ctx.theme)
-                }
-            }
-        }
         Kind::TextField {
             label,
             value,
@@ -2014,6 +2186,15 @@ fn render_component(
                 format!("component {name:?} {why}; rendering a placeholder"),
             );
             placeholder(format!("[{name}]"), theme)
+        }
+        Kind::Row { .. }
+        | Kind::Column { .. }
+        | Kind::List { .. }
+        | Kind::Card { .. }
+        | Kind::Tabs { .. }
+        | Kind::Modal { .. }
+        | Kind::Button { .. } => {
+            unreachable!("container kinds are dispatched by render_component")
         }
     }
 }

@@ -72,6 +72,204 @@ fn nested_templates_cannot_multiply_without_bound() {
     );
 }
 
+/// A surface may nest as deeply as `MAX_DEPTH` says it may, on the stack
+/// the renderer actually runs on.
+///
+/// This is the regression test for a crash, not a slowdown. `render_by_id`
+/// -> `render_component` -> `children_of` -> `render_by_id` is a recursive
+/// cycle, and `render_component` used to be a single `match` over all
+/// nineteen component kinds. An unoptimized build gives such a frame room
+/// for every arm's locals at once, so each level of nesting cost what the
+/// *largest* arm needed — and the largest arms (`ChoicePicker`, `Slider`,
+/// `DateTimeInput`) are leaves that cannot even appear on the recursive
+/// path. On a 2 MiB stack the result overflowed at **seven** levels: not
+/// an attack, an ordinary surface, since a Card inside a List inside a Tab
+/// is already half the budget. A stack overflow aborts the process instead
+/// of unwinding, so this was `SIGABRT` for the whole MCP server, with no
+/// note, no error, and nothing for a caller to catch.
+///
+/// A strictly linear chain, one child per level: no template, no fan-out,
+/// nothing amplified. The only variable is depth. It runs on an explicitly
+/// 2 MiB thread because that is what `std::thread` and tokio's blocking
+/// pool give by default — the test harness's own main thread is 8 MiB and
+/// would have hidden the bug for another four levels.
+#[test]
+fn renders_at_the_full_depth_cap() {
+    // `MAX_DEPTH` is private; this mirrors it deliberately, so that raising
+    // the cap without re-measuring the stack shows up as a failure here.
+    const CAP: usize = 16;
+
+    // `CAP` containers, so the deepest node — the leaf — sits at exactly
+    // `MAX_DEPTH`. One more would be the cap legitimately refusing.
+    let mut components: Vec<String> = (0..CAP)
+        .map(|i| {
+            let next = if i + 1 == CAP {
+                "leaf".to_owned()
+            } else {
+                format!("lvl{}", i + 1)
+            };
+            let id = if i == 0 {
+                "root".to_owned()
+            } else {
+                format!("lvl{i}")
+            };
+            format!(r#"{{"id":"{id}","component":"Column","children":["{next}"]}}"#)
+        })
+        .collect();
+    components.push(r#"{"id":"leaf","component":"Text","text":"deep"}"#.to_owned());
+    let stream = format!(
+        r#"[
+          {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+          {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[{}]}}}}
+        ]"#,
+        components.join(",")
+    );
+
+    let built = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            let client = apply(&stream);
+            let rendered = client
+                .surface("s")
+                .expect("surface")
+                .render(&Theme::light());
+            // The chain must actually render, not bottom out in a
+            // `[deep: ..]` placeholder — that would pass the crash test
+            // while proving nothing about the cap.
+            assert!(
+                !rendered.notes.iter().any(|n| n.kind == NoteKind::DepthCap),
+                "the cap refused a chain it permits: {:?}",
+                rendered.notes
+            );
+            count_elements(&rendered.element)
+        })
+        .expect("spawn")
+        .join()
+        .expect("rendering a surface at the documented depth cap must not abort the process");
+
+    assert!(built > CAP, "expected a real chain, built {built} elements");
+}
+
+/// The static sibling of the finding above, and the one it missed.
+///
+/// `nested_templates_cannot_multiply_without_bound` fixed the *template*
+/// arm of `children_of` by charging every materialized child to a
+/// render-wide budget. The `Static` arm was left drawing from nothing at
+/// all — and a static child list is the cheaper amplifier of the two,
+/// because it needs no data model to expand against. Cycle detection does
+/// not fire (each level is a distinct component id), and the framework
+/// guards element-tree *depth* only, never breadth, so nothing downstream
+/// catches it either.
+///
+/// Three `Column`s naming the next one fifty times is 127 551 components
+/// from about a kilobyte of JSON, and the shape scales as fan-out to the
+/// power of the nesting depth. Every consumer reaches this through
+/// `Surface::render` on agent-supplied input — the MCP `render_a2ui` tool
+/// most directly.
+///
+/// Deliberately wide and shallow: breadth is what this test is about, and
+/// nesting it deeper would trip the *separate* stack-depth limit instead
+/// and prove nothing about the budget.
+#[test]
+fn static_children_cannot_multiply_without_bound() {
+    let kids = |next: &str| {
+        (0..50)
+            .map(|_| format!("\"{next}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let stream = format!(
+        r#"[
+          {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+          {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+            {{"id":"root","component":"Column","children":[{}]}},
+            {{"id":"lvl1","component":"Column","children":[{}]}},
+            {{"id":"lvl2","component":"Column","children":[{}]}},
+            {{"id":"leaf","component":"Text","text":"x"}}
+          ]}}}}
+        ]"#,
+        kids("lvl1"),
+        kids("lvl2"),
+        kids("leaf"),
+    );
+    assert!(
+        stream.len() < 2048,
+        "the point is that the input is tiny; this one is {} bytes",
+        stream.len()
+    );
+
+    let client = apply(&stream);
+    let started = Instant::now();
+    let rendered = client
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    let elapsed = started.elapsed();
+
+    let built = count_elements(&rendered.element);
+    assert!(
+        built < 100_000,
+        "static children built {built} elements from a {}-byte stream; every \
+         materialized child must be charged to the render-wide budget, not just \
+         the ones a template generated",
+        stream.len()
+    );
+    assert!(
+        rendered.notes.iter().any(|n| n.kind == NoteKind::Truncated),
+        "work dropped to stay inside the budget must be reported, got: {:?}",
+        rendered.notes
+    );
+    assert!(
+        elapsed.as_secs() < 5,
+        "rendering took {elapsed:?}; a hostile stream must not be able to stall a render"
+    );
+}
+
+/// The budget is shared, so the two arms cannot be played against each
+/// other: a template expansion that spends it must leave static children
+/// bounded too, and the reverse. Charging them to separate counters would
+/// re-open the product this pair of tests exists to close.
+#[test]
+fn the_child_budget_is_shared_between_static_and_template_children() {
+    let items: Vec<String> = (0..60).map(|i| i.to_string()).collect();
+    let ten = (0..10).map(|_| "\"a\"").collect::<Vec<_>>().join(",");
+    let twenty = (0..20).map(|_| "\"leaf\"").collect::<Vec<_>>().join(",");
+    // Static, then template, then static — 10 x 60 x 20 = 12 000 children
+    // across three levels, so neither arm reaches the budget alone.
+    let stream = format!(
+        r#"[
+          {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+          {{"version":"v0.9","updateDataModel":{{"surfaceId":"s","path":"/items",
+            "value":[{}]}}}},
+          {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+            {{"id":"root","component":"Column","children":[{ten}]}},
+            {{"id":"a","component":"Column","children":{{"componentId":"b","path":"/items"}}}},
+            {{"id":"b","component":"Column","children":[{twenty}]}},
+            {{"id":"leaf","component":"Text","text":"x"}}
+          ]}}}}
+        ]"#,
+        items.join(","),
+    );
+
+    let client = apply(&stream);
+    let rendered = client
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+
+    let built = count_elements(&rendered.element);
+    assert!(
+        built < 100_000,
+        "alternating static and template levels built {built} elements; the two \
+         arms must draw down one shared budget"
+    );
+    assert!(
+        rendered.notes.iter().any(|n| n.kind == NoteKind::Truncated),
+        "work dropped to stay inside the budget must be reported, got: {:?}",
+        rendered.notes
+    );
+}
+
 /// Finding 2: `Ctx::modal_triggers` was built from every component the
 /// surface has ever defined, not from the ones actually rendered.
 ///
