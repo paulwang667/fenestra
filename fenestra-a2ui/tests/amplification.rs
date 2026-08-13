@@ -72,6 +72,69 @@ fn nested_templates_cannot_multiply_without_bound() {
     );
 }
 
+/// The budget has to be charged where components are *built*, not where a
+/// container happens to ask for a list of them.
+///
+/// The first cut metered `children_of`, which is only how `Row`, `Column`
+/// and `List` reach their children. `Card`, `Tabs`, `Modal` and `Button`
+/// call `render_by_id` directly, and every one of those was an uncharged
+/// multiplier stacked on a charged one: a `Card` chain multiplies the
+/// ceiling by its depth, and a `Modal` — which renders its trigger *and*
+/// its content — by two per level. A ceiling with four ways around it is
+/// not a ceiling.
+///
+/// Here a template drains the budget and every one of the components it
+/// paid for then hangs a deep `Card` chain underneath, all of it free under
+/// the old accounting.
+#[test]
+fn containers_that_bypass_children_of_are_charged_too() {
+    let items: Vec<String> = (0..200).map(|i| i.to_string()).collect();
+    // A Card chain deep enough to matter, well inside MAX_DEPTH.
+    let mut cards: Vec<String> = (0..10)
+        .map(|i| {
+            let next = if i == 9 {
+                "leaf".to_owned()
+            } else {
+                format!("c{}", i + 1)
+            };
+            format!(r#"{{"id":"c{i}","component":"Card","child":"{next}"}}"#)
+        })
+        .collect();
+    cards.push(r#"{"id":"leaf","component":"Text","text":"x"}"#.to_owned());
+    let stream = format!(
+        r#"[
+          {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+          {{"version":"v0.9","updateDataModel":{{"surfaceId":"s","path":"/items",
+            "value":[{}]}}}},
+          {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+            {{"id":"root","component":"Column","children":{{"componentId":"c0","path":"/items"}}}},
+            {}
+          ]}}}}
+        ]"#,
+        items.join(","),
+        cards.join(","),
+    );
+
+    let client = apply(&stream);
+    let rendered = client
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+
+    let built = count_elements(&rendered.element);
+    assert!(
+        built < 20_000,
+        "a Card chain under every template row built {built} elements; Card, \
+         Tabs, Modal and Button reach children without going through \
+         children_of, so charging the container is not charging the render"
+    );
+    assert!(
+        rendered.notes.iter().any(|n| n.kind == NoteKind::Truncated),
+        "work dropped to stay inside the budget must be reported, got: {:?}",
+        rendered.notes
+    );
+}
+
 /// A surface may nest as deeply as `MAX_DEPTH` says it may, on the stack
 /// the renderer actually runs on.
 ///
@@ -231,20 +294,21 @@ fn static_children_cannot_multiply_without_bound() {
 /// re-open the product this pair of tests exists to close.
 #[test]
 fn the_child_budget_is_shared_between_static_and_template_children() {
+    // Each arm stays *under* the budget on its own — 40 static children and
+    // 6000 template children — so only a shared counter can truncate this.
+    // (Written the other way first, with 12 000 static children, it passed
+    // identically against two separate per-arm budgets and proved nothing:
+    // the static arm blew its own ceiling unaided.)
     let items: Vec<String> = (0..60).map(|i| i.to_string()).collect();
-    let ten = (0..10).map(|_| "\"a\"").collect::<Vec<_>>().join(",");
-    let twenty = (0..20).map(|_| "\"leaf\"").collect::<Vec<_>>().join(",");
-    // Static, then template, then static — 10 x 60 x 20 = 12 000 children
-    // across three levels, so neither arm reaches the budget alone.
+    let forty = (0..40).map(|_| "\"a\"").collect::<Vec<_>>().join(",");
     let stream = format!(
         r#"[
           {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
           {{"version":"v0.9","updateDataModel":{{"surfaceId":"s","path":"/items",
             "value":[{}]}}}},
           {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
-            {{"id":"root","component":"Column","children":[{ten}]}},
-            {{"id":"a","component":"Column","children":{{"componentId":"b","path":"/items"}}}},
-            {{"id":"b","component":"Column","children":[{twenty}]}},
+            {{"id":"root","component":"Column","children":[{forty}]}},
+            {{"id":"a","component":"Column","children":{{"componentId":"leaf","path":"/items"}}}},
             {{"id":"leaf","component":"Text","text":"x"}}
           ]}}}}
         ]"#,
@@ -259,9 +323,10 @@ fn the_child_budget_is_shared_between_static_and_template_children() {
 
     let built = count_elements(&rendered.element);
     assert!(
-        built < 100_000,
+        built < 20_000,
         "alternating static and template levels built {built} elements; the two \
-         arms must draw down one shared budget"
+         arms must draw down one shared budget (40 static + 6000 template is \
+         under either cap taken alone)"
     );
     assert!(
         rendered.notes.iter().any(|n| n.kind == NoteKind::Truncated),

@@ -29,8 +29,13 @@ const MAX_DEPTH: usize = 16;
 /// name it either this way or with the bare id `basic`.
 const BASIC_CATALOG_URL: &str = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json";
 
-/// The most children one template expansion materializes.
-const MAX_TEMPLATE_CHILDREN: usize = 1000;
+/// The most children one child list materializes, template or static.
+///
+/// Shared by both arms of [`children_of`]. The template arm had it first;
+/// giving the static arm its own cap is what keeps one enormous list from
+/// spending the whole render's budget in document order and leaving every
+/// later sibling of the surface blank.
+const MAX_CHILDREN_PER_EXPANSION: usize = 1000;
 
 /// The most children one whole render materializes, from every source.
 ///
@@ -184,13 +189,27 @@ pub enum A2uiSignal {
     },
     /// Open a URL with the platform opener.
     ///
-    /// Safe to hand to `open(1)`, `xdg-open`, or the browser: the scheme is
-    /// one of [`OPENABLE_SCHEMES`], checked when the action was resolved.
-    /// A stream naming anything else never reaches here — it renders as an
-    /// inert control with a [`NoteKind::BlockedUrlScheme`] note — because
-    /// those openers launch whichever application registered the scheme,
-    /// and the stream that named it is only as trustworthy as whatever the
-    /// agent writing it last read.
+    /// Safe to hand to `open(1)`, `xdg-open`, or the browser, because those
+    /// openers launch whichever application registered the scheme, and the
+    /// stream that named it is only as trustworthy as whatever the agent
+    /// writing it last read.
+    ///
+    /// Two rules, not one. The scheme must be in [`OPENABLE_SCHEMES`]; and
+    /// a `mailto:` must additionally carry only the header fields a
+    /// generated link needs (`to`, `cc`, `bcc`, `subject`, `body`,
+    /// `in-reply-to`), with no CR or LF in their values — an allowed scheme
+    /// is not an allowed URL, since a mail client that honours an
+    /// attachment field will stage a local file the user never chose.
+    /// Field names and values are percent-decoded before either check.
+    ///
+    /// Both are enforced twice: where the renderer resolves the action (the
+    /// control renders visible but inert, with a
+    /// [`NoteKind::BlockedUrlScheme`] note), and again in
+    /// [`Surface::handle`], which refuses to emit this signal at all for a
+    /// URL that fails them. The second is what makes the guarantee a
+    /// property of this type rather than of the renderer's call graph:
+    /// [`A2uiMsg::OpenUrl`] is public, so a host can build one, replay one
+    /// from a log, or round-trip one through its own message type.
     OpenUrl(
         /// The URL, scheme-checked.
         String,
@@ -274,12 +293,19 @@ fn mailto_fields_are_safe(rest: &str) -> bool {
         .split('&')
         .filter(|pair| !pair.is_empty())
         .all(|pair| {
-            let raw = pair.split('=').next().unwrap_or(pair);
-            let name = percent_decode(raw);
-            let name = name.trim();
-            MAILTO_SAFE_FIELDS
+            let (raw_name, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
+            let name = percent_decode(raw_name);
+            let permitted = MAILTO_SAFE_FIELDS
                 .iter()
-                .any(|f| name.eq_ignore_ascii_case(f))
+                .any(|f| name.trim().eq_ignore_ascii_case(f));
+            // Naming a safe field is not enough: these values are written
+            // into message headers, and RFC 6068 §7 warns that a client
+            // doing so without sanitizing can be made to emit headers the
+            // URL never listed. A decoded CR or LF in `subject` is how
+            // `attach` gets added behind an allowlist that only ever
+            // inspected names — the encoded-value twin of the encoded-name
+            // hole this allowlist replaced.
+            permitted && !percent_decode(raw_value).contains(['\r', '\n'])
         })
 }
 
@@ -430,19 +456,35 @@ impl Ctx<'_> {
             .clone()
     }
 
-    /// Charges `wanted` children to the render-wide budget, returning how
-    /// many of them may actually be built.
+    /// Charges one component to the render-wide budget, returning whether
+    /// it may be built.
     ///
-    /// Both arms of [`children_of`] go through here rather than reading and
-    /// writing the cell themselves: the bound is on the *total*, so a
-    /// second call site that forgot to charge its children — which is
-    /// exactly how the static arm came to be unbounded — silently removes
-    /// the guarantee for every other one.
-    fn take_children(&self, wanted: usize) -> usize {
+    /// Called from [`render_by_id`] and nowhere else, because that is the
+    /// one function every materialized component passes through. Charging
+    /// at the *container* instead — which the first cut of this budget did,
+    /// metering only [`children_of`] — bounds nothing, because `Card`,
+    /// `Tabs`, `Modal` and `Button` reach their children by calling
+    /// `render_by_id` directly. Each of those was an uncharged multiplier
+    /// on top of a charged one: a `Card` chain multiplies the ceiling by
+    /// its depth, and a `Modal` (trigger *and* content) by two per level.
+    /// A bound with four ways around it is not a bound, and the way to stop
+    /// writing a fifth is to charge where the work actually happens.
+    fn charge_child(&self) -> bool {
         let budget = self.child_budget.get();
-        let allowed = wanted.min(budget);
-        self.child_budget.set(budget - allowed);
-        allowed
+        if budget == 0 {
+            return false;
+        }
+        self.child_budget.set(budget - 1);
+        true
+    }
+
+    /// How many more components this render may materialize.
+    ///
+    /// Read-only: [`children_of`] uses it to avoid walking a hundred
+    /// thousand ids to build a hundred thousand refusals. The charge itself
+    /// happens in [`Ctx::charge_child`].
+    fn remaining_children(&self) -> usize {
+        self.child_budget.get()
     }
 
     /// Reports children dropped to stay inside the render-wide budget.
@@ -1426,6 +1468,20 @@ fn render_by_id(ctx: &Ctx, id: &str, scope: Option<&str>, depth: usize) -> Eleme
         );
         return placeholder(format!("[missing: {id}]"), ctx.theme);
     };
+    // Every materialized component is charged here, which is the only place
+    // all of them pass through. See [`Ctx::charge_child`] for why charging
+    // at the container instead left four ways around the bound.
+    if !ctx.charge_child() {
+        ctx.note(
+            id,
+            NoteKind::Truncated,
+            format!(
+                "this render reached its {MAX_RENDERED_CHILDREN}-component budget; \
+                 {id:?} and anything below it were not built (nested containers multiply)"
+            ),
+        );
+        return placeholder(format!("[budget: {id}]"), ctx.theme);
+    }
     ctx.path_stack.borrow_mut().push(id.to_owned());
     let el = render_component(ctx, component, scope, depth);
     ctx.path_stack.borrow_mut().pop();
@@ -1445,13 +1501,29 @@ fn children_of(
 ) -> Vec<Element<A2uiMsg>> {
     match list {
         ChildList::Static(ids) => {
-            // Charged to the same budget as a template expansion. A static
-            // list is enumerated in the stream, so its own length is bounded
-            // by the document — but the *product* across nesting levels is
-            // not, and that is what this bounds.
-            let allowed = ctx.take_children(ids.len());
-            if allowed < ids.len() {
-                ctx.note_children_dropped(id, ids.len() - allowed);
+            // The same two caps a template expansion gets, and for the same
+            // reasons. The per-expansion one keeps a single enormous list
+            // from spending the whole render's budget in document order and
+            // leaving every later sibling blank; the render-wide one bounds
+            // the product across nesting levels. Only the first is applied
+            // here — the budget itself is charged per component in
+            // `render_by_id`; this merely avoids walking a list to build
+            // refusals nobody can see.
+            if ids.len() > MAX_CHILDREN_PER_EXPANSION {
+                ctx.note(
+                    id,
+                    NoteKind::Truncated,
+                    format!(
+                        "{} static children exceed the cap ({MAX_CHILDREN_PER_EXPANSION}); \
+                         extra children dropped",
+                        ids.len()
+                    ),
+                );
+            }
+            let wanted = ids.len().min(MAX_CHILDREN_PER_EXPANSION);
+            let allowed = wanted.min(ctx.remaining_children());
+            if allowed < wanted {
+                ctx.note_children_dropped(id, wanted - allowed);
             }
             ids[..allowed]
                 .iter()
@@ -1467,12 +1539,13 @@ fn children_of(
                 );
                 return Vec::new();
             };
-            if items.len() > MAX_TEMPLATE_CHILDREN {
+            if items.len() > MAX_CHILDREN_PER_EXPANSION {
                 ctx.note(
                     id,
                     NoteKind::Truncated,
                     format!(
-                        "{} template items exceed the cap ({MAX_TEMPLATE_CHILDREN}); extra items dropped",
+                        "{} template items exceed the cap ({MAX_CHILDREN_PER_EXPANSION}); \
+                         extra items dropped",
                         items.len()
                     ),
                 );
@@ -1480,8 +1553,8 @@ fn children_of(
             // Per-expansion cap, then the render-wide one: nesting templates
             // over the same list multiplies, and each level alone is
             // perfectly reasonable.
-            let wanted = items.len().min(MAX_TEMPLATE_CHILDREN);
-            let allowed = ctx.take_children(wanted);
+            let wanted = items.len().min(MAX_CHILDREN_PER_EXPANSION);
+            let allowed = wanted.min(ctx.remaining_children());
             if allowed < wanted {
                 ctx.note_children_dropped(id, wanted - allowed);
             }
@@ -1544,10 +1617,6 @@ fn apply_flex(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per catalog component; splitting would scatter the mapping"
-)]
 /// Renders one component.
 ///
 /// Split in two, and the split is load-bearing rather than cosmetic. This
@@ -2187,6 +2256,20 @@ fn render_leaf(ctx: &Ctx, component: &Component, scope: Option<&str>) -> Element
             );
             placeholder(format!("[{name}]"), theme)
         }
+        // The container kinds, which `render_component` handles before it
+        // delegates here — so this arm is unreachable today.
+        //
+        // It degrades instead of asserting that, and the difference is the
+        // whole point. `render_component` dispatches containers explicitly
+        // and sends everything else here with a `_` arm, which means adding
+        // a `Kind` to the catalog compiles there and fails only *here*. The
+        // compiler therefore walks the next author straight to this arm,
+        // where the tidy-looking fix is to add the new name to the list —
+        // and an `unreachable!` would turn that into a process panic on any
+        // stream using the feature, in a crate whose premise is that
+        // agent-supplied input degrades with a note and never aborts.
+        // Rendering a placeholder makes the mistake cost a visible
+        // `[unmapped: id]` and a `broken` note instead.
         Kind::Row { .. }
         | Kind::Column { .. }
         | Kind::List { .. }
@@ -2194,7 +2277,14 @@ fn render_leaf(ctx: &Ctx, component: &Component, scope: Option<&str>) -> Element
         | Kind::Tabs { .. }
         | Kind::Modal { .. }
         | Kind::Button { .. } => {
-            unreachable!("container kinds are dispatched by render_component")
+            ctx.note(
+                id,
+                NoteKind::MalformedComponent,
+                "component kind reached the leaf renderer, which cannot map it; \
+                 it renders as a placeholder (a container kind is missing from \
+                 render_component's dispatch)",
+            );
+            placeholder(format!("[unmapped: {id}]"), theme)
         }
     }
 }

