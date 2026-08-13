@@ -695,7 +695,11 @@ fn open_url_refuses_mailto_fields_that_are_not_plainly_safe() {
         // or LF inside a permitted field smuggles one in behind it — the
         // encoded-value twin of the encoded-name hole above.
         "mailto:victim@example.com?subject=Hi%0D%0Aattach=/Users/u/.ssh/id_rsa",
-        "mailto:victim@example.com?body=hello%0Abcc=attacker@example.com",
+        "mailto:victim@example.com?cc=a@b%0D%0Abcc=attacker@example.com",
+        "mailto:victim@example.com?in-reply-to=%3Cx@y%3E%0D%0Aattach=/etc/passwd",
+        // No `?` at all: the address half is percent-encodable too, and
+        // checking only the query missed this entirely.
+        "mailto:victim@example.com%0D%0Aattach=/Users/u/.ssh/id_rsa",
     ] {
         let stream = format!(
             r#"[
@@ -737,6 +741,13 @@ fn open_url_still_composes_ordinary_mail() {
         "mailto:someone@example.com?in-reply-to=%3Cabc@example.com%3E",
         // Empty query, and a bare address with a trailing '?'.
         "mailto:someone@example.com?",
+        // Verbatim from RFC 6068 §6.1: `%0D%0A` is how the spec says to
+        // write a line break in a *body*, so refusing it — which an
+        // earlier cut of the CR/LF rule did, by banning line breaks in
+        // every field — rejects a conformant multi-line mail link and
+        // blames the scheme. A body cannot inject a header; it is the
+        // payload, and everything after the header block belongs to it.
+        "mailto:infobot@example.com?body=send%20current-issue%0D%0Asend%20index",
     ] {
         let stream = format!(
             r#"[
@@ -842,15 +853,34 @@ fn the_public_url_check_matches_what_the_renderer_does() {
             !fenestra_a2ui::is_openable_url(url),
             "{url} must be refused"
         );
-        // And the trap the export exists to close: a scheme test alone
-        // accepts the mailto cases above, which is why a host must not
-        // re-derive this from OPENABLE_SCHEMES.
-        let scheme_only = fenestra_a2ui::OPENABLE_SCHEMES
+    }
+
+    // And the trap the export exists to close, stated as a property rather
+    // than a tautology: there is at least one URL a scheme-membership test
+    // accepts and `is_openable_url` refuses. Written the other way first —
+    // `!scheme_only || url.starts_with("mailto:")` over the loop above — it
+    // could not fail for any fixture and would have kept passing had
+    // `is_openable_url` been reduced to bare scheme membership.
+    let scheme_only = |url: &str| {
+        fenestra_a2ui::OPENABLE_SCHEMES
             .iter()
-            .any(|s| url.starts_with(&format!("{s}:")));
+            .any(|s| url.starts_with(&format!("{s}:")))
+    };
+    let divergent = [
+        "mailto:a@example.com?attach=/etc/passwd",
+        "mailto:a@example.com?%61ttach=/etc/passwd",
+        "mailto:a@example.com?subject=Hi%0D%0Aattach=/etc/passwd",
+        "mailto:victim@example.com%0D%0Aattach=/etc/passwd",
+    ];
+    for url in divergent {
         assert!(
-            !scheme_only || url.starts_with("mailto:"),
-            "{url} should not have passed a scheme-only test"
+            scheme_only(url),
+            "{url} must pass a scheme test, or it proves nothing about the gap"
+        );
+        assert!(
+            !fenestra_a2ui::is_openable_url(url),
+            "{url} passes a scheme test and must still be refused — this is the \
+             whole reason a host cannot re-derive the rule from OPENABLE_SCHEMES"
         );
     }
 }

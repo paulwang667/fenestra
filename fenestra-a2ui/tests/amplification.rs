@@ -20,7 +20,7 @@ fn count_elements<Msg>(el: &Element<Msg>) -> usize {
 
 /// Finding 1: nested templates multiply, and only each factor was capped.
 ///
-/// `MAX_TEMPLATE_CHILDREN` bounds one expansion at 1000. Nothing bounded
+/// `MAX_CHILDREN_PER_EXPANSION` bounds one expansion at 1000. Nothing bounded
 /// the *product*: an absolute template path is scope-invariant by design
 /// (that is the fix for `//`-corrupted pointers), so every level of nesting
 /// can expand the same array again, and cycle detection does not fire
@@ -162,17 +162,27 @@ fn containers_that_bypass_children_of_are_charged_too() {
 /// A strictly linear chain, one child per level: no template, no fan-out,
 /// nothing amplified. The only variable is depth.
 ///
-/// It runs on an explicitly sized thread, at **half** the 2 MiB that
-/// `std::thread` and tokio's blocking pool give by default, so that the
-/// pass carries a 2x margin rather than merely being true today. Two
-/// reasons for the margin. The harness's own main thread is 8 MiB and
-/// would have hidden the original bug for another four levels, so a test
-/// that inherits its stack tests nothing; and a stack overflow `abort()`s
-/// rather than unwinding, which kills the whole test binary and reports as
-/// every test in the file failing on a signal, pointing at nothing — the
-/// `.expect` message below never gets to print. Failing at half the real
-/// stack means a frame that grows again shows up here while production
-/// still has room, instead of both giving out at once.
+/// It runs on an explicitly sized thread — 2 MiB, matching what
+/// `std::thread` and tokio's blocking pool give by default — because the
+/// harness's own main thread is 8 MiB and would have hidden the original
+/// bug for another four levels. A test that inherits the harness stack
+/// tests nothing.
+///
+/// **The margin is thin, and this test does not widen it.** Measured with
+/// `FENESTRA_PROBE_STACK` (which overrides the size below), the renderer
+/// needs between 1.5 and 2 MiB at `MAX_DEPTH`: it renders at 2048 KiB and
+/// overflows at 1536. Running at half would therefore abort rather than
+/// prove headroom — that was tried. So this pins the real configuration,
+/// and the honest reading of a pass is "the shipped default still works",
+/// not "there is room to spare". Raising `MAX_DEPTH`, or growing a
+/// recursive arm, needs a fresh measurement; ARCHITECTURE.md records where
+/// the remaining cost lives.
+///
+/// One caveat on the failure mode: a stack overflow `abort()`s rather than
+/// unwinding, so a regression kills the whole test binary and reports as
+/// every test in this file failing on a signal, pointing at nothing — the
+/// `.expect` message below never gets to print. If that is what CI shows,
+/// this is the test to suspect first.
 #[test]
 fn renders_at_the_full_depth_cap() {
     // `MAX_DEPTH` is private; this mirrors it deliberately, so that raising
@@ -232,6 +242,107 @@ fn renders_at_the_full_depth_cap() {
         .expect("rendering a surface at the documented depth cap must not abort the process");
 
     assert!(built > CAP, "expected a real chain, built {built} elements");
+}
+
+/// The same depth cap, through the *expensive* recursive arms.
+///
+/// `renders_at_the_full_depth_cap` uses a `Column` chain, which is the
+/// cheapest thing on the recursive path — and the per-level cost is what
+/// this whole area is about, so the cheapest arm is the least informative
+/// one to pin. `Modal` recurses twice per level (trigger and content) with
+/// a `modal(..).child(..).on_close(..)` builder chain and a `col().children`
+/// around it; `Card` and `Tabs` each carry their own; a `Button` with a
+/// non-Text child recurses after building its checks, label, variant and
+/// message. All are constructible from ordinary JSON and all sit inside
+/// `MAX_DEPTH`, so a chain of them is a surface a stream can ask for and
+/// nothing was watching it.
+///
+/// Modals are alternated with Cards so each level pays a Modal's two
+/// recursions plus a Card's builder chain.
+#[test]
+fn the_expensive_recursive_arms_also_render_at_the_full_depth_cap() {
+    const CAP: usize = 16;
+
+    let mut components: Vec<String> = Vec::new();
+    for i in 0..CAP {
+        let next = if i + 1 == CAP {
+            "leaf".to_owned()
+        } else {
+            format!("lvl{}", i + 1)
+        };
+        let id = if i == 0 {
+            "root".to_owned()
+        } else {
+            format!("lvl{i}")
+        };
+        if i % 2 == 0 {
+            // Chained through the *trigger*, which a Modal always renders;
+            // its `content` recurses only while the dialog is open, so a
+            // chain built through `content` stops at the first level and
+            // reports two elements — which is what the first cut of this
+            // test did, and why it is worth saying here.
+            components.push(format!(
+                r#"{{"id":"{id}","component":"Modal","trigger":"{next}","content":"body{i}"}}"#
+            ));
+            components.push(format!(
+                r#"{{"id":"body{i}","component":"Text","text":"dialog"}}"#
+            ));
+        } else {
+            components.push(format!(
+                r#"{{"id":"{id}","component":"Card","child":"{next}"}}"#
+            ));
+        }
+    }
+    components.push(r#"{"id":"leaf","component":"Text","text":"deep"}"#.to_owned());
+    let stream = format!(
+        r#"[
+          {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+          {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[{}]}}}}
+        ]"#,
+        components.join(",")
+    );
+
+    let stack: usize = std::env::var("FENESTRA_PROBE_STACK")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2 * 1024 * 1024);
+    let built = std::thread::Builder::new()
+        .stack_size(stack)
+        .spawn(move || {
+            let client = apply(&stream);
+            let rendered = client
+                .surface("s")
+                .expect("surface")
+                .render(&Theme::light());
+            assert!(
+                !rendered.notes.iter().any(|n| n.kind == NoteKind::DepthCap),
+                "the cap refused a chain it permits: {:?}",
+                rendered.notes
+            );
+            (count_elements(&rendered.element), rendered.notes)
+        })
+        .expect("spawn")
+        .join()
+        .expect(
+            "a Modal/Card chain at the documented depth cap must not abort the process — \
+             the Column chain passing does not cover the arms with the largest frames",
+        );
+    let (built, notes) = built;
+
+    // Element count is the wrong proxy for depth here, and finding that out
+    // is worth recording: a *closed* Modal returns its trigger and adds no
+    // element of its own, so sixteen levels of Modal/Card come back as ten
+    // elements. What proves the recursion ran the whole way is that the
+    // deepest Modal in the chain rendered — it can only have produced a note
+    // by having been reached — together with the absence of a DepthCap note
+    // above.
+    let deepest_modal = format!("lvl{}", CAP - 2);
+    assert!(
+        notes.iter().any(|n| n.component_id == deepest_modal),
+        "the chain stopped short of {deepest_modal}, so this never exercised the \
+         depth it claims; built {built} elements, notes: {notes:?}"
+    );
+    assert!(built > 0, "nothing rendered at all");
 }
 
 /// The static sibling of the finding above, and the one it missed.
@@ -350,7 +461,7 @@ fn the_child_budget_is_shared_between_static_and_template_children() {
     assert!(
         built < 20_000,
         "alternating static and template levels built {built} elements; the two \
-         arms must draw down one shared budget (40 static + 6000 template is \
+         arms must draw down one shared budget (5100 static + 5000 template is \
          under either cap taken alone)"
     );
     assert!(
@@ -538,4 +649,54 @@ fn the_basic_catalog_is_not_foreign_by_either_name() {
             rendered.notes
         );
     }
+}
+
+/// A refusal is work too, so it has to be charged.
+///
+/// The budget's first cut charged *after* the cycle, depth-cap and
+/// missing-component early returns — each of which builds a placeholder.
+/// That left the bound bypassable roughly a thousandfold: a `Column` naming
+/// one undefined id a thousand times costs a single charge and builds a
+/// thousand `[missing: ..]` placeholders, and every charged component can
+/// host another such list. 1000 x 1000 from ~20 KB of JSON, with the
+/// budget reporting 1001 of 10 000 spent.
+#[test]
+fn refusals_are_charged_to_the_budget_too() {
+    let thousand = |id: &str| {
+        (0..1000)
+            .map(|_| format!("\"{id}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let stream = format!(
+        r#"[
+          {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+          {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+            {{"id":"root","component":"Column","children":[{}]}},
+            {{"id":"a","component":"Column","children":[{}]}}
+          ]}}}}
+        ]"#,
+        thousand("a"),
+        thousand("zz"),
+    );
+
+    let client = apply(&stream);
+    let started = Instant::now();
+    let rendered = client
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
+    let elapsed = started.elapsed();
+
+    let built = count_elements(&rendered.element);
+    assert!(
+        built < 40_000,
+        "{built} elements from a stream naming one undefined id; a placeholder \
+         is an Element and two Strings, so a refusal has to be charged like \
+         anything else this builds"
+    );
+    assert!(
+        elapsed.as_secs() < 5,
+        "rendering took {elapsed:?}; refusals must not be a free multiplier"
+    );
 }

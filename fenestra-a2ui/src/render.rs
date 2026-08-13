@@ -197,7 +197,8 @@ pub enum A2uiSignal {
     /// Two rules, not one. The scheme must be in [`OPENABLE_SCHEMES`]; and
     /// a `mailto:` must additionally carry only the header fields a
     /// generated link needs (`to`, `cc`, `bcc`, `subject`, `body`,
-    /// `in-reply-to`), with no CR or LF in their values — an allowed scheme
+    /// `in-reply-to`), with no CR or LF in the address or in the values of
+    /// the ones that become headers — an allowed scheme
     /// is not an allowed URL, since a mail client that honours an
     /// attachment field will stage a local file the user never chose.
     /// Field names and values are percent-decoded before either check.
@@ -252,6 +253,19 @@ pub const OPENABLE_SCHEMES: &[&str] = &["http", "https", "mailto"];
 /// URL unopenable rather than being passed through and hoped about.
 const MAILTO_SAFE_FIELDS: &[&str] = &["to", "cc", "bcc", "subject", "body", "in-reply-to"];
 
+/// The subset of [`MAILTO_SAFE_FIELDS`] whose value becomes a message
+/// *header*, and therefore may not contain a line break.
+///
+/// `body` is deliberately absent, and that is not an oversight: RFC 6068
+/// §6.1's own worked example is
+/// `mailto:infobot@example.com?body=send%20current-issue%0D%0Asend%20index`,
+/// where `%0D%0A` is how the spec says to write a newline in a message
+/// body. Banning CR/LF everywhere — which the first cut of this check did —
+/// refuses a conformant multi-line mail link and tells its author the
+/// scheme is unopenable. A body cannot inject a header; it *is* the payload,
+/// and everything after the header block belongs to it.
+const MAILTO_HEADER_FIELDS: &[&str] = &["to", "cc", "bcc", "subject", "in-reply-to"];
+
 /// Whether `url` is something a host may hand to a platform opener — the
 /// renderer's own decision, in full.
 ///
@@ -265,7 +279,9 @@ const MAILTO_SAFE_FIELDS: &[&str] = &["to", "cc", "bcc", "subject", "body", "in-
 ///
 /// The rules: the scheme must be one of [`OPENABLE_SCHEMES`]; and a
 /// `mailto:` may carry only the header fields a generated link needs, with
-/// no CR or LF in their values. Names and values are percent-decoded
+/// no CR or LF in the address or in the values of the ones that become
+/// headers (`body` may contain them; RFC 6068 §6.1 requires that). Names
+/// and values are percent-decoded
 /// first. A URL with no scheme at all is refused too — `open(1)` and
 /// `xdg-open` both treat a bare path as a local file, so a "relative" URL
 /// is a `file:` in disguise, and a surface meaning to link to the web can
@@ -307,15 +323,32 @@ fn is_openable(url: &str) -> bool {
     true
 }
 
-/// Whether every header field in a `mailto:` body is one a generated link
-/// may carry (see [`MAILTO_SAFE_FIELDS`]).
+/// Whether a `mailto:` carries only things a generated link may carry.
 ///
-/// A URL with no query carries no fields and is safe. An unparseable or
-/// unknown field fails closed: a name that percent-decodes to something
-/// containing its own `&` or `=` does not match any allowed field, so a
+/// Two halves, because a `mailto:` has two. The address part (RFC 6068's
+/// `to`, everything before `?`) is checked for line breaks, and the query
+/// part is checked field by field against [`MAILTO_SAFE_FIELDS`].
+///
+/// Checking only the query — which the first cut of this did, by discarding
+/// the address with `let Some((_, query))` — missed the simpler attack
+/// entirely: `mailto:victim@example.com%0D%0Aattach=/path` has no `?` at
+/// all, so the function returned `true` without inspecting anything. The
+/// address is `pct-encoded`-capable in the same way the fields are, so it
+/// smuggles a header just as well and needs the same rule.
+///
+/// An unparseable or unknown field fails closed: a name that percent-decodes
+/// to something containing its own `&` or `=` matches no allowed field, so a
 /// stream cannot smuggle a second field inside the first one's name.
 fn mailto_fields_are_safe(rest: &str) -> bool {
-    let Some((_, query)) = rest.split_once('?') else {
+    let (addr, query) = match rest.split_once('?') {
+        Some((addr, query)) => (addr, Some(query)),
+        None => (rest, None),
+    };
+    // The address is a header value like any other.
+    if has_line_break(addr) {
+        return false;
+    }
+    let Some(query) = query else {
         return true;
     };
     query
@@ -324,18 +357,29 @@ fn mailto_fields_are_safe(rest: &str) -> bool {
         .all(|pair| {
             let (raw_name, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
             let name = percent_decode(raw_name);
-            let permitted = MAILTO_SAFE_FIELDS
+            let name = name.trim();
+            if !MAILTO_SAFE_FIELDS
                 .iter()
-                .any(|f| name.trim().eq_ignore_ascii_case(f));
-            // Naming a safe field is not enough: these values are written
-            // into message headers, and RFC 6068 §7 warns that a client
-            // doing so without sanitizing can be made to emit headers the
-            // URL never listed. A decoded CR or LF in `subject` is how
-            // `attach` gets added behind an allowlist that only ever
-            // inspected names — the encoded-value twin of the encoded-name
-            // hole this allowlist replaced.
-            permitted && !percent_decode(raw_value).contains(['\r', '\n'])
+                .any(|f| name.eq_ignore_ascii_case(f))
+            {
+                return false;
+            }
+            // Naming a safe field is not enough for the ones that become
+            // headers: RFC 6068 §7 warns that a client writing them out
+            // without sanitizing can be made to emit fields the URL never
+            // listed, and a decoded CR or LF in `subject` is how `attach`
+            // gets added behind an allowlist that only inspected names.
+            // `body` is exempt — see [`MAILTO_HEADER_FIELDS`].
+            !MAILTO_HEADER_FIELDS
+                .iter()
+                .any(|f| name.eq_ignore_ascii_case(f))
+                || !has_line_break(raw_value)
         })
+}
+
+/// Whether `raw` contains a CR or LF once percent-decoding is applied.
+fn has_line_break(raw: &str) -> bool {
+    percent_decode(raw).contains(['\r', '\n'])
 }
 
 /// Percent-decodes a `mailto:` header field name.
@@ -425,7 +469,7 @@ struct Ctx<'a> {
     blocked_trigger: std::cell::Cell<bool>,
     /// How many more children this render may build, from any source.
     ///
-    /// [`MAX_TEMPLATE_CHILDREN`] bounds one template expansion; this bounds
+    /// [`MAX_CHILDREN_PER_EXPANSION`] bounds one child list; this bounds
     /// the product of every nesting level, static lists included. An
     /// absolute template path is scope-invariant by design, so nesting
     /// templates over the same list multiplies without ever repeating a
@@ -699,8 +743,9 @@ impl Surface {
                         "",
                         NoteKind::BlockedUrlScheme,
                         format!(
-                            "openUrl {} is not a scheme this renderer will open; \
-                             the signal was not emitted",
+                            "openUrl {} is not a URL this renderer will open (the scheme, or \
+                             for mailto: the header fields it carries); the signal \
+                             was not emitted",
                             quoted(&url)
                         ),
                     ));
@@ -1483,6 +1528,26 @@ fn placeholder<Msg: 'static>(label: String, theme: &Theme) -> Element<Msg> {
 }
 
 fn render_by_id(ctx: &Ctx, id: &str, scope: Option<&str>, depth: usize) -> Element<A2uiMsg> {
+    // Charged first, before every early return below, because each of those
+    // returns builds a placeholder — and a placeholder is an `Element` and
+    // two `String`s, which is work an untrusted stream can ask for. Charging
+    // after them (the first cut of this) left the bound bypassable roughly
+    // a thousandfold: a `Column` naming one undefined id a thousand times
+    // costs one charge and builds a thousand `[missing: ..]` placeholders,
+    // and every charged component can host another such list. The same free
+    // multiplier sat behind the cycle and depth-cap returns. What the budget
+    // has to bound is *calls that build something*, which is all of them.
+    if !ctx.charge_child() {
+        ctx.note(
+            id,
+            NoteKind::Truncated,
+            format!(
+                "this render reached its {MAX_RENDERED_CHILDREN}-component budget; \
+                 {id:?} and anything below it were not built (nested containers multiply)"
+            ),
+        );
+        return placeholder(format!("[budget: {id}]"), ctx.theme);
+    }
     if ctx.path_stack.borrow().iter().any(|p| p == id) {
         ctx.note(
             id,
@@ -1507,20 +1572,6 @@ fn render_by_id(ctx: &Ctx, id: &str, scope: Option<&str>, depth: usize) -> Eleme
         );
         return placeholder(format!("[missing: {id}]"), ctx.theme);
     };
-    // Every materialized component is charged here, which is the only place
-    // all of them pass through. See [`Ctx::charge_child`] for why charging
-    // at the container instead left four ways around the bound.
-    if !ctx.charge_child() {
-        ctx.note(
-            id,
-            NoteKind::Truncated,
-            format!(
-                "this render reached its {MAX_RENDERED_CHILDREN}-component budget; \
-                 {id:?} and anything below it were not built (nested containers multiply)"
-            ),
-        );
-        return placeholder(format!("[budget: {id}]"), ctx.theme);
-    }
     ctx.path_stack.borrow_mut().push(id.to_owned());
     let el = render_component(ctx, component, scope, depth);
     ctx.path_stack.borrow_mut().pop();
@@ -2432,8 +2483,9 @@ fn action_msg(ctx: &Ctx, id: &str, action: &Action, scope: Option<&str>) -> A2ui
                     id,
                     NoteKind::BlockedUrlScheme,
                     format!(
-                        "openUrl {} is not a scheme this renderer will open; \
-                         the control does nothing",
+                        "openUrl {} is not a URL this renderer will open (the scheme, \
+                         or for mailto: the header fields it carries); the control \
+                         does nothing",
                         quoted(&url)
                     ),
                 );

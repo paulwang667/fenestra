@@ -4145,9 +4145,33 @@ expansions to a render-wide budget and static child lists to nothing at
 all, so the cheaper amplifier was the unbounded one — a static list needs no
 data model to expand against. Three `Column`s naming the next one fifty
 times is 127 551 components from a kilobyte of JSON. Both arms now draw on
-one `MAX_RENDERED_CHILDREN`, through `Ctx::take_children`, because two
+one `MAX_RENDERED_CHILDREN`, charged per component in `render_by_id`
+via `Ctx::charge_child`, because two
 counters can be played against each other by alternating the kinds of child
 list.
+
+**A refusal is work too.** The per-component charge landed *after*
+`render_by_id`'s cycle, depth-cap and missing-component early returns —
+each of which builds a placeholder, which is an `Element` and two `String`s.
+That left the bound bypassable about a thousandfold: a `Column` naming one
+undefined id a thousand times costs a single charge and builds a thousand
+`[missing: ..]` placeholders, and every charged component can host another
+such list. Measured against that commit, 2 001 001 elements from 11 KB of
+JSON while the budget reported 1001 of 10 000 spent. The charge is the first
+thing the function does now. The general form: a bound on "components built"
+has to count everything the function can be made to allocate, not the
+subset that reaches the happy path.
+
+**`mailto:` has two halves, and only one was being read.** The field check
+discarded everything before `?`, so `mailto:victim@example.com%0D%0Aattach=…`
+— no query at all — returned safe without inspecting anything. The address
+is `pct-encoded`-capable exactly like the fields, so it smuggles a header
+just as well. Both halves are checked now. In the other direction, banning
+CR/LF in *every* field was too much: RFC 6068 §6.1's own example is
+`?body=send%20current-issue%0D%0Asend%20index`, where `%0D%0A` is how the
+spec spells a newline in a body. A body cannot inject a header — it is the
+payload — so the ban applies to the fields that become headers and not to
+`body`.
 
 **An allowlist, or you are enumerating the attacker's options.**
 `mailto:` URLs were checked against a blocklist of `attach` and
