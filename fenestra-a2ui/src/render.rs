@@ -227,6 +227,12 @@ pub enum A2uiSignal {
 /// and `sms:` are the obvious candidates), and an array bakes its length
 /// into the public type, so adding one would be a breaking change for no
 /// reason.
+///
+/// **This is necessary and not sufficient.** A `mailto:` whose scheme is
+/// on this list can still be refused, over its header fields — so a host
+/// re-validating a URL should call [`is_openable_url`], which is the whole
+/// rule, rather than testing membership here and believing it has
+/// reproduced the renderer's decision.
 pub const OPENABLE_SCHEMES: &[&str] = &["http", "https", "mailto"];
 
 /// The `mailto:` header fields a generated link may carry.
@@ -245,6 +251,29 @@ pub const OPENABLE_SCHEMES: &[&str] = &["http", "https", "mailto"];
 /// else — including a field this build simply has not heard of — makes the
 /// URL unopenable rather than being passed through and hoped about.
 const MAILTO_SAFE_FIELDS: &[&str] = &["to", "cc", "bcc", "subject", "body", "in-reply-to"];
+
+/// Whether `url` is something a host may hand to a platform opener — the
+/// renderer's own decision, in full.
+///
+/// Public because [`OPENABLE_SCHEMES`] on its own is a trap for the host
+/// that tries to re-derive this. A scheme test alone accepts
+/// `mailto:a@b?%61ttach=/Users/u/.ssh/id_rsa`, which this refuses; the
+/// scheme is necessary and not sufficient, and the rest of the rule lives
+/// in private constants a caller cannot see. Any host re-validating a URL
+/// it replayed, logged, or built itself should call this rather than
+/// reimplement it and drift.
+///
+/// The rules: the scheme must be one of [`OPENABLE_SCHEMES`]; and a
+/// `mailto:` may carry only the header fields a generated link needs, with
+/// no CR or LF in their values. Names and values are percent-decoded
+/// first. A URL with no scheme at all is refused too — `open(1)` and
+/// `xdg-open` both treat a bare path as a local file, so a "relative" URL
+/// is a `file:` in disguise, and a surface meaning to link to the web can
+/// say so.
+#[must_use]
+pub fn is_openable_url(url: &str) -> bool {
+    is_openable(url)
+}
 
 /// Whether `url` is something the host may hand to a platform opener.
 ///
@@ -587,6 +616,16 @@ impl Surface {
     /// Returns every signal the message produced, in order — usually none
     /// or one, but an [`A2uiMsg::Many`] (a Modal trigger that is also a
     /// Button) can produce several.
+    ///
+    /// # Where this records its notes
+    ///
+    /// On the *surface* ([`Surface::notes`]), not on the [`Rendered`] value
+    /// from the last [`Surface::render`] — the two lists are disjoint and
+    /// stay that way on purpose, since render notes are rebuilt every frame
+    /// and these accumulate across interactions. A caller checking only
+    /// `Rendered::notes` will not see that an `OpenUrl` was refused here.
+    /// Read both, as `fenestra_render::render_a2ui` does; `any_broken` over
+    /// the concatenation is the honest one-line check.
     #[must_use = "these are the effects the host must carry out; dropping them silently discards \
                   every agent-bound event the interaction produced"]
     pub fn handle(&mut self, msg: A2uiMsg) -> Vec<A2uiSignal> {
@@ -1816,7 +1855,7 @@ fn render_component(
                     id,
                     NoteKind::Unreachable,
                     "button has no action it can carry out and opens nothing; rendered as a \
-                     disabled control",
+                         disabled control",
                 );
             }
             match label {

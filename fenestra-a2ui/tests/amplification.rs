@@ -88,11 +88,12 @@ fn nested_templates_cannot_multiply_without_bound() {
 /// the old accounting.
 #[test]
 fn containers_that_bypass_children_of_are_charged_too() {
-    let items: Vec<String> = (0..200).map(|i| i.to_string()).collect();
-    // A Card chain deep enough to matter, well inside MAX_DEPTH.
-    let mut cards: Vec<String> = (0..10)
+    // 1000 template rows, each hanging a 14-deep Card chain — 15 001
+    // components, of which the old accounting charged only the 1000.
+    let items: Vec<String> = (0..1000).map(|i| i.to_string()).collect();
+    let mut cards: Vec<String> = (0..14)
         .map(|i| {
-            let next = if i == 9 {
+            let next = if i == 13 {
                 "leaf".to_owned()
             } else {
                 format!("c{}", i + 1)
@@ -121,17 +122,24 @@ fn containers_that_bypass_children_of_are_charged_too() {
         .expect("surface")
         .render(&Theme::light());
 
-    let built = count_elements(&rendered.element);
-    assert!(
-        built < 20_000,
-        "a Card chain under every template row built {built} elements; Card, \
-         Tabs, Modal and Button reach children without going through \
-         children_of, so charging the container is not charging the render"
-    );
+    // The note is the discriminator, not the element count. Under the old
+    // accounting the 1000 template rows fit the budget with room to spare,
+    // so nothing was ever reported as dropped — while the 14 000 Cards
+    // hanging off them were built for free. A `Truncated` note here means
+    // the Cards were counted.
     assert!(
         rendered.notes.iter().any(|n| n.kind == NoteKind::Truncated),
-        "work dropped to stay inside the budget must be reported, got: {:?}",
+        "15 001 components were built without one being reported as dropped; \
+         Card, Tabs, Modal and Button reach children without going through \
+         children_of, so charging the container is not charging the render. \
+         Notes: {:?}",
         rendered.notes
+    );
+    let built = count_elements(&rendered.element);
+    assert!(
+        built < 30_000,
+        "the budget bounds components, and each refusal still costs a small \
+         placeholder; {built} elements is past what either accounts for"
     );
 }
 
@@ -152,10 +160,19 @@ fn containers_that_bypass_children_of_are_charged_too() {
 /// note, no error, and nothing for a caller to catch.
 ///
 /// A strictly linear chain, one child per level: no template, no fan-out,
-/// nothing amplified. The only variable is depth. It runs on an explicitly
-/// 2 MiB thread because that is what `std::thread` and tokio's blocking
-/// pool give by default — the test harness's own main thread is 8 MiB and
-/// would have hidden the bug for another four levels.
+/// nothing amplified. The only variable is depth.
+///
+/// It runs on an explicitly sized thread, at **half** the 2 MiB that
+/// `std::thread` and tokio's blocking pool give by default, so that the
+/// pass carries a 2x margin rather than merely being true today. Two
+/// reasons for the margin. The harness's own main thread is 8 MiB and
+/// would have hidden the original bug for another four levels, so a test
+/// that inherits its stack tests nothing; and a stack overflow `abort()`s
+/// rather than unwinding, which kills the whole test binary and reports as
+/// every test in the file failing on a signal, pointing at nothing — the
+/// `.expect` message below never gets to print. Failing at half the real
+/// stack means a frame that grows again shows up here while production
+/// still has room, instead of both giving out at once.
 #[test]
 fn renders_at_the_full_depth_cap() {
     // `MAX_DEPTH` is private; this mirrors it deliberately, so that raising
@@ -188,8 +205,12 @@ fn renders_at_the_full_depth_cap() {
         components.join(",")
     );
 
+    let stack: usize = std::env::var("FENESTRA_PROBE_STACK")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2 * 1024 * 1024);
     let built = std::thread::Builder::new()
-        .stack_size(2 * 1024 * 1024)
+        .stack_size(stack)
         .spawn(move || {
             let client = apply(&stream);
             let rendered = client
@@ -294,21 +315,25 @@ fn static_children_cannot_multiply_without_bound() {
 /// re-open the product this pair of tests exists to close.
 #[test]
 fn the_child_budget_is_shared_between_static_and_template_children() {
-    // Each arm stays *under* the budget on its own — 40 static children and
-    // 6000 template children — so only a shared counter can truncate this.
-    // (Written the other way first, with 12 000 static children, it passed
-    // identically against two separate per-arm budgets and proved nothing:
-    // the static arm blew its own ceiling unaided.)
-    let items: Vec<String> = (0..60).map(|i| i.to_string()).collect();
-    let forty = (0..40).map(|_| "\"a\"").collect::<Vec<_>>().join(",");
+    // 100 static -> 50 template each -> 1 static each: 5100 static children
+    // and 5000 template children, so *neither arm reaches the 10 000 budget
+    // on its own* and only a shared counter can truncate the 10 101 total.
+    //
+    // Both earlier shapes of this test were wrong in opposite directions:
+    // the first had 12 010 static children, which blows the cap unaided and
+    // so passed against two separate per-arm budgets; the second had 2441
+    // components total and never reached any cap at all.
+    let items: Vec<String> = (0..50).map(|i| i.to_string()).collect();
+    let hundred = (0..100).map(|_| "\"a\"").collect::<Vec<_>>().join(",");
     let stream = format!(
         r#"[
           {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
           {{"version":"v0.9","updateDataModel":{{"surfaceId":"s","path":"/items",
             "value":[{}]}}}},
           {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
-            {{"id":"root","component":"Column","children":[{forty}]}},
-            {{"id":"a","component":"Column","children":{{"componentId":"leaf","path":"/items"}}}},
+            {{"id":"root","component":"Column","children":[{hundred}]}},
+            {{"id":"a","component":"Column","children":{{"componentId":"b","path":"/items"}}}},
+            {{"id":"b","component":"Column","children":["leaf"]}},
             {{"id":"leaf","component":"Text","text":"x"}}
           ]}}}}
         ]"#,

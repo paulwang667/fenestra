@@ -812,6 +812,49 @@ fn a_handed_in_open_url_is_checked_before_it_becomes_a_signal() {
     }
 }
 
+/// The public checker is the renderer's whole rule, not the scheme half.
+///
+/// `OPENABLE_SCHEMES` is public and `is_openable` was not, which left a
+/// host re-validating a replayed URL with the only tool it had — scheme
+/// membership — and accepting exactly the strings the renderer refuses.
+#[test]
+fn the_public_url_check_matches_what_the_renderer_does() {
+    for url in [
+        "https://a2ui.org/spec",
+        "http://localhost:8080/preview",
+        "mailto:someone@example.com",
+        "mailto:someone@example.com?subject=Hi&body=there",
+    ] {
+        assert!(
+            fenestra_a2ui::is_openable_url(url),
+            "{url} is an ordinary link the renderer opens"
+        );
+    }
+    for url in [
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "/etc/passwd",
+        "mailto:a@example.com?attach=/etc/passwd",
+        "mailto:a@example.com?%61ttach=/etc/passwd",
+        "mailto:a@example.com?subject=Hi%0D%0Aattach=/etc/passwd",
+    ] {
+        assert!(
+            !fenestra_a2ui::is_openable_url(url),
+            "{url} must be refused"
+        );
+        // And the trap the export exists to close: a scheme test alone
+        // accepts the mailto cases above, which is why a host must not
+        // re-derive this from OPENABLE_SCHEMES.
+        let scheme_only = fenestra_a2ui::OPENABLE_SCHEMES
+            .iter()
+            .any(|s| url.starts_with(&format!("{s}:")));
+        assert!(
+            !scheme_only || url.starts_with("mailto:"),
+            "{url} should not have passed a scheme-only test"
+        );
+    }
+}
+
 /// One cause, one diagnosis. A blocked scheme records why the control is
 /// dead; the generic "no action it can carry out" note is a vaguer
 /// restatement of the same fact and must not accompany it.
