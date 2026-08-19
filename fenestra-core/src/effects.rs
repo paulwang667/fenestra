@@ -8,6 +8,8 @@
 //!   blended in OKLab so it stays vivid with no gray dead-zone.
 //! - [`grain`] — fine film grain from a seeded PRNG, to break up banding and
 //!   add a tactile paper texture.
+//! - [`vignette`] — a radial light falloff (the "desk lamp"), dithered so its
+//!   ramp never bands into concentric rings.
 //!
 //! The third common effect-family member, a scroll-edge fade, needs no new
 //! primitive: a `linear_gradient` from the chrome's surface color to its
@@ -133,6 +135,53 @@ pub fn grain(width: u32, height: u32, seed: u64, intensity: f32) -> Vec<u8> {
     out
 }
 
+/// A `width`×`height` RGBA8 radial vignette overlay: a single-color falloff,
+/// fully transparent at the center, ramping through `stops` (alphas at
+/// radius fractions 0.0, 0.5, 1.0, piecewise-linear) to the edge color at
+/// `radius` — a multiple of half the longer side, the same convention as
+/// [`radial_gradient`](crate::radial_gradient). Every pixel's alpha is
+/// ordered-dithered (±0.5 LSB, 4×4 Bayer), so the ramp quantizes into a fine
+/// dither density instead of concentric 8-bit rings: the falloff reads smooth
+/// at any display gain. Deterministic, so it golden-locks like the other
+/// fields. Overlay it above a grid or field to carve a light-dark falloff;
+/// hand the buffer to [`image_rgba8`](crate::image_rgba8).
+#[must_use]
+pub fn vignette(
+    width: u32,
+    height: u32,
+    center: (f32, f32),
+    radius: f32,
+    stops: [f32; 3],
+    edge: Color,
+) -> Vec<u8> {
+    let (w, h) = (width as usize, height as usize);
+    let mut out = vec![0u8; w * h * 4];
+    let r = radius * 0.5 * width.max(height) as f32;
+    if r <= 0.0 {
+        return out;
+    }
+    let (cx, cy) = (center.0 * w as f32, center.1 * h as f32);
+    let [er, eg, eb, _] = edge.components;
+    for py in 0..h {
+        for px in 0..w {
+            let dx = (px as f32 + 0.5) - cx;
+            let dy = (py as f32 + 0.5) - cy;
+            let t = (dx.hypot(dy) / r).clamp(0.0, 1.0);
+            let a = if t <= 0.5 {
+                stops[0] + (stops[1] - stops[0]) * (t * 2.0)
+            } else {
+                stops[1] + (stops[2] - stops[1]) * ((t - 0.5) * 2.0)
+            };
+            let i = (py * w + px) * 4;
+            out[i] = channel(er);
+            out[i + 1] = channel(eg);
+            out[i + 2] = channel(eb);
+            out[i + 3] = channel(a + dither_bias(px, py));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +245,29 @@ mod tests {
     #[test]
     fn grain_zero_intensity_is_transparent() {
         assert!(grain(8, 8, 1, 0.0).chunks_exact(4).all(|c| c[3] == 0));
+    }
+
+    #[test]
+    fn vignette_is_center_clear_rim_dark_and_deterministic() {
+        let c = crate::theme::oklch(0.2, 0.01, 250.0);
+        let make = || vignette(64, 48, (0.5, 0.5), 1.0, [0.0, 0.5, 0.9], c);
+        let buf = make();
+        assert_eq!(buf.len(), 64 * 48 * 4);
+        assert_eq!(buf, make(), "deterministic");
+        // Center (32, 24) is nearly transparent; the half-radius pixel is at
+        // the mid stop; the far pixel is at the edge stop.
+        assert!(px(&buf, 64, 32, 24)[3] <= 8, "center");
+        assert!(
+            (110..=140).contains(&px(&buf, 64, 16, 24)[3]),
+            "half radius"
+        );
+        assert!(px(&buf, 64, 0, 24)[3] >= 210, "rim");
+        // The rgb channels carry the edge color.
+        let want = c.to_rgba8();
+        let got = px(&buf, 64, 0, 24);
+        for ch in 0..3 {
+            let d = i32::from(got[ch]) - i32::from([want.r, want.g, want.b][ch]);
+            assert!(d.abs() <= 2, "channel {ch}: {got:?} vs {want:?}");
+        }
     }
 }
