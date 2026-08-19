@@ -27,6 +27,8 @@ use winit::event::{MouseScrollDelta, StartCause, WindowEvent};
 #[cfg(not(target_arch = "wasm32"))]
 use winit::event_loop::EventLoopProxy;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+#[cfg(target_os = "android")]
+use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::window::{Window, WindowId};
 
 use crate::ShellError;
@@ -72,6 +74,10 @@ pub struct WindowOptions {
     /// Custom faces registered on the runner's fonts before the first
     /// frame: design languages work in windows, not just headlessly.
     pub fonts: Vec<(fenestra_core::FamilyRole, Vec<u8>)>,
+    /// Android: the `AndroidApp` received in `android_main`, which winit
+    /// needs to bind the event loop to the activity.
+    #[cfg(target_os = "android")]
+    pub android_app: Option<winit::platform::android::activity::AndroidApp>,
 }
 
 impl WindowOptions {
@@ -86,6 +92,8 @@ impl WindowOptions {
             fullscreen: false,
             icon: None,
             fonts: Vec::new(),
+            #[cfg(target_os = "android")]
+            android_app: None,
         }
     }
 
@@ -130,6 +138,14 @@ impl WindowOptions {
     /// fonts (TTF/OTF bytes; see `Fonts::register`).
     pub fn with_font(mut self, role: fenestra_core::FamilyRole, data: Vec<u8>) -> Self {
         self.fonts.push((role, data));
+        self
+    }
+
+    /// Attaches the `AndroidApp` received in `android_main` so winit can
+    /// bind the event loop to the activity (Android only).
+    #[cfg(target_os = "android")]
+    pub fn with_android_app(mut self, app: winit::platform::android::activity::AndroidApp) -> Self {
+        self.android_app = Some(app);
         self
     }
 }
@@ -515,6 +531,22 @@ impl WindowShell {
     }
 }
 
+/// Builds the event loop for a windowed runner. On Android, winit requires
+/// the `AndroidApp` from `android_main` so the loop can bind to the activity.
+fn build_event_loop<E>(
+    options: &WindowOptions,
+) -> Result<EventLoop<E>, winit::error::EventLoopError> {
+    // Read on every target: the field it carries today is cfg'd out
+    // everywhere except Android.
+    let _ = options;
+    let mut builder = EventLoop::<E>::with_user_event();
+    #[cfg(target_os = "android")]
+    if let Some(app) = options.android_app.clone() {
+        builder.with_android_app(app);
+    }
+    builder.build()
+}
+
 // ------------------------------------------------------------- run_scene
 
 /// Opens a window and repaints via `paint(scene, logical_w, logical_h, bg)`
@@ -526,7 +558,7 @@ pub fn run_scene(
     background: Color,
     paint: impl FnMut(&mut Scene, f64, f64, Color) + 'static,
 ) -> Result<(), ShellError> {
-    let event_loop = EventLoop::new().map_err(ShellError::EventLoop)?;
+    let event_loop = build_event_loop(&options).map_err(ShellError::EventLoop)?;
     let mut app = SceneApp {
         shell: WindowShell::new(options, background),
         fragment: Scene::new(),
@@ -625,7 +657,7 @@ pub fn run_static(
     theme: Theme,
     view: impl Fn(&Theme) -> Element<()> + 'static,
 ) -> Result<(), ShellError> {
-    let event_loop = EventLoop::new().map_err(ShellError::EventLoop)?;
+    let event_loop = build_event_loop(&options).map_err(ShellError::EventLoop)?;
     let background = theme.bg;
     let mut fonts = Fonts::with_system();
     for (role, data) in &options.fonts {
@@ -803,9 +835,7 @@ pub fn run_app<A: App + 'static>(mut app: A, options: WindowOptions) -> Result<(
 where
     A::Msg: Send,
 {
-    let event_loop = EventLoop::<RunnerEvent>::with_user_event()
-        .build()
-        .map_err(ShellError::EventLoop)?;
+    let event_loop = build_event_loop::<RunnerEvent>(&options).map_err(ShellError::EventLoop)?;
     #[cfg(not(target_arch = "wasm32"))]
     let access_proxy = event_loop.create_proxy();
     let proxy = event_loop.create_proxy();

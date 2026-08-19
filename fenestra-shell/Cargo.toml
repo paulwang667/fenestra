@@ -27,6 +27,10 @@ serde_json.workspace = true
 accesskit_winit.workspace = true
 image.workspace = true
 pollster.workspace = true
+
+# The clipboard bridge has no Android backend (arboard supports X11/
+# Wayland, macOS, and Windows), so it stays out of Android builds.
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
 arboard.workspace = true
 
 # The native menu bar attaches on macOS (muda's safe path; see
@@ -39,3 +43,8 @@ muda.workspace = true
 wasm-bindgen-futures.workspace = true
 web-time.workspace = true
 web-sys.workspace = true
+
+# Android: winit exposes the `AndroidApp` the event loop binds to (see
+# `WindowOptions::with_android_app`) only behind this feature.
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { workspace = true, features = ["android-native-activity"] }
