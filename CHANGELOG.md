@@ -5,6 +5,20 @@
 An adversarial pass over the A2UI renderer. One crash, one unbounded
 expansion, and two checks that were narrower than the thing they guarded.
 
+### Added
+
+- **fenestra-shell builds for Android.** winit's Android backend binds
+  the event loop to the activity before it starts, and nothing in
+  `WindowOptions` carried the `AndroidApp` that `android_main`
+  receives, so none of the three windowed runners could create a loop
+  on Android at all. `WindowOptions` now takes the handle
+  (`with_android_app`), and `run_scene`, `run_static`, and `run_app`
+  build their loops through one helper that attaches it. The OS
+  clipboard falls back to core's in-memory implementation on Android,
+  where arboard has no backend. Verified on an Android 14 emulator: a
+  zero-Java `NativeActivity` packaging a cdylib probe renders a
+  wgpu/Vulkan scene through the patched shell.
+
 ### Fixed
 
 - **Rendering aborted the process at seven levels of nesting.**

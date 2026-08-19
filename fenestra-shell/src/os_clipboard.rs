@@ -1,14 +1,36 @@
 //! The OS clipboard (arboard), injected into `FrameState` by the windowed
 //! runner. Headless rendering keeps core's in-memory clipboard.
+//!
+//! Android has no arboard backend: fall back to the in-memory clipboard so
+//! in-app copy/paste still works (system-clipboard bridge is a no-op).
 
 use fenestra_core::Clipboard;
+#[cfg(target_os = "android")]
+use fenestra_core::MemoryClipboard;
 
+#[cfg(target_os = "android")]
+#[derive(Default)]
+pub struct OsClipboard(MemoryClipboard);
+
+#[cfg(target_os = "android")]
+impl Clipboard for OsClipboard {
+    fn get(&mut self) -> Option<String> {
+        self.0.get()
+    }
+
+    fn set(&mut self, text: String) {
+        self.0.set(text)
+    }
+}
+
+#[cfg(not(target_os = "android"))]
 /// Lazy arboard wrapper; failures (no display server) degrade to a no-op.
 #[derive(Default)]
 pub struct OsClipboard {
     inner: Option<arboard::Clipboard>,
 }
 
+#[cfg(not(target_os = "android"))]
 impl OsClipboard {
     fn ensure(&mut self) -> Option<&mut arboard::Clipboard> {
         if self.inner.is_none() {
@@ -18,6 +40,7 @@ impl OsClipboard {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl Clipboard for OsClipboard {
     fn get(&mut self) -> Option<String> {
         self.ensure().and_then(|c| c.get_text().ok())
