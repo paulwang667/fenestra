@@ -13,8 +13,8 @@ use web_time::Instant;
 #[cfg(not(target_arch = "wasm32"))]
 use fenestra_core::Theme;
 use fenestra_core::{
-    App, Element, Fonts, FrameState, InputEvent, Key, KeyInput, build_frame, dispatch,
-    refresh_hover,
+    App, Element, Fonts, FrameState, GesturePhase, InputEvent, Key, KeyInput, build_frame,
+    dispatch, refresh_hover,
 };
 use kurbo::Point;
 use vello::peniko::Color;
@@ -23,7 +23,7 @@ use vello::wgpu::{self, CurrentSurfaceTexture};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{MouseScrollDelta, StartCause, WindowEvent};
+use winit::event::{MouseScrollDelta, StartCause, TouchPhase, WindowEvent};
 #[cfg(not(target_arch = "wasm32"))]
 use winit::event_loop::EventLoopProxy;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -33,6 +33,26 @@ use crate::ShellError;
 
 /// One wheel "line" in logical pixels.
 pub(crate) const LINE_SCROLL_PX: f64 = 40.0;
+
+/// winit's touch phase as the framework's gesture lifecycle. A cancelled
+/// gesture ends like any other: an app that undid its in-progress effect on
+/// `Ended` would need a distinct variant, and nothing here does.
+pub(crate) fn gesture_phase(phase: TouchPhase) -> GesturePhase {
+    match phase {
+        TouchPhase::Started => GesturePhase::Started,
+        TouchPhase::Moved => GesturePhase::Changed,
+        TouchPhase::Ended | TouchPhase::Cancelled => GesturePhase::Ended,
+    }
+}
+
+/// A winit magnification delta as a finite `f32`, or `None`. winit documents
+/// this value as possibly NaN, and a NaN would poison an app's zoom for the
+/// rest of the session.
+pub(crate) fn pinch_delta(delta: f64) -> Option<f32> {
+    #[expect(clippy::cast_possible_truncation, reason = "scale deltas are small")]
+    let d = delta as f32;
+    d.is_finite().then_some(d)
+}
 
 /// Extracts `(dx, dy)` logical-pixel deltas from a winit wheel event, honoring
 /// the window scale for pixel deltas.
@@ -1616,6 +1636,18 @@ impl<A: App> AppRunner<A> {
                     },
                 );
             }
+            WindowEvent::PinchGesture { delta, phase, .. } => {
+                if let Some(delta) = pinch_delta(delta) {
+                    self.secondary_input_main(
+                        key,
+                        event_loop,
+                        InputEvent::Pinch {
+                            delta,
+                            phase: gesture_phase(phase),
+                        },
+                    );
+                }
+            }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == winit::event::ElementState::Pressed =>
             {
@@ -2029,6 +2061,17 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                         dy: dy as f32,
                     },
                 );
+            }
+            WindowEvent::PinchGesture { delta, phase, .. } => {
+                if let Some(delta) = pinch_delta(delta) {
+                    self.input_main(
+                        event_loop,
+                        InputEvent::Pinch {
+                            delta,
+                            phase: gesture_phase(phase),
+                        },
+                    );
+                }
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == winit::event::ElementState::Pressed =>

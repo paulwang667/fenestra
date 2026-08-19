@@ -4,7 +4,7 @@
 
 use peniko::Color;
 
-use crate::events::KeyInput;
+use crate::events::{DragEvent, KeyInput, PinchEvent, WheelEvent};
 use crate::style::{Length, Paint, Style, TextAlign, TextWrap, ThemedFn, Transition};
 use crate::theme::Theme;
 use crate::tokens::{ShadowToken, TextSize, Weight};
@@ -14,6 +14,12 @@ pub(crate) type TypeAheadFn<Msg> = Box<dyn Fn(&str) -> Option<Msg>>;
 pub(crate) type KeyFn<Msg> = Box<dyn Fn(&KeyInput) -> Option<Msg>>;
 /// Maps a pointer position (as fractions of the element rect) to a message.
 pub(crate) type DragFn<Msg> = Box<dyn Fn(f32, f32) -> Option<Msg>>;
+/// Maps a wheel/trackpad gesture to an optional message.
+pub(crate) type WheelFn<Msg> = Box<dyn Fn(WheelEvent) -> Option<Msg>>;
+/// Maps a press or captured drag, with position and modifiers, to a message.
+pub(crate) type DragEventFn<Msg> = Box<dyn Fn(DragEvent) -> Option<Msg>>;
+/// Maps a trackpad magnification gesture to an optional message.
+pub(crate) type PinchFn<Msg> = Box<dyn Fn(PinchEvent) -> Option<Msg>>;
 /// Maps a recognized [`SwipeDir`] to a message.
 pub(crate) type SwipeFn<Msg> = Box<dyn Fn(SwipeDir) -> Msg>;
 /// Maps the edited text to a message.
@@ -616,6 +622,12 @@ pub struct Element<Msg> {
     /// that drove [`Self::on_drag`] ended). Only meaningful alongside
     /// `on_drag`; used for drag lifecycles like column-resize commit.
     pub(crate) on_drag_end: Option<Msg>,
+    /// Wheel / trackpad deltas over this element, before scroll routing.
+    pub(crate) on_wheel: Option<WheelFn<Msg>>,
+    /// Presses and captured drags, with unclamped position and modifiers.
+    pub(crate) on_drag_event: Option<DragEventFn<Msg>>,
+    /// Trackpad magnification over this element.
+    pub(crate) on_pinch: Option<PinchFn<Msg>>,
     /// Fired when a press-drag-release on this element is recognized as a swipe
     /// (a fast flick past a small distance), with the dominant [`SwipeDir`].
     pub(crate) on_swipe: Option<SwipeFn<Msg>>,
@@ -692,6 +704,9 @@ impl<Msg> Element<Msg> {
             on_key: None,
             on_drag: None,
             on_drag_end: None,
+            on_wheel: None,
+            on_drag_event: None,
+            on_pinch: None,
             on_swipe: None,
             on_input: None,
             on_close: None,
@@ -766,6 +781,7 @@ impl<Msg> Element<Msg> {
         !self.disabled
             && (self.on_click.is_some()
                 || self.on_drag.is_some()
+                || self.on_drag_event.is_some()
                 || self.on_swipe.is_some()
                 || self.focusable
                 || self.selectable)
@@ -934,6 +950,43 @@ impl<Msg> Element<Msg> {
     /// rect on both axes.
     pub fn on_drag(mut self, f: impl Fn(f32, f32) -> Option<Msg> + 'static) -> Self {
         self.on_drag = Some(Box::new(f));
+        self
+    }
+
+    /// Maps wheel and trackpad deltas over this element to messages, in
+    /// logical pixels and winit's sign convention (positive `dy` moves the
+    /// content down). Offered along the hit chain deepest-first, *before*
+    /// the event routes to the nearest scroll container: return `Some` to
+    /// consume it, `None` to let scrolling have it. A pan/zoom canvas wants
+    /// this — it owns its own camera and is not a scroll container.
+    pub fn on_wheel(mut self, f: impl Fn(WheelEvent) -> Option<Msg> + 'static) -> Self {
+        self.on_wheel = Some(Box::new(f));
+        self
+    }
+
+    /// Like [`Self::on_drag`], but the callback receives a [`DragEvent`]:
+    /// the pointer in element-local logical pixels, *unclamped*, plus the
+    /// held modifiers. `on_drag`'s fractions are clamped to the element, so
+    /// a gesture that leaves it stops tracking — fine for a slider, fatal
+    /// for a canvas whose nodes are a few pixels wide when zoomed out. The
+    /// two can coexist on one element; both fire.
+    ///
+    /// Capture and [`Self::on_drag_end`] work exactly as they do for
+    /// `on_drag`.
+    pub fn on_drag_event(mut self, f: impl Fn(DragEvent) -> Option<Msg> + 'static) -> Self {
+        self.on_drag_event = Some(Box::new(f));
+        self
+    }
+
+    /// Trackpad magnification (macOS and iOS only; nothing else reports it).
+    /// Offered deepest-first along the hit chain, exactly once per element —
+    /// unlike [`Self::on_wheel`] there is no fallback consumer, so returning
+    /// `None` simply drops the gesture.
+    ///
+    /// A pinch is not a ctrl+wheel. Handle both if you want zoom to work with
+    /// a trackpad *and* a mouse.
+    pub fn on_pinch(mut self, f: impl Fn(PinchEvent) -> Option<Msg> + 'static) -> Self {
+        self.on_pinch = Some(Box::new(f));
         self
     }
 
@@ -2235,6 +2288,18 @@ impl<Msg: 'static> Element<Msg> {
                 Box::new(move |x: f32, y: f32| d(x, y).map(&f)) as DragFn<B>
             }),
             on_drag_end: self.on_drag_end.map(&f),
+            on_wheel: self.on_wheel.map(|w| {
+                let f = f.clone();
+                Box::new(move |e: WheelEvent| w(e).map(&f)) as WheelFn<B>
+            }),
+            on_drag_event: self.on_drag_event.map(|d| {
+                let f = f.clone();
+                Box::new(move |e: DragEvent| d(e).map(&f)) as DragEventFn<B>
+            }),
+            on_pinch: self.on_pinch.map(|p| {
+                let f = f.clone();
+                Box::new(move |e: PinchEvent| p(e).map(&f)) as PinchFn<B>
+            }),
             on_swipe: self.on_swipe.map(|s| {
                 let f = f.clone();
                 Box::new(move |d: SwipeDir| f(s(d))) as SwipeFn<B>
