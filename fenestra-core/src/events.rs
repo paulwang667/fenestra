@@ -46,6 +46,113 @@ pub enum Key {
     Char(char),
 }
 
+/// The modifier keys held when a gesture fired, as last reported by
+/// [`InputEvent::Modifiers`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Mods {
+    /// Shift held.
+    pub shift: bool,
+    /// Control held. Browsers deliver pinch-zoom as ctrl+wheel, so this is
+    /// the conventional zoom modifier.
+    pub ctrl: bool,
+    /// Alt/Option held.
+    pub alt: bool,
+    /// Command (macOS) / Windows key held.
+    pub meta: bool,
+}
+
+/// A wheel or trackpad gesture delivered to [`Element::on_wheel`].
+///
+/// [`Element::on_wheel`]: crate::Element::on_wheel
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WheelEvent {
+    /// Horizontal delta in logical px (winit's convention: positive `dx`
+    /// moves the content right).
+    pub dx: f32,
+    /// Vertical delta in logical px (positive `dy` moves the content down).
+    pub dy: f32,
+    /// Pointer x in logical px from the element's left edge, measured in the
+    /// element's own untransformed layout space — the space `on_drag` takes
+    /// its fractions in. A pan/zoom canvas feeds this to `Camera::to_world`
+    /// to zoom about the cursor instead of the viewport center.
+    pub x: f32,
+    /// Pointer y in logical px from the element's top edge.
+    pub y: f32,
+    /// Modifier keys held — what separates zooming from panning.
+    ///
+    /// ctrl+wheel is the conventional zoom gesture everywhere, and is how a
+    /// browser reports a pinch. A *native* trackpad pinch is a separate
+    /// event: see [`InputEvent::Pinch`] and [`Element::on_pinch`].
+    ///
+    /// [`Element::on_pinch`]: crate::Element::on_pinch
+    pub mods: Mods,
+}
+
+/// A trackpad magnification gesture delivered to [`Element::on_pinch`].
+///
+/// [`Element::on_pinch`]: crate::Element::on_pinch
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PinchEvent {
+    /// Change in scale since the last event: positive magnifies. Apply it as
+    /// `zoom * (1.0 + delta)`, which is winit's own convention. Guaranteed
+    /// finite — the runner drops the NaN deltas the OS can emit.
+    pub delta: f32,
+    /// Pointer x in logical px from the element's left edge, in its own
+    /// untransformed layout space. A canvas zooms about this point.
+    pub x: f32,
+    /// Pointer y in logical px from the element's top edge.
+    pub y: f32,
+    /// Whether the gesture has just begun, is continuing, or has ended.
+    pub phase: GesturePhase,
+}
+
+/// Where in its life a continuous gesture is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GesturePhase {
+    Started,
+    Changed,
+    Ended,
+}
+
+/// A pointer press or captured drag delivered to [`Element::on_drag_event`].
+///
+/// [`Element::on_drag_event`]: crate::Element::on_drag_event
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DragEvent {
+    /// Pointer x in logical px from the element's left edge, in its own
+    /// untransformed layout space. Unlike [`Element::on_drag`]'s fractions
+    /// this is *not* clamped to the element, so a gesture that leaves the
+    /// element keeps tracking — what a canvas needs, and what a slider does
+    /// not.
+    ///
+    /// [`Element::on_drag`]: crate::Element::on_drag
+    pub x: f32,
+    /// Pointer y in logical px from the element's top edge.
+    pub y: f32,
+    /// Modifier keys held, for shift-to-extend and friends.
+    pub mods: Mods,
+}
+
+/// The modifiers as the dispatcher currently knows them.
+fn mods_of(state: &FrameState) -> Mods {
+    Mods {
+        shift: state.mods.0,
+        ctrl: state.mods.1,
+        alt: state.mods.2,
+        meta: state.mods.3,
+    }
+}
+
+/// A screen point in an element's own untransformed layout space, in logical
+/// px from its top-left — the mapping [`Frame::fraction_in`] uses, without
+/// the clamp. `None` when the id is not in this frame.
+fn local_px(frame: &Frame, id: WidgetId, point: Point) -> Option<(f32, f32)> {
+    let rect = frame.rect_of(id)?;
+    let p = frame.to_layout_point(id, point)?;
+    #[expect(clippy::cast_possible_truncation, reason = "logical pixel coordinates")]
+    Some(((p.x - rect.x0) as f32, (p.y - rect.y0) as f32))
+}
+
 /// A key press with modifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyInput {
@@ -103,6 +210,16 @@ pub enum InputEvent {
         dx: f32,
         /// Vertical delta in logical px.
         dy: f32,
+    },
+    /// Trackpad magnification (macOS/iOS only; other platforms never send
+    /// it). Distinct from [`Self::Wheel`]: a pinch carries a *scale* delta,
+    /// not a scroll distance, and no amount of modifier convention makes the
+    /// two the same gesture.
+    Pinch {
+        /// Change in scale since the last event; positive magnifies.
+        delta: f32,
+        /// Gesture lifecycle.
+        phase: GesturePhase,
     },
     /// Modifier keys changed (runners forward this so pointer gestures
     /// can honor Shift — e.g. shift-click selection extension).
@@ -487,11 +604,23 @@ pub fn dispatch<Msg: Clone>(
                             state.static_sel = Some((active, sel, true));
                             out.redraw = true;
                         }
-                    } else if let Some(f) = &el.on_drag
-                        && let Some((fx, fy)) = frame.fraction_in(active, point)
-                        && let Some(msg) = f(fx, fy)
-                    {
-                        out.msgs.push(msg);
+                    } else {
+                        if let Some(f) = &el.on_drag
+                            && let Some((fx, fy)) = frame.fraction_in(active, point)
+                            && let Some(msg) = f(fx, fy)
+                        {
+                            out.msgs.push(msg);
+                        }
+                        if let Some(f) = &el.on_drag_event
+                            && let Some((x, y)) = local_px(frame, active, point)
+                            && let Some(msg) = f(DragEvent {
+                                x,
+                                y,
+                                mods: mods_of(state),
+                            })
+                        {
+                            out.msgs.push(msg);
+                        }
                     }
                 }
                 out.cursor = Some(cursor_of(&handlers, &[active]));
@@ -642,11 +771,23 @@ pub fn dispatch<Msg: Clone>(
                             );
                             state.static_sel = Some((id, sel, true));
                         }
-                    } else if let Some(f) = &el.on_drag
-                        && let Some((fx, fy)) = frame.fraction_in(id, point)
-                        && let Some(msg) = f(fx, fy)
-                    {
-                        out.msgs.push(msg);
+                    } else {
+                        if let Some(f) = &el.on_drag
+                            && let Some((fx, fy)) = frame.fraction_in(id, point)
+                            && let Some(msg) = f(fx, fy)
+                        {
+                            out.msgs.push(msg);
+                        }
+                        if let Some(f) = &el.on_drag_event
+                            && let Some((x, y)) = local_px(frame, id, point)
+                            && let Some(msg) = f(DragEvent {
+                                x,
+                                y,
+                                mods: mods_of(state),
+                            })
+                        {
+                            out.msgs.push(msg);
+                        }
                     }
                 }
                 out.redraw = true;
@@ -762,7 +903,7 @@ pub fn dispatch<Msg: Clone>(
                 // never fires here.
                 if let Some(el) = handlers.get(active)
                     && !el.disabled
-                    && el.on_drag.is_some()
+                    && (el.on_drag.is_some() || el.on_drag_event.is_some())
                     && let Some(msg) = &el.on_drag_end
                 {
                     out.msgs.push(msg.clone());
@@ -795,9 +936,49 @@ pub fn dispatch<Msg: Clone>(
                 );
             }
         }
+        InputEvent::Pinch { delta, phase } => {
+            // Same deepest-first offer as the wheel, but with no fallback:
+            // nothing else in the framework consumes a magnification.
+            if let Some((x, y)) = state.pointer {
+                let p = Point::new(f64::from(x), f64::from(y));
+                for id in frame.hit_chain(p).into_iter().rev() {
+                    if let Some(el) = handlers.get(id)
+                        && !el.disabled
+                        && let Some(f) = &el.on_pinch
+                    {
+                        let (x, y) = local_px(frame, id, p).unwrap_or((0.0, 0.0));
+                        if let Some(msg) = f(PinchEvent { delta, x, y, phase }) {
+                            out.msgs.push(msg);
+                            out.redraw = true;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
         InputEvent::Wheel { dx, dy } => {
             if let Some((x, y)) = state.pointer {
                 let p = Point::new(f64::from(x), f64::from(y));
+                // An `on_wheel` element gets first refusal, deepest-first, so a
+                // pan/zoom canvas nested in a scrolling pane keeps its own
+                // gesture. Returning `None` declines and falls through to the
+                // scroll routing below — the same "handled?" contract as
+                // `on_key` and `on_drag`.
+                let mods = mods_of(state);
+                for id in frame.hit_chain(p).into_iter().rev() {
+                    if let Some(el) = handlers.get(id)
+                        && !el.disabled
+                        && let Some(f) = &el.on_wheel
+                    {
+                        let (x, y) = local_px(frame, id, p).unwrap_or((0.0, 0.0));
+                        if let Some(msg) = f(WheelEvent { dx, dy, x, y, mods }) {
+                            out.msgs.push(msg);
+                            out.redraw = true;
+                            return out;
+                        }
+                        break;
+                    }
+                }
                 // dy and dx route to the nearest scroller on their OWN axis —
                 // which may be different containers (e.g. a horizontal pane
                 // nested in a vertical one).

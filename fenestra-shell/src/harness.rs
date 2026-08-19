@@ -28,8 +28,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::collections::HashMap;
 
 use fenestra_core::{
-    AccessNode, App, Element, Frame, FrameState, InputEvent, KeyInput, MAIN_WINDOW, Proxy, Query,
-    Theme, build_frame, dispatch,
+    AccessNode, App, Element, Frame, FrameState, GesturePhase, InputEvent, KeyInput, MAIN_WINDOW,
+    Proxy, Query, Theme, build_frame, dispatch,
 };
 use image::RgbaImage;
 
@@ -486,6 +486,28 @@ where
     pub fn wheel_xy(&mut self, q: &Query, dx: f32, dy: f32) {
         self.hover(q);
         self.input(InputEvent::Wheel { dx, dy });
+    }
+
+    /// Pinches over the matched node: one `Started`, the `delta` as
+    /// `Changed`, then `Ended` — the shape the OS actually sends, so a
+    /// handler that keys off the phase is exercised.
+    ///
+    /// # Panics
+    /// If the query matches zero or several nodes.
+    pub fn pinch(&mut self, q: &Query, delta: f32) {
+        self.hover(q);
+        self.input(InputEvent::Pinch {
+            delta: 0.0,
+            phase: GesturePhase::Started,
+        });
+        self.input(InputEvent::Pinch {
+            delta,
+            phase: GesturePhase::Changed,
+        });
+        self.input(InputEvent::Pinch {
+            delta: 0.0,
+            phase: GesturePhase::Ended,
+        });
     }
 
     /// Advances the deterministic clock by `ms` milliseconds and

@@ -1,7 +1,7 @@
 //! Synthetic event injection for headless testing: agents drive an [`App`]
 //! with scripted input and look at the resulting pixels.
 
-use fenestra_core::{App, InputEvent, KeyInput, Theme};
+use fenestra_core::{App, GesturePhase, InputEvent, KeyInput, Theme};
 use image::RgbaImage;
 
 /// A scripted input event for [`render_app`].
@@ -28,6 +28,14 @@ pub enum SyntheticEvent {
     Key(KeyInput),
     /// Commit text (M5).
     Text(String),
+    /// Trackpad magnification: `delta` is the change in scale, positive to
+    /// magnify. The windowed runner only ever produces this on macOS and iOS.
+    Pinch {
+        /// Change in scale since the last event.
+        delta: f32,
+        /// Gesture lifecycle.
+        phase: GesturePhase,
+    },
     /// Scroll (winit convention: positive `dy` moves content down, positive
     /// `dx` moves content right).
     Wheel {
@@ -56,6 +64,10 @@ impl From<&SyntheticEvent> for InputEvent {
             SyntheticEvent::Key(k) => Self::Key(*k),
             SyntheticEvent::Text(s) => Self::Text(s.clone()),
             SyntheticEvent::Wheel { dx, dy } => Self::Wheel { dx: *dx, dy: *dy },
+            SyntheticEvent::Pinch { delta, phase } => Self::Pinch {
+                delta: *delta,
+                phase: *phase,
+            },
             SyntheticEvent::Tab => Self::Tab,
             SyntheticEvent::ShiftTab => Self::ShiftTab,
             SyntheticEvent::Modifiers(shift, ctrl, alt, meta) => Self::Modifiers {
