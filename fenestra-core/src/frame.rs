@@ -29,9 +29,24 @@ use crate::tokens::{FOCUS_RING, R_FULL};
 
 /// Scrollbar thumb width and edge inset, logical px.
 const SCROLLBAR_WIDTH: f64 = 6.0;
+
 const SCROLLBAR_INSET: f64 = 2.0;
 /// Wheel scrolling needs at least this much overflow to engage.
 const MIN_SCROLL_RANGE: f32 = 0.5;
+/// The content box of a laid-out element: `rect` inset by its padding.
+/// Layout and input painting both honor padding, so static text must be
+/// painted from the same origin; painting at the padding-box edge leaves
+/// padded text glued to the box's near side with the padding visible
+/// only on the far side.
+fn content_rect(rect: Rect, style: &Style) -> Rect {
+    let p = &style.padding;
+    Rect::new(
+        rect.x0 + f64::from(p.left),
+        rect.y0 + f64::from(p.top),
+        (rect.x1 - f64::from(p.right)).max(rect.x0),
+        (rect.y1 - f64::from(p.bottom)).max(rect.y0),
+    )
+}
 
 /// Taffy node context for measured leaves.
 enum MeasureCtx {
@@ -2132,10 +2147,22 @@ impl Frame {
             painter::push_box(scene, &node.style, node.rect, self.canvas, self.scale, None);
         match &node.paint {
             GhostPaint::Text { text, style } => {
-                fonts.paint(scene, text, style, node.rect, None);
+                fonts.paint(
+                    scene,
+                    text,
+                    style,
+                    content_rect(node.rect, &node.style),
+                    None,
+                );
             }
             GhostPaint::Rich { spans, style } => {
-                fonts.paint_rich(scene, spans, style, node.rect, None);
+                fonts.paint_rich(
+                    scene,
+                    spans,
+                    style,
+                    content_rect(node.rect, &node.style),
+                    None,
+                );
             }
             GhostPaint::Path(data) => {
                 let color = node.style.text.color.unwrap_or(self.thumb_color);
@@ -2284,14 +2311,26 @@ impl Frame {
                     .static_sel
                     .filter(|(sid, ..)| *sid == node.id)
                     .map(|(_, sel, _)| (sel, self.selection_color));
-                fonts.paint(scene, text, style, node.rect, selection);
+                fonts.paint(
+                    scene,
+                    text,
+                    style,
+                    content_rect(node.rect, &node.style),
+                    selection,
+                );
             }
             PaintKind::Rich { spans, style } => {
                 let selection = state
                     .static_sel
                     .filter(|(sid, ..)| *sid == node.id)
                     .map(|(_, sel, _)| (sel, self.selection_color));
-                fonts.paint_rich(scene, spans, style, node.rect, selection);
+                fonts.paint_rich(
+                    scene,
+                    spans,
+                    style,
+                    content_rect(node.rect, &node.style),
+                    selection,
+                );
             }
             PaintKind::Path(data) => {
                 let color = node.style.text.color.unwrap_or(self.thumb_color);
