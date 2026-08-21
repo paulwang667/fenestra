@@ -89,6 +89,10 @@ pub struct WindowOptions {
     pub maximized: bool,
     /// Open borderless-fullscreen on the current monitor.
     pub fullscreen: bool,
+    /// Remove the OS title bar/resize frame. Pair with `.drag_region()`
+    /// elements in the view (a custom title bar) so the window can still
+    /// be moved; resizing follows `resizable`.
+    pub borderless: bool,
     /// Window icon as straight-alpha RGBA8 `(width, height, pixels)`.
     pub icon: Option<(u32, u32, Vec<u8>)>,
     /// Custom faces registered on the runner's fonts before the first
@@ -110,6 +114,7 @@ impl WindowOptions {
             resizable: true,
             maximized: false,
             fullscreen: false,
+            borderless: false,
             icon: None,
             fonts: Vec::new(),
             #[cfg(target_os = "android")]
@@ -144,6 +149,14 @@ impl WindowOptions {
     /// Opens borderless-fullscreen on the current monitor.
     pub fn fullscreen(mut self) -> Self {
         self.fullscreen = true;
+        self
+    }
+
+    /// Removes the OS window decorations. Pair with `.drag_region()`
+    /// elements acting as a custom title bar, or the window cannot be
+    /// moved by its content.
+    pub fn borderless(mut self) -> Self {
+        self.borderless = true;
         self
     }
 
@@ -259,6 +272,7 @@ impl WindowShell {
             Some(window) => window,
             None => {
                 let attrs = Window::default_attributes()
+                    .with_decorations(!self.options.borderless)
                     .with_title(self.options.title.clone())
                     .with_inner_size(LogicalSize::new(
                         self.options.inner_size.0,
@@ -2059,6 +2073,22 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
+                // Borderless drag regions: a press inside one starts the OS
+                // window-drag gesture instead of app input. Interactive
+                // children win — the region only claims presses nothing
+                // deeper claimed first (checked after dispatch).
+                if state == winit::event::ElementState::Pressed
+                    && let Some(window) = self.shell.window()
+                    && !window.is_decorated()
+                {
+                    let point = Point::new(self.cursor.x, self.cursor.y);
+                    if let Some((_view, frame)) = &self.last
+                        && frame.drag_region_at(point)
+                    {
+                        let _ = window.drag_window();
+                        return;
+                    }
+                }
                 self.input_main(
                     event_loop,
                     match state {

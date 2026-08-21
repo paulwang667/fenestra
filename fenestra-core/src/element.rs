@@ -634,6 +634,9 @@ pub struct Element<Msg> {
     pub(crate) on_input: Option<InputFn<Msg>>,
     pub(crate) on_close: Option<Msg>,
     pub(crate) on_file_drop: Option<FileDropFn<Msg>>,
+    /// Window drag region (borderless title bars): press-drag moves the OS
+    /// window; presses are swallowed for hit-testing purposes.
+    pub(crate) drag_region: bool,
     /// Payload announced when a pointer drag starts on this element.
     pub(crate) drag_source: Option<String>,
     pub(crate) on_drop: Option<DropFn<Msg>>,
@@ -711,6 +714,7 @@ impl<Msg> Element<Msg> {
             on_input: None,
             on_close: None,
             on_file_drop: None,
+            drag_region: false,
             drag_source: None,
             on_drop: None,
             overlay: None,
@@ -1035,6 +1039,15 @@ impl<Msg> Element<Msg> {
     /// `None` to reject. Style the drag with `.active(..)` on the source.
     pub fn on_drop(mut self, f: impl Fn(&str) -> Option<Msg> + 'static) -> Self {
         self.on_drop = Some(Box::new(f));
+        self
+    }
+
+    /// Marks this element as a window drag region: pressing and dragging it
+    /// moves the borderless window. No-op when the window has system
+    /// decorations. The region itself takes the press; deeper interactive
+    /// children (buttons, inputs) still win via the hit chain.
+    pub fn drag_region(mut self) -> Self {
+        self.drag_region = true;
         self
     }
 
@@ -2309,6 +2322,7 @@ impl<Msg: 'static> Element<Msg> {
                 Box::new(move |s: &str| f(i(s))) as InputFn<B>
             }),
             on_close: self.on_close.map(&f),
+            drag_region: self.drag_region,
             on_file_drop: self.on_file_drop.map(|d| {
                 let f = f.clone();
                 Box::new(move |p: &std::path::Path| f(d(p))) as FileDropFn<B>

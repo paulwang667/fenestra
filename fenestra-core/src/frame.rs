@@ -187,6 +187,8 @@ struct FrameNode {
     exit: Option<ExitAnim>,
     /// Builder call site, for `debug_tree`.
     source: &'static std::panic::Location<'static>,
+    /// Window drag region (borderless title bars).
+    drag_region: bool,
     children: Vec<FrameNode>,
 }
 
@@ -339,6 +341,8 @@ struct BuiltNode {
     exit: Option<ExitAnim>,
     /// Builder call site, for `debug_tree`.
     source: &'static std::panic::Location<'static>,
+    /// Window drag region (borderless title bars).
+    drag_region: bool,
     children: Vec<BuiltNode>,
 }
 
@@ -913,6 +917,7 @@ fn build<Msg>(
         stick_bottom: el.stick_bottom,
         access: (semantics, label, value, el.key.clone()),
         live: el.live,
+        drag_region: el.drag_region,
         selection: match &el.kind {
             Kind::Input(_) => state.editors.get(&id).map(|editor| {
                 let range = editor.editor.raw_selection().text_range();
@@ -1288,6 +1293,7 @@ impl Realize<'_> {
             animate_layout: node.animate_layout,
             exit: node.exit,
             source: node.source,
+            drag_region: node.drag_region,
             children,
         };
         // Record this node's measured rect for next frame's FLIP / departure
@@ -2697,6 +2703,38 @@ impl Frame {
     /// All elements containing `point` along the topmost branch (later
     /// siblings paint on top and win), ordered root to deepest. Clip-aware:
     /// content scrolled out of a clipped container does not hit.
+    /// Whether a window drag region contains `point` (deepest-first walk,
+    /// same clip rules as [`Self::hit_chain`]). Borderless title bars use
+    /// this to route presses to the OS window-drag gesture.
+    pub fn drag_region_at(&self, point: Point) -> bool {
+        for overlay in self.overlays.iter().rev() {
+            if !overlay.hittable {
+                continue;
+            }
+            if Self::walk_drag_region(&overlay.node, point) {
+                return true;
+            }
+        }
+        Self::walk_drag_region(&self.root, point)
+    }
+
+    fn walk_drag_region(node: &FrameNode, point: Point) -> bool {
+        let Some(visible) = node.visible else {
+            return false;
+        };
+        if !visible.contains(point) || !node.rect.contains(point) {
+            return false;
+        }
+        // Deepest interactive child wins over an ancestor region (a button
+        // inside a title bar must not drag the window).
+        for child in &node.children {
+            if Self::walk_drag_region(child, point) {
+                return true;
+            }
+        }
+        node.drag_region
+    }
+
     pub fn hit_chain(&self, point: Point) -> Vec<WidgetId> {
         // Overlays hit-test first, topmost first; a modal backdrop swallows
         // everything beneath it.
