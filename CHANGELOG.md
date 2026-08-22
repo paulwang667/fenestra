@@ -19,6 +19,27 @@ expansion, and two checks that were narrower than the thing they guarded.
   zero-Java `NativeActivity` packaging a cdylib probe renders a
   wgpu/Vulkan scene through the patched shell.
 
+- **Icon name translation, and two missing glyphs.** The basic
+  catalog's 60-name icon enum is Material's vocabulary
+  (`accountCircle`, `arrowBack`, `payment`); the vendored set is
+  Lucide's, and eleven names are all the overlap — so a conforming
+  `send` or `payment` was a labelled placeholder with an `unknownIcon`
+  note. A translation table now maps the nineteen names with a faithful
+  counterpart (`payment` → `credit-card`, `arrowBack` → `arrow-left`,
+  …); the off-state variants (`favoriteOff`, `starHalf`, …) have no
+  faithful glyph in the vendored set and still note rather than lie — a
+  full star where the stream asked for a half one is a lie the pixels
+  would keep. The kit itself gains the two glyphs the official fixtures
+  need and it lacked: `send` and `credit-card`.
+- **The official corpus's fidelity contract is now tested.**
+  `official_examples_hold_the_fidelity_contract` runs `any_broken` over
+  every vendored official example, against a named exemption table for
+  the three remaining known gaps — the kit's missing password masking,
+  nested function calls, and one off-spec icon name inside a fixture. A
+  new broken note, or a new fixture carrying one, fails until someone
+  reads the note and makes the call; an exemption that stops firing also
+  fails, because the gap it documented is closed and the entry is stale.
+
 ### Fixed
 
 - **Rendering aborted the process at seven levels of nesting.**
@@ -36,6 +57,25 @@ expansion, and two checks that were narrower than the thing they guarded.
   `render_leaf`, so their locals get one frame at the bottom of the
   recursion rather than a share of every level; the full cap now renders on
   a 2 MiB thread.
+- **`Element`'s growth ate the depth cap's stack margin.** `MAX_DEPTH`
+  was sixteen with a measured "the full cap renders on a 2 MiB thread"
+  margin recorded alongside it. When `Element` gained its per-element
+  gesture-handler fields (three `Option<Box<dyn Fn>>`, `3115d14`), the
+  16-level chain measured just over 2 MiB — overflow at 2048 KiB, pass
+  at 2080 — so the shipped default no longer had headroom, and the next
+  field would have made it negative. The cap came down 16 → 12: twelve
+  levels need 1600–1664 KiB, restoring roughly 384 KiB of headroom on
+  the default, and 12 × 3 = 36 stays inside `MAX_TREE_DEPTH` (48) with
+  room. The trade is one level of legitimate-but-absurd nesting, which
+  is what the cap exists to refuse. The re-measurement is pinned in
+  `renders_at_the_full_depth_cap`; ARCHITECTURE.md carries the decision.
+- **An explicit `variant: "body"` on a `Text` was graded unknown.** The
+  catalog's default variant is `body`, and a conforming stream may write
+  it out — but the renderer's `match` had `None` on the default arm and
+  everything else on the unknown arm, so the six official examples that
+  write `body` explicitly each recorded an `invalidValue` note on every
+  such text, while rendering it fine. `body` and absent now share the
+  Markdown arm.
 - **Static child lists were charged to no budget.** `children_of` metered
   template expansions and let static lists expand freely — the cheaper
   amplifier of the two, since a static list needs no data model. Three

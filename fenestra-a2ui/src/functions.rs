@@ -192,10 +192,18 @@ pub(crate) fn format_date(value: &str, pattern: &str) -> Option<String> {
     Some(out)
 }
 
-/// `pluralize`: picks `one`/`other` by the numeric value.
-pub(crate) fn pluralize(value: f64, one: &str, other: &str) -> String {
-    if (value - 1.0).abs() < f64::EPSILON {
-        one.to_owned()
+/// `pluralize`: picks a string by the value's CLDR plural category.
+/// Deterministic English-category resolution: exactly 0 takes `zero`
+/// when the stream provides it (else `other`, per CLDR, where English
+/// has no zero category), exactly 1 takes `one`, everything else takes
+/// `other` (required by the catalog schema). The `two`/`few`/`many`
+/// categories have no English mapping and are ignored, as an
+/// English-locale official renderer would.
+pub(crate) fn pluralize(value: f64, zero: Option<&str>, one: Option<&str>, other: &str) -> String {
+    if value == 0.0 {
+        zero.unwrap_or(other).to_owned()
+    } else if (value - 1.0).abs() < f64::EPSILON {
+        one.unwrap_or(other).to_owned()
     } else {
         other.to_owned()
     }
@@ -245,7 +253,15 @@ mod tests {
 
     #[test]
     fn plural_picks() {
-        assert_eq!(pluralize(1.0, "review", "reviews"), "review");
-        assert_eq!(pluralize(3.0, "review", "reviews"), "reviews");
+        assert_eq!(pluralize(1.0, None, Some("review"), "reviews"), "review");
+        assert_eq!(pluralize(3.0, None, Some("review"), "reviews"), "reviews");
+        assert_eq!(
+            pluralize(0.0, Some("no reviews"), Some("review"), "reviews"),
+            "no reviews"
+        );
+        // No `zero` provided: 0 falls back to `other`, as in CLDR English.
+        assert_eq!(pluralize(0.0, None, Some("review"), "reviews"), "reviews");
+        // `two`/`few`/`many` have no English mapping; they are never picked.
+        assert_eq!(pluralize(2.0, None, Some("review"), "reviews"), "reviews");
     }
 }
