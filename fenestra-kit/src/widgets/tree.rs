@@ -155,6 +155,12 @@ fn render_node<Msg: Clone + 'static>(
     if is_selected {
         item = item.themed(|t: &Theme, s| s.bg(t.accent_bg));
     }
+    // Branch headers announce their open/closed state (ARIA `aria-expanded`),
+    // mirroring the disclosure header: a screen reader can tell which sections
+    // have their children expanded without looking at the chevron glyph.
+    if is_branch {
+        item = item.expanded(is_open);
+    }
 
     // Click toggles branches and selects leaves; keyboard nav lives on the
     // tree container (one tab stop), so the rows are pointer targets but not
