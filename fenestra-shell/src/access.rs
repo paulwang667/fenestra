@@ -40,6 +40,15 @@ fn push_node(nodes: &mut Vec<(NodeId, Node)>, an: &AccessNode, is_root: bool, sc
     if an.live {
         node.set_live(accesskit::Live::Polite);
     }
+    if an.invalid {
+        node.set_invalid(accesskit::Invalid::True);
+    }
+    if an.disabled {
+        node.set_disabled();
+    }
+    if an.expanded {
+        node.set_expanded(true);
+    }
     match an.semantics {
         Some(Semantics::Checkbox { checked, mixed }) => node.set_toggled(if mixed {
             accesskit::Toggled::Mixed
@@ -49,6 +58,7 @@ fn push_node(nodes: &mut Vec<(NodeId, Node)>, an: &AccessNode, is_root: bool, sc
         Some(Semantics::Switch { on }) => node.set_toggled(toggled(on)),
         Some(Semantics::Radio { selected }) => node.set_toggled(toggled(selected)),
         Some(Semantics::Tab { selected }) => node.set_selected(selected),
+        Some(Semantics::ListItem { selected }) => node.set_selected(selected),
         Some(Semantics::Slider { value, min, max })
         | Some(Semantics::Spinbutton { value, min, max })
         | Some(Semantics::Meter { value, min, max }) => {
@@ -66,7 +76,7 @@ fn push_node(nodes: &mut Vec<(NodeId, Node)>, an: &AccessNode, is_root: bool, sc
     if an.focusable {
         node.add_action(Action::Focus);
     }
-    if matches!(
+    if !an.disabled && matches!(
         an.semantics,
         Some(
             Semantics::Button
@@ -74,6 +84,7 @@ fn push_node(nodes: &mut Vec<(NodeId, Node)>, an: &AccessNode, is_root: bool, sc
                 | Semantics::Switch { .. }
                 | Semantics::Radio { .. }
                 | Semantics::Tab { .. }
+                | Semantics::ListItem { .. }
                 | Semantics::ComboBox
         )
     ) {
@@ -103,6 +114,7 @@ fn role_of(an: &AccessNode) -> Role {
         Some(Semantics::ComboBox) => Role::ComboBox,
         Some(Semantics::Dialog) => Role::Dialog,
         Some(Semantics::Tab { .. }) => Role::Tab,
+        Some(Semantics::ListItem { .. }) => Role::ListItem,
         Some(Semantics::Alert) => Role::Alert,
         Some(Semantics::Label) => Role::Label,
         Some(Semantics::Image) => Role::Image,

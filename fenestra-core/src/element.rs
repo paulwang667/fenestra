@@ -380,6 +380,12 @@ pub enum Semantics {
         /// Whether it is the active tab.
         selected: bool,
     },
+    /// One selectable item in a listbox or tree. Mirrors the ARIA
+    /// `listitem` role; `selected` carries `aria-selected`.
+    ListItem {
+        /// Whether the item is the currently selected option.
+        selected: bool,
+    },
     /// A transient notification (toasts).
     Alert,
     /// Static text (automatic for text leaves).
@@ -700,6 +706,10 @@ pub struct Element<Msg> {
     pub(crate) press_scale: bool,
     /// Recolor the focus ring (and swapped border) to the danger hue.
     pub(crate) invalid: bool,
+    /// Whether the control is expanded (ARIA `aria-expanded`). Disclosure
+    /// headers, comboboxes, and tree items set this; the projection carries it
+    /// to the accessibility tree.
+    pub(crate) expanded: bool,
     pub(crate) transition: Option<Transition>,
 }
 
@@ -755,6 +765,7 @@ impl<Msg> Element<Msg> {
             state_layer: None,
             press_scale: false,
             invalid: false,
+            expanded: false,
             transition: None,
         }
     }
@@ -1249,6 +1260,14 @@ impl<Msg> Element<Msg> {
     /// toasts — the kit's toast stack sets this itself).
     pub fn live(mut self) -> Self {
         self.live = true;
+        self
+    }
+
+    /// Marks the control expanded (ARIA `aria-expanded`). Use on disclosure
+    /// headers, combobox triggers, and tree items to announce open/closed
+    /// state to assistive technology.
+    pub fn expanded(mut self, expanded: bool) -> Self {
+        self.expanded = expanded;
         self
     }
 
@@ -2363,6 +2382,7 @@ impl<Msg: 'static> Element<Msg> {
             semantics: self.semantics,
             access_value: self.access_value,
             live: self.live,
+            expanded: self.expanded,
             selectable: self.selectable,
             enter: self.enter,
             exit: self.exit,

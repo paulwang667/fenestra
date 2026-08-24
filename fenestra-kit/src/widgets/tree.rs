@@ -139,7 +139,7 @@ fn render_node<Msg: Clone + 'static>(
         .shrink0()
         .cursor(Cursor::Pointer)
         .id(&format!("tree-{}", node.id))
-        .semantics(Semantics::Button)
+        .semantics(Semantics::ListItem { selected: is_selected })
         .label(node.label.clone())
         .transition(Transition::colors())
         .state_layer(|t| t.text)

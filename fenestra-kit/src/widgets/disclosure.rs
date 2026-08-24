@@ -123,7 +123,7 @@ impl<Msg> From<Accordion<Msg>> for Element<Msg> {
                 .focusable(true)
                 .cursor(Cursor::Pointer)
                 .semantics(Semantics::Button)
-                .label(title_text);
+                .label(title_text).expanded(open);
             if let Some(key) = &item.key {
                 header = header.id(key);
             }

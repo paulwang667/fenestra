@@ -138,10 +138,10 @@ fn combobox_filters_and_picks() {
     h.type_text("ru");
     // Typing filtered the listbox down to the matching options.
     assert!(
-        h.query(&by::role(Semantics::Button).name("Python"))
+        h.query(&by::role(Semantics::ListItem { selected: false }).name("Python"))
             .is_none()
     );
-    h.click(&by::role(Semantics::Button).name("Rust"));
+    h.click(&by::role(Semantics::ListItem { selected: false }).name("Rust"));
     assert_eq!(h.app().value, "Rust", "picking writes the option back");
     assert_eq!(h.app().picked.as_deref(), Some("Rust"));
     assert!(!h.app().open);

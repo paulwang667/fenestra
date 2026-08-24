@@ -3,7 +3,7 @@
 //! headlessly.
 
 use fenestra_core::{App, Element, Key, KeyInput, Semantics, Theme, by, col, div, text};
-use fenestra_kit::{accordion, accordion_item, checkbox, text_input, TreeNode, tree_view};
+use fenestra_kit::{accordion, accordion_item, checkbox, combobox, text_input, TreeNode, tree_view};
 use fenestra_shell::Harness;
 
 #[derive(Default)]
@@ -213,6 +213,7 @@ fn expanded_state_reach_the_access_tree() {
 #[derive(Default)]
 struct TreeApp {
     expanded: Vec<String>,
+    selected: Option<String>,
 }
 
 impl App for TreeApp {
@@ -226,6 +227,7 @@ impl App for TreeApp {
             TreeNode::new("docs", "docs"),
         ])])
         .expanded(self.expanded.iter().cloned())
+        .selected(self.selected.clone())
         .into()
     }
 }
@@ -235,24 +237,82 @@ fn tree_branch_states_reach_the_access_tree() {
     let h = Harness::new(
         TreeApp {
             expanded: vec!["root".to_owned()],
+            selected: Some("src".to_owned()),
         },
         Theme::light(),
         (300, 200),
     );
 
-    // An expanded branch header exposes aria-expanded; the collapsed one does not.
+    // Branch headers expose aria-expanded; every node is a listitem, not a
+    // bare button — a screen reader gets list structure, not activation.
     let root = h.get(&by::id("tree-root"));
     assert!(
-        root.expanded,
-        "expanded tree branch is marked expanded\n{}",
+        matches!(root.semantics, Some(Semantics::ListItem { .. })),
+        "tree branch projects listitem\n{}",
         h.frame().access_yaml()
     );
+    assert!(root.expanded, "expanded tree branch is marked expanded");
     assert!(
-        matches!(root.semantics, Some(Semantics::Button)),
-        "role is preserved (not dropped from the tree)\n{}",
+        matches!(root.semantics, Some(Semantics::ListItem { selected: false })),
+        "a non-selected branch is not selected"
+    );
+
+    // The selected leaf carries aria-selected = true; the others false.
+    let src = h.get(&by::id("tree-src"));
+    assert!(
+        matches!(src.semantics, Some(Semantics::ListItem { selected: true })),
+        "selected leaf is marked selected\n{}",
+        h.frame().access_yaml()
+    );
+    let docs = h.get(&by::id("tree-docs"));
+    assert!(
+        matches!(docs.semantics, Some(Semantics::ListItem { selected: false })),
+        "non-selected leaf is not selected\n{}",
         h.frame().access_yaml()
     );
 
     let yaml = h.frame().access_yaml();
     assert!(yaml.contains("[expanded]"), "yaml shows [expanded]:\n{}", yaml);
+}
+
+/// A combobox's listbox options are `listitem` (not buttons), so assistive
+/// technology presents them as a navigable list rather than as a row of
+/// activatable buttons.
+#[derive(Default)]
+struct ComboApp {
+    value: String,
+}
+
+impl App for ComboApp {
+    type Msg = Msg;
+
+    fn update(&mut self, _msg: Msg) {}
+
+    fn view(&self) -> Element<Msg> {
+        combobox(self.value.clone(), true, ["Rust", "Ruby", "Python"])
+            .on_input(Msg::Set)
+            .on_pick(|_| Msg::Set(String::new()))
+            .id("lang")
+            .into()
+    }
+}
+
+#[test]
+fn combobox_options_are_listitem() {
+    let h = Harness::new(ComboApp::default(), Theme::light(), (300, 200));
+
+    let rust = h.get(&by::role(Semantics::ListItem { selected: false }).name("Rust"));
+    assert!(
+        matches!(rust.semantics, Some(Semantics::ListItem { selected: false })),
+        "a combobox option is a listitem, not a button\n{}",
+        h.frame().access_yaml()
+    );
+    // Options are not individual tab stops — the input owns focus.
+    assert!(!rust.focusable, "options are not tab stops");
+
+    let yaml = h.frame().access_yaml();
+    assert!(
+        yaml.matches("listitem").count() >= 3,
+        "all visible options are listitems: {yaml}"
+    );
 }

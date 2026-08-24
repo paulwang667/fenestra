@@ -173,7 +173,7 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
 
         let mut anchor = col()
             .w(c.width)
-            .semantics(Semantics::ComboBox)
+            .semantics(Semantics::ComboBox).expanded(show_list)
             .children([input]);
 
         if let Some(pick) = c.on_pick.clone().filter(|_| show_list) {
@@ -220,7 +220,7 @@ fn option_row<Msg: Clone + 'static>(label: &str, active: bool, on_click: Msg) ->
         .themed(|t: &Theme, s| s.rounded((t.radius.lg - SP1).max(0.0)))
         .shrink0()
         .cursor(Cursor::Pointer)
-        .semantics(Semantics::Button)
+        .semantics(Semantics::ListItem { selected: false })
         .label(label.to_owned())
         .transition(Transition::colors())
         .state_layer(|t| t.text)

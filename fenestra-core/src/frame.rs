@@ -116,6 +116,12 @@ struct NodeMeta {
     focus_ring: bool,
     /// Paint the focus ring in the danger hue (invalid control).
     invalid: bool,
+    /// Whether the control is expanded (ARIA `aria-expanded`). Carried to the
+    /// accessibility projection.
+    expanded: bool,
+    /// Whether the control is disabled. Kept (not folded into `focusable`)
+    /// so the accessibility projection can still announce `aria-disabled`.
+    disabled: bool,
 }
 
 /// Scroll geometry of one scrollable container, resolved for this frame.
@@ -222,6 +228,12 @@ pub struct AccessNode {
     pub rect: Rect,
     /// Keyboard focusable (and enabled).
     pub focusable: bool,
+    /// Whether the control is expanded (ARIA `aria-expanded`).
+    pub expanded: bool,
+    /// Keyboard focusable **and** enabled. Disabled controls stay in the tree
+    /// so screen readers can announce `aria-disabled`, but this is `false` so
+    /// they cannot be tabbed to (matching the resolved `meta.focusable`).
+    pub disabled: bool,
     /// Marked invalid (the danger-hued control state — ARIA `aria-invalid`).
     pub invalid: bool,
     /// The stable key assigned via `.id("...")`, when one was set.
@@ -334,6 +346,8 @@ struct BuiltNode {
     disabled: bool,
     /// Recolors the keyboard focus ring to the danger hue.
     invalid: bool,
+    /// Whether the control is expanded (ARIA `aria-expanded`).
+    expanded: bool,
     spin: Option<f32>,
     /// Scroll containers: pin to the bottom while content grows.
     stick_bottom: bool,
@@ -922,6 +936,7 @@ fn build<Msg>(
         kind,
         style,
         focusable: el.focusable,
+        expanded: el.expanded,
         disabled: el.disabled,
         invalid: el.invalid,
         spin: el.spin,
@@ -1286,6 +1301,8 @@ impl Realize<'_> {
                 && self.state.focused() == Some(node.id)
                 && self.state.focus_visible,
             invalid: node.invalid,
+            expanded: node.expanded,
+            disabled: node.disabled,
         };
         let frame_node = FrameNode {
             id: node.id,
@@ -2429,6 +2446,8 @@ impl Frame {
                 value,
                 rect,
                 focusable: node.meta.focusable,
+                disabled: node.meta.disabled,
+                expanded: node.meta.expanded,
                 invalid: node.meta.invalid,
                 key,
                 live: node.live,
@@ -2730,7 +2749,21 @@ impl Frame {
             }
             (node.scroll.as_ref().is_some_and(can) && node.rect.contains(point)).then_some(node.id)
         }
-        walk(&self.root, point, can)
+        // Overlays hit-test first, topmost first (matching `hit_chain`); a modal
+        // overlay is drawn above everything and owns the scroll at any point it
+        // covers. A non-hittable overlay (e.g. inert layer) is skipped, and only
+        // the main tree is consulted if no overlay matches.
+        self.overlays
+            .iter()
+            .rev()
+            .find_map(|o| {
+                if o.hittable {
+                    walk(&o.node, point, can)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| walk(&self.root, point, can))
     }
 
     /// All elements containing `point` along the topmost branch (later
@@ -2941,6 +2974,27 @@ impl Frame {
                 || node.children.iter().any(|c| walk(c, id))
         }
         walk(&self.root, id)
+            || self.overlays.iter().any(|o| walk(&o.node, id))
+    }
+    /// The persisted vertical scroll offset for `id` (0 when never
+    /// scrolled). Exposes [`FrameState::scroll_offset`] for the same
+    /// scroll-related inspection `is_scrollable` provides.
+    pub fn scroll_offset(&self, id: WidgetId) -> f32 {
+        fn find(node: &FrameNode, id: WidgetId) -> Option<&FrameNode> {
+            if node.id == id {
+                Some(node)
+            } else {
+                node.children.iter().find_map(|c| find(c, id))
+            }
+        }
+        if let Some(n) = find(&self.root, id) {
+            n.scroll.as_ref().map_or(0.0, |s| s.offset_y)
+        } else {
+            self.overlays
+                .iter()
+                .find_map(|o| find(&o.node, id))
+                .map_or(0.0, |n| n.scroll.as_ref().map_or(0.0, |s| s.offset_y))
+        }
     }
 
     // ---------------------------------------------------------------- dump
@@ -3138,5 +3192,61 @@ mod tests {
         let collide = frame.root.children[1].id;
         frame.root.children[0].id = collide;
         assert_eq!(frame.first_duplicate_id(), Some(collide));
+    }
+    #[test]
+    fn root_scroll_container_respects_definite_height() {
+        use crate::element::{col, div};
+        // 40 rows * 20px = 800px of content, taller than the 440 cap.
+        let rows: Vec<Element<()>> = (0..40).map(|_| div::<()>().w(50.0).h(20.0)).collect();
+        let panel = col::<>()
+            .w(384.0)
+            .h(440.0)
+            .scroll_y()
+            .children(rows);
+        let frame = test_frame(&panel, (1440.0, 900.0));
+        eprintln!("scroll-root ROOT rect = {:?}", frame.root.rect);
+        assert_eq!(
+            frame.root.rect.height(),
+            440.0,
+            "a definite-height scroll root must cap at its height"
+        );
+    }
+    #[test]
+    fn wheel_routes_to_overlay_scroll() {
+        use crate::element::{col, div, Overlay, OverlayMode, OverlayPlacement};
+        // 40 rows * 20px = 800px of content in a 440px scroller.
+        let rows: Vec<Element<()>> = (0..40).map(|_| div::<()>().w(50.0).h(20.0).shrink0()).collect();
+
+        // Overlay panel: MAX height (grows to content, capped at 440) rather
+        // than a fixed height. A fixed height collapses taffy's content size
+        // to 440 and disables scrolling.
+        let panel = col::<>()
+            .id("panel")
+            .w(384.0)
+            .max_h(440.0)
+            .scroll_y()
+            .children(rows);
+        let chip = col::<>().id("chip").w(384.0).h(30.0).child(panel.overlay(Overlay {
+            mode: OverlayMode::Open,
+            placement: OverlayPlacement::Below { gap: 4.0 },
+            backdrop: false,
+            trap_focus: false,
+            enter: true,
+        }));
+        let root = col::<>().child(chip);
+        let frame = test_frame(&root, (1440.0, 900.0));
+        let overlay_id = frame.overlays[0].id;
+        let of = &frame.overlays[0];
+        eprintln!(
+            "overlay size={:?} scroll={:?} rect={:?}",
+            of.node.rect,
+            of.node.scroll.as_ref().map(|s| (s.can_scroll_x, s.can_scroll_y)),
+            of.node.rect
+        );
+        let rect = frame.rect_of(overlay_id).expect("overlay rect");
+        let inside = Point::new(rect.x0 + rect.width() * 0.5, rect.y0 + rect.height() * 0.5);
+        let routed = frame.scrollable_y_at(inside);
+        eprintln!("overlay scrollable_y_at={:?}", routed);
+        assert_eq!(routed, Some(overlay_id));
     }
 }

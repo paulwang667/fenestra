@@ -42,6 +42,19 @@ expansion, and two checks that were narrower than the thing they guarded.
 
 ### Fixed
 
+- **Combobox options and tree nodes projected as `Button`, not `listitem`.**
+  A listbox option or a tree branch is a `listitem` in ARIA / AccessKit — a
+  row in a navigable list, with a separate `selected`/`expanded` state — not
+  an activatable `button`. The kit applied `.semantics(Semantics::Button)` to
+  both, so assistive technology announced every option and node as a button
+  and lost the list context. A new `Semantics::ListItem { selected: bool }`
+  variant carries the ARIA `listitem` role (name `listitem`); combobox
+  listbox options now expose it (`selected: false`, the active-cursor highlight
+  being purely visual), and tree branches and leaves expose it with
+  `selected` driven by the app's selection. The `describe`/`inspect` role
+  vocabulary and error message gained `listitem`; the exhaustive `role_of` and
+  `role_name` maps, plus the `describe` role parse, all handle it. Tests that
+  asserted tree/combobox options were `Button` now assert `ListItem`.
 - **Rendering aborted the process at seven levels of nesting.**
   `render_component` was one `match` over all nineteen component kinds, and
   it sits on the `render_by_id -> render_component -> children_of ->

@@ -122,6 +122,7 @@ impl<Msg: 'static> From<Select<Msg>> for Element<Msg> {
                     // padding, so options nest cleanly inside the panel.
                     .themed(|t: &Theme, s| s.rounded((t.radius.lg - SP1).max(0.0)))
                     .shrink0()
+                    .semantics(Semantics::ListItem { selected: is_selected })
                     .cursor(Cursor::Pointer)
                     .children([text(opt.clone()).size(m.font).themed(move |t: &Theme, s| {
                         if is_selected {
