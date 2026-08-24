@@ -7,16 +7,28 @@ use fenestra_core::{AccessNode, Frame, Semantics, WidgetId};
 /// Builds a full tree update for the current frame. `focus` falls back to
 /// the root (AccessKit requires a focus target); `scale` maps the logical
 /// rects to physical pixels via a root transform.
+///
+/// The fallback covers a stale focus as well as an absent one. Focus is held
+/// by widget id across frames, and an app can legitimately unmount whatever
+/// held it — a list row filtered out by a search, a pane replaced by a route
+/// change, a dialog dismissed. Publishing an id that is not among `nodes`
+/// panics the consumer with "Focused ID … is not in the node list", which
+/// turns an ordinary interaction into a crash. Nothing else prunes it, so the
+/// check belongs here, where the node list is already in hand.
 pub(crate) fn tree_update(frame: &Frame, focus: Option<WidgetId>, scale: f64) -> TreeUpdate {
     let root = frame.access_tree();
     let root_id = NodeId(root.id.0);
     let mut nodes = Vec::new();
     push_node(&mut nodes, &root, true, scale);
+    let focus = focus
+        .map(|f| NodeId(f.0))
+        .filter(|f| nodes.iter().any(|(id, _)| id == f))
+        .unwrap_or(root_id);
     TreeUpdate {
         nodes,
         tree: Some(Tree::new(root_id)),
         tree_id: TreeId::ROOT,
-        focus: NodeId(focus.map_or(root.id.0, |f| f.0)),
+        focus,
     }
 }
 
@@ -115,4 +127,52 @@ fn role_of(an: &AccessNode) -> Role {
 
 fn toggled(on: bool) -> Toggled {
     if on { Toggled::True } else { Toggled::False }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tree_update;
+    use fenestra_core::{Element, Fonts, FrameState, Theme, WidgetId, build_frame, col, text};
+
+    fn frame() -> fenestra_core::Frame {
+        let view: Element<()> = col().children([text("a"), text("b")]);
+        let mut fonts = Fonts::embedded();
+        let mut state = FrameState::new();
+        build_frame(
+            &view,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (200.0, 200.0),
+            1.0,
+        )
+    }
+
+    /// A focus that no longer resolves must not reach the consumer: it panics
+    /// with "Focused ID … is not in the node list", and an app unmounting the
+    /// focused widget — a row filtered out by a search, a pane replaced by a
+    /// route change — is an ordinary thing for an app to do.
+    #[test]
+    fn a_stale_focus_falls_back_to_the_root() {
+        let f = frame();
+        let update = tree_update(&f, Some(WidgetId(0xdead_beef_dead_beef)), 1.0);
+        let root = update.tree.as_ref().expect("a tree").root;
+        assert_eq!(
+            update.focus, root,
+            "a focus that is not in the node list must fall back to the root"
+        );
+        assert!(
+            update.nodes.iter().any(|(id, _)| *id == update.focus),
+            "the published focus must be one of the published nodes"
+        );
+    }
+
+    /// And a focus that does resolve is published unchanged.
+    #[test]
+    fn a_live_focus_is_published() {
+        let f = frame();
+        let live = f.access_tree().id;
+        let update = tree_update(&f, Some(live), 1.0);
+        assert_eq!(update.focus.0, live.0);
+    }
 }
