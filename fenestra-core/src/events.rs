@@ -253,6 +253,15 @@ pub enum InputEvent {
 }
 
 /// The result of dispatching one event.
+/// Window controls rendered by a borderless custom title bar. The runner
+/// maps them to OS actions (minimize, close) ahead of app input dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowControl {
+    Minimize,
+    Maximize,
+    Close,
+}
+
 pub struct Dispatch<Msg> {
     /// Messages emitted by handlers, in order.
     pub msgs: Vec<Msg>,

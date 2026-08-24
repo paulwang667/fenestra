@@ -18,6 +18,8 @@ pub struct CommandPalette<Msg> {
     on_navigate: Option<std::rc::Rc<dyn Fn(usize) -> Msg>>,
     on_close: Option<Msg>,
     key: Option<String>,
+    placeholder: String,
+    hint: Option<String>,
 }
 
 /// A modal launcher: typing filters `commands` (case-insensitive
@@ -41,10 +43,32 @@ pub fn command_palette<Msg>(
         on_navigate: None,
         on_close: None,
         key: None,
+        placeholder: "Type a command…".to_owned(),
+        hint: None,
     }
 }
 
 impl<Msg> CommandPalette<Msg> {
+    /// A quiet line pinned under the list, for naming the keys the palette
+    /// itself answers to. Nothing shows `↑↓`, `↵` or `esc` otherwise, and a
+    /// launcher whose navigation has to be guessed at is a launcher people
+    /// click their way through. Left unset, no line is drawn; the copy is the
+    /// caller's so it can be localized.
+    #[must_use]
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    /// The prompt shown in the empty field. Defaults to English, which is
+    /// only right for an English app — a localized app has no way to reach
+    /// this string otherwise.
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
     /// Maps every edit of the query to a message.
     pub fn on_input(mut self, f: impl Fn(String) -> Msg + 'static) -> Self {
         self.on_input = Some(std::rc::Rc::new(f));
@@ -106,7 +130,7 @@ impl<Msg: Clone + 'static> From<CommandPalette<Msg>> for Element<Msg> {
         let cursor = (!filtered.is_empty() && p.highlighted.is_some()).then_some(active);
 
         let mut input = text_input(&p.query)
-            .placeholder("Type a command…")
+            .placeholder(p.placeholder.clone())
             .width(420.0);
         if let Some(f) = &p.on_input {
             let f = std::rc::Rc::clone(f);
@@ -152,6 +176,15 @@ impl<Msg: Clone + 'static> From<CommandPalette<Msg>> for Element<Msg> {
             );
         } else {
             panel = panel.child(command_list(filtered, cursor));
+        }
+        if let Some(hint) = &p.hint {
+            panel = panel.child(
+                row().w_full().px(SP2).pt(SP1).child(
+                    text(hint.clone())
+                        .size(TextSize::Xs)
+                        .themed(|t: &Theme, s| s.color(t.text_muted)),
+                ),
+            );
         }
         let mut panel = panel.overlay(Overlay::modal());
         if let Some(close) = p.on_close {

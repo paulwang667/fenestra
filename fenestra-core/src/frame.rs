@@ -12,6 +12,7 @@ use crate::element::{
     DrawerSide, Element, ExitAnim, Kind, Overlay, OverlayMode, OverlayPlacement, PathData,
     Semantics,
 };
+use crate::events::WindowControl;
 use crate::frame_state::{ExitRecord, FrameState};
 use crate::ghost::{GhostNode, GhostPaint};
 use crate::grid;
@@ -208,6 +209,10 @@ struct FrameNode {
     exit: Option<ExitAnim>,
     /// Builder call site, for `debug_tree`.
     source: &'static std::panic::Location<'static>,
+    /// Window drag region (borderless title bars).
+    drag_region: bool,
+    /// Window control on a borderless title bar (minimize/close).
+    window_control: Option<WindowControl>,
     children: Vec<FrameNode>,
 }
 
@@ -368,6 +373,10 @@ struct BuiltNode {
     exit: Option<ExitAnim>,
     /// Builder call site, for `debug_tree`.
     source: &'static std::panic::Location<'static>,
+    /// Window drag region (borderless title bars).
+    drag_region: bool,
+    /// Window control on a borderless title bar (minimize/close).
+    window_control: Option<WindowControl>,
     children: Vec<BuiltNode>,
 }
 
@@ -943,6 +952,8 @@ fn build<Msg>(
         stick_bottom: el.stick_bottom,
         access: (semantics, label, value, el.key.clone()),
         live: el.live,
+        drag_region: el.drag_region,
+        window_control: el.window_control,
         selection: match &el.kind {
             Kind::Input(_) => state.editors.get(&id).map(|editor| {
                 let range = editor.editor.raw_selection().text_range();
@@ -1320,6 +1331,8 @@ impl Realize<'_> {
             animate_layout: node.animate_layout,
             exit: node.exit,
             source: node.source,
+            drag_region: node.drag_region,
+            window_control: node.window_control,
             children,
         };
         // Record this node's measured rect for next frame's FLIP / departure
@@ -2769,6 +2782,80 @@ impl Frame {
     /// All elements containing `point` along the topmost branch (later
     /// siblings paint on top and win), ordered root to deepest. Clip-aware:
     /// content scrolled out of a clipped container does not hit.
+    /// Whether a window drag region contains `point` (deepest-first walk,
+    /// same clip rules as [`Self::hit_chain`]). Borderless title bars use
+    /// this to route presses to the OS window-drag gesture.
+    pub fn drag_region_at(&self, point: Point) -> bool {
+        for overlay in self.overlays.iter().rev() {
+            if !overlay.hittable {
+                continue;
+            }
+            if Self::walk_drag_region(&overlay.node, point) {
+                return true;
+            }
+        }
+        Self::walk_drag_region(&self.root, point)
+    }
+
+    /// The borderless-title-bar window control containing `point`, if any
+    /// (deepest wins, same clip rules as [`Self::hit_chain`]).
+    pub fn window_control_at(&self, point: Point) -> Option<WindowControl> {
+        for overlay in self.overlays.iter().rev() {
+            if !overlay.hittable {
+                continue;
+            }
+            if let Some(c) = Self::walk_window_control(&overlay.node, point) {
+                return Some(c);
+            }
+        }
+        Self::walk_window_control(&self.root, point)
+    }
+
+    fn walk_window_control(node: &FrameNode, point: Point) -> Option<WindowControl> {
+        if node.style.display == Display::None {
+            return None;
+        }
+        if let Some(v) = node.visible
+            && !v.contains(point)
+        {
+            return None;
+        }
+        if !node.rect.contains(point) {
+            return None;
+        }
+        if let Some(c) = node
+            .children
+            .iter()
+            .find_map(|child| Self::walk_window_control(child, point))
+        {
+            return Some(c);
+        }
+        node.window_control
+    }
+
+    fn walk_drag_region(node: &FrameNode, point: Point) -> bool {
+        if node.style.display == Display::None {
+            return false;
+        }
+        // `visible: None` means unclipped — only reject on a clip miss.
+        if let Some(v) = node.visible
+            && !v.contains(point)
+        {
+            return false;
+        }
+        if !node.rect.contains(point) {
+            return false;
+        }
+        // Deepest interactive child wins over an ancestor region (a button
+        // inside a title bar must not drag the window).
+        for child in &node.children {
+            if Self::walk_drag_region(child, point) {
+                return true;
+            }
+        }
+        node.drag_region
+    }
+
     pub fn hit_chain(&self, point: Point) -> Vec<WidgetId> {
         // Overlays hit-test first, topmost first; a modal backdrop swallows
         // everything beneath it.
