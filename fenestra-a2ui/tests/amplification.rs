@@ -168,15 +168,19 @@ fn containers_that_bypass_children_of_are_charged_too() {
 /// bug for another four levels. A test that inherits the harness stack
 /// tests nothing.
 ///
-/// **The margin is thin, and this test does not widen it.** Measured with
+/// **The margin was re-measured, and the cap came down.** Measured with
 /// `FENESTRA_PROBE_STACK` (which overrides the size below), the renderer
-/// needs between 1.5 and 2 MiB at `MAX_DEPTH`: it renders at 2048 KiB and
-/// overflows at 1536. Running at half would therefore abort rather than
-/// prove headroom — that was tried. So this pins the real configuration,
-/// and the honest reading of a pass is "the shipped default still works",
-/// not "there is room to spare". Raising `MAX_DEPTH`, or growing a
-/// recursive arm, needs a fresh measurement; ARCHITECTURE.md records where
-/// the remaining cost lives.
+/// needs between 1.5 and 1.7 MiB at `MAX_DEPTH`: it renders at 1664 KiB and
+/// overflows at 1600, leaving the 2048 KiB shipped default roughly 384 KiB
+/// of headroom. That headroom is real but not large, and it was earned by
+/// lowering `MAX_DEPTH` from 16 to 12: once `Element` grew its per-element
+/// gesture-handler fields, a 16-level chain measured just over 2 MiB, and a
+/// "works on the shipped default" that only holds at 2048 KiB with nothing
+/// to spare is the kind of margin a single field addition eats. Twelve is
+/// still twice a realistic surface (a Card in a List in a Tab is about
+/// seven). Raising `MAX_DEPTH`, or growing a recursive arm, needs a fresh
+/// measurement here; ARCHITECTURE.md records where the remaining cost
+/// lives.
 ///
 /// One caveat on the failure mode: a stack overflow `abort()`s rather than
 /// unwinding, so a regression kills the whole test binary and reports as
@@ -187,7 +191,7 @@ fn containers_that_bypass_children_of_are_charged_too() {
 fn renders_at_the_full_depth_cap() {
     // `MAX_DEPTH` is private; this mirrors it deliberately, so that raising
     // the cap without re-measuring the stack shows up as a failure here.
-    const CAP: usize = 16;
+    const CAP: usize = 12;
 
     // `CAP` containers, so the deepest node — the leaf — sits at exactly
     // `MAX_DEPTH`. One more would be the cap legitimately refusing.
@@ -261,7 +265,7 @@ fn renders_at_the_full_depth_cap() {
 /// recursions plus a Card's builder chain.
 #[test]
 fn the_expensive_recursive_arms_also_render_at_the_full_depth_cap() {
-    const CAP: usize = 16;
+    const CAP: usize = 12;
 
     let mut components: Vec<String> = Vec::new();
     for i in 0..CAP {

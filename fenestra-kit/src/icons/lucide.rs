@@ -91,6 +91,8 @@ check => CHECK, "check";
     filter => FILTER, "filter";
     heart => HEART, "heart";
     share_2 => SHARE_2, "share-2";
+    credit_card => CREDIT_CARD, "credit-card";
+    send => SEND, "send";
 }
 
 #[cfg(test)]

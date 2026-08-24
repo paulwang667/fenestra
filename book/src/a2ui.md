@@ -167,6 +167,13 @@ retries with a different name; one that sees `unknownComponent` knows the
 catalog is the problem, not its data. Matching on the prose would break
 the first time a message is reworded.
 
+One translation is worth knowing: the catalog names its icons in Material
+style (`accountCircle`, `arrowBack`, `payment`), while this renderer's icon
+set is Lucide's (`user`, `arrow-left`, `credit-card`). Names with a
+faithful counterpart are translated; the rest — mostly off-state variants
+like `favoriteOff` — surface as `unknownIcon` rather than a subtly wrong
+glyph.
+
 Each kind also carries a severity. `broken` means the surface is not what
 the stream asked for — a missing component, an unresolved binding, a write
 that didn't apply. `approximate` means it rendered the right thing

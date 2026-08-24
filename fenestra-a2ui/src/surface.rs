@@ -147,8 +147,11 @@ impl Surface {
 
 /// Sets or removes a value at a JSON Pointer, creating intermediate
 /// objects along the way. Arrays index numerically; `-` appends (RFC
-/// 6901's append token), as does the next index. Returns whether the
-/// write applied — the caller records a note when it did not.
+/// 6901's append token), as does the next index. Removal deletes an
+/// object key and nulls an array slot — the protocol sets the value to
+/// `undefined`, length preserved, and null is its JSON stand-in.
+/// Returns whether the write applied — the caller records a note when
+/// it did not.
 fn pointer_write(root: &mut Value, pointer: &str, value: Option<Value>) -> bool {
     let mut parts: Vec<String> = pointer
         .split('/')
@@ -200,7 +203,11 @@ fn pointer_write(root: &mut Value, pointer: &str, value: Option<Value>) -> bool 
                 }
                 Some(_) => false,
                 None if i < items.len() => {
-                    items.remove(i);
+                    // Spec: "For arrays, the value at the index is set
+                    // to undefined, preserving length." Null it instead
+                    // of removing — removal shifts the indices every
+                    // later binding points at.
+                    items[i] = Value::Null;
                     true
                 }
                 None => false,

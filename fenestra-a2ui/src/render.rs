@@ -22,8 +22,16 @@ use crate::{checks, functions};
 /// caught exactly by the render-path stack (see [`render_by_id`]); this
 /// cap bounds legitimate-but-absurd nesting so the produced *element*
 /// tree stays well inside `fenestra_core::MAX_TREE_DEPTH` (each catalog
-/// component lowers to roughly 1–3 element levels).
-const MAX_DEPTH: usize = 16;
+/// component lowers to roughly 1–3 element levels: 12 × 3 = 36 < 48).
+///
+/// It is also the deepest chain the render recursion keeps on a 2 MiB
+/// thread — the `std::thread` / tokio blocking-pool default the MCP
+/// server renders on — with margin. The cap was 16; after `Element` grew
+/// its per-element gesture-handler fields, a 16-level chain measured just
+/// over 2 MiB, so it came down to 12, which needs about 1.6 MiB. `renders_at_the_full_depth_cap`
+/// in the amplification tests re-measures this; raise it only with a
+/// fresh `FENESTRA_PROBE_STACK` measurement.
+const MAX_DEPTH: usize = 12;
 
 /// The catalog this build implements, by its canonical spec URL. Streams
 /// name it either this way or with the bare id `basic`.
@@ -80,6 +88,49 @@ fn ui_key(id: &str, scope: Option<&str>) -> String {
 /// The kit's `select` always renders *some* option, so without this the
 /// control would assert a choice the user never made.
 const UNSELECTED_LABEL: &str = "—";
+
+/// The basic catalog names its 60 icons in Material style
+/// (`accountCircle`, `arrowBack`, `payment`, …); the vendored set speaks
+/// Lucide's kebab-case vocabulary (`user`, `arrow-left`, `credit-card`, …).
+/// This table translates the Material names that have a *faithful* visual
+/// counterpart in the vendored set. Names with no faithful glyph
+/// (`locationOn`, `moreVert`, `starHalf`, `favoriteOff`, the `volume*`
+/// family, …) deliberately have no entry: they render the `[icon: …]`
+/// placeholder with an `unknownIcon` note instead of a subtly wrong icon —
+/// a full star where the stream asked for a half one is a lie the pixels
+/// would keep. A name already in Lucide's vocabulary (or any other
+/// custom name) misses the table and is looked up as-is.
+const MATERIAL_TO_LUCIDE: &[(&str, &str)] = &[
+    ("accountCircle", "user"),
+    ("add", "plus"),
+    ("arrowBack", "arrow-left"),
+    ("arrowForward", "arrow-right"),
+    ("attachFile", "link"),
+    ("calendarToday", "calendar"),
+    ("close", "x"),
+    ("delete", "trash-2"),
+    ("edit", "pencil"),
+    ("event", "calendar-days"),
+    ("favorite", "heart"),
+    ("home", "house"),
+    ("notifications", "bell"),
+    ("payment", "credit-card"),
+    ("person", "user"),
+    ("refresh", "refresh-cw"),
+    ("share", "share-2"),
+    ("visibility", "eye"),
+    ("warning", "triangle-alert"),
+];
+
+/// The vendored Lucide name for a catalog icon name, or the name itself
+/// when it is not a Material alias.
+fn lucide_name_for(name: &str) -> &str {
+    MATERIAL_TO_LUCIDE
+        .iter()
+        .find(|(m, _)| *m == name)
+        .map(|(_, l)| *l)
+        .unwrap_or(name)
+}
 
 /// Messages the rendered surface emits; feed them to [`Surface::handle`].
 #[derive(Clone, Debug)]
@@ -1343,9 +1394,10 @@ fn resolve_call(ctx: &Ctx, id: &str, call: &FunctionCall, scope: Option<&str>) -
         }
         "pluralize" => {
             let v = arg_value(ctx, id, &call.args, "value", scope);
-            let one = call.args.get("one").and_then(Value::as_str).unwrap_or("");
+            let zero = call.args.get("zero").and_then(Value::as_str);
+            let one = call.args.get("one").and_then(Value::as_str);
             let other = call.args.get("other").and_then(Value::as_str).unwrap_or("");
-            functions::pluralize(v.as_f64().unwrap_or(0.0), one, other)
+            functions::pluralize(v.as_f64().unwrap_or(0.0), zero, one, other)
         }
         other => {
             ctx.note(
@@ -1359,23 +1411,37 @@ fn resolve_call(ctx: &Ctx, id: &str, call: &FunctionCall, scope: Option<&str>) -
 }
 
 /// `${…}` interpolation for `formatString`: absolute/relative data paths
-/// resolve; nested function-call syntax (`${fn(…)}`) is beyond this pass
-/// and resolves to nothing, with a note. Braces balance, so a nested
-/// expression is skipped whole rather than split at its first `}`.
+/// resolve; `\${` renders a literal `${` (the spec's escape); nested
+/// function-call syntax (`${fn(…)}`) is beyond this pass and resolves to
+/// nothing, with a note. Braces balance, so a nested expression is
+/// skipped whole rather than split at its first `}`.
 fn interpolate(ctx: &Ctx, id: &str, template: &str, scope: Option<&str>) -> String {
     let mut out = String::new();
     let mut rest = template;
     while let Some(start) = rest.find("${") {
+        // The spec's escape: a backslash directly before `${` makes it
+        // literal — the backslash is consumed, the `${` is kept.
+        if start > 0 && rest.as_bytes()[start - 1] == b'\\' {
+            out.push_str(&rest[..start - 1]);
+            out.push_str("${");
+            rest = &rest[start + 2..];
+            continue;
+        }
         out.push_str(&rest[..start]);
         let after = &rest[start + 2..];
-        // Find the matching close brace, counting nested `${`/`}` pairs.
+        // Find the matching close brace, counting nested `${`/`}` pairs
+        // (an escaped `\${` inside does not open a nested expression).
         let mut depth = 1_usize;
         let mut end = None;
         let bytes = after.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
             match bytes[i] {
-                b'{' => depth += 1,
+                // An escaped `\${` is literal text, not a nested
+                // expression: do not open a brace level for it.
+                b'{' if !(i >= 2 && bytes[i - 1] == b'$' && bytes[i - 2] == b'\\') => {
+                    depth += 1
+                }
                 b'}' => {
                     depth -= 1;
                     if depth == 0 {
@@ -1967,10 +2033,12 @@ fn render_leaf(ctx: &Ctx, component: &Component, scope: Option<&str>) -> Element
                 Some("h5") => text(resolved).size_px(14.0).weight(Weight::Medium),
                 Some("caption") => text(resolved).size(TextSize::Xs).color(theme.text_muted),
                 // Body text supports simple Markdown per the catalog docs.
-                other => {
-                    if let Some(v) = other {
-                        ctx.note_unknown_variant(id, "variant", v, "body text");
-                    }
+                // `body` is the catalog's default variant and a conforming
+                // stream may write it explicitly — same arm as the field
+                // being absent, and no note.
+                None | Some("body") => fenestra_markdown::markdown(resolved).into(),
+                Some(v) => {
+                    ctx.note_unknown_variant(id, "variant", v, "body text");
                     fenestra_markdown::markdown(resolved).into()
                 }
             }
@@ -2038,7 +2106,7 @@ fn render_leaf(ctx: &Ctx, component: &Component, scope: Option<&str>) -> Element
         }
         Kind::Icon { name } => {
             let name = resolve_value(ctx, id, name, scope);
-            match fenestra_kit::icons::lucide::by_name(&name) {
+            match fenestra_kit::icons::lucide::by_name(lucide_name_for(&name)) {
                 Some(icon) => icon.label(name),
                 None => {
                     ctx.note(

@@ -4140,6 +4140,17 @@ nothing measured is worse than none — and shrinking `Element` or breaking
 the recursion into an explicit worklist is the lever if this ever needs
 more headroom.
 
+**The lever proved out (2026-08-22).** The next `Element` growth landed —
+the per-element gesture-handler fields, three `Option<Box<dyn Fn>>`
+(+48 bytes, `3115d14`) — and the scaling above did exactly what it
+predicted: a 16-level chain measured just over the 2048 KiB default
+(overflow at 2048, pass at 2080), so the shipped-default guarantee no
+longer held with anything to spare. Rather than chase the field with a
+larger probe, `MAX_DEPTH` came down 16 → 12: a 12-level chain needs
+1600–1664 KiB, restoring roughly 384 KiB of headroom on the default. The
+trade costs one level of legitimate-but-absurd nesting; the alternative
+cost the next `Element` field's worth of guarantee.
+
 **One budget, or the bound is not a bound.** `children_of` charged template
 expansions to a render-wide budget and static child lists to nothing at
 all, so the cheaper amplifier was the unbounded one — a static list needs no
