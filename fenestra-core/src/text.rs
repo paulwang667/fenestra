@@ -293,6 +293,29 @@ pub struct Fonts {
     roles: HashMap<FamilyRole, String>,
 }
 
+/// Which family a registered blob binds its role to.
+///
+/// One blob can define several families — a `.ttc` almost always does — and the
+/// order `register_fonts` hands them back in is not stable from one process to
+/// the next. Keeping whichever arrived first meant a role bound to a different
+/// face on different runs of the same program: `Hiragino Sans GB.ttc` defines
+/// both `Hiragino Sans GB` and `.Hiragino Sans GB Interface`, so a caller
+/// registering it got one or the other at random. That is a different typeface,
+/// and so a different rendering of every string the program draws.
+///
+/// The answer therefore depends on the *set* of names and not their order.
+/// Apple hides its UI-optimised variants behind a leading dot, and somebody
+/// handing over Hiragino means the family with the name on the tin, so a
+/// visible name wins; a dotted one is the fallback rather than the pick.
+fn pick_family(mut names: Vec<String>) -> Option<String> {
+    names.sort_unstable();
+    names
+        .iter()
+        .find(|n| !n.starts_with('.'))
+        .or_else(|| names.first())
+        .cloned()
+}
+
 impl Fonts {
     /// Embedded fonts only: fully deterministic, used by headless rendering.
     pub fn embedded() -> Self {
@@ -346,20 +369,31 @@ impl Fonts {
         }
     }
 
+    /// The family name a role resolves to, when one has been registered for it.
+    ///
+    /// Exists so the choice `register` makes is observable. It used not to be,
+    /// and the choice was not deterministic, so a program could render every
+    /// string differently from one run to the next with nothing able to say why.
+    #[must_use]
+    pub fn role_family(&self, role: FamilyRole) -> Option<&str> {
+        self.roles.get(&role).map(String::as_str)
+    }
+
     /// Registers font data (TTF/OTF, collections too) under a family role,
     /// so text styled `.family(FamilyRole::Display)` (or `Serif`) resolves
     /// to it. The layout cache is cleared. Returns `false` when no face
     /// could be parsed from `data`.
+    ///
+    /// Which family a multi-family blob binds to is [`pick_family`], and it
+    /// does not depend on the order the faces come back in.
     pub fn register(&mut self, role: FamilyRole, data: Vec<u8>) -> bool {
         let collection = &mut self.font_cx.collection;
-        let mut name = None;
-        for (family, _fonts) in
-            collection.register_fonts(Blob::new(std::sync::Arc::new(data)), None)
-        {
-            if name.is_none() {
-                name = collection.family_name(family).map(str::to_owned);
-            }
-        }
+        let registered = collection.register_fonts(Blob::new(std::sync::Arc::new(data)), None);
+        let names: Vec<String> = registered
+            .into_iter()
+            .filter_map(|(family, _fonts)| collection.family_name(family).map(str::to_owned))
+            .collect();
+        let name = pick_family(names);
         let Some(name) = name else {
             return false;
         };
@@ -895,6 +929,64 @@ impl Fonts {
 
 #[cfg(test)]
 mod tests {
+
+    /// The family a blob binds to depends on the set of names, not their order.
+    ///
+    /// This is the whole bug. `register` kept whichever family
+    /// `register_fonts` yielded first, and that order differs between processes
+    /// — so `Hiragino Sans GB.ttc`, which defines two families, bound the role
+    /// to `Hiragino Sans GB` on one run and `.Hiragino Sans GB Interface` on
+    /// the next. Different typeface, different rendering of every string in the
+    /// program. It surfaced as a gallery of screenshots that would not
+    /// reproduce: half the runs redrew all sixty-four of them.
+    ///
+    /// Written against every permutation rather than against one, because
+    /// order is exactly what used to decide it and a single ordering would
+    /// have passed on the broken version.
+    #[test]
+    fn the_family_a_blob_binds_to_ignores_the_order_it_arrives_in() {
+        let names = [
+            ".Hiragino Sans GB Interface".to_owned(),
+            "Hiragino Sans GB".to_owned(),
+            "Hiragino Sans GB W6".to_owned(),
+        ];
+        let mut seen = Vec::new();
+        for a in 0..3 {
+            for b in 0..3 {
+                for c in 0..3 {
+                    if a == b || b == c || a == c {
+                        continue;
+                    }
+                    let order = vec![names[a].clone(), names[b].clone(), names[c].clone()];
+                    seen.push((order.clone(), super::pick_family(order)));
+                }
+            }
+        }
+        assert_eq!(seen.len(), 6, "all six orderings");
+        let first = seen[0].1.clone();
+        for (order, got) in &seen {
+            assert_eq!(
+                *got, first,
+                "arriving as {order:?} bound a different family, so the order \
+                 still decides it"
+            );
+        }
+        assert_eq!(
+            first.as_deref(),
+            Some("Hiragino Sans GB"),
+            "a hidden system variant won over the family with the name on \
+             the tin"
+        );
+    }
+
+    /// With nothing but hidden variants, one of them is still a stable answer.
+    #[test]
+    fn a_blob_of_only_hidden_families_still_picks_deterministically() {
+        let pick = |v: Vec<&str>| super::pick_family(v.into_iter().map(str::to_owned).collect());
+        assert_eq!(pick(vec![".B", ".A"]), pick(vec![".A", ".B"]));
+        assert_eq!(pick(vec![".B", ".A"]).as_deref(), Some(".A"));
+        assert_eq!(super::pick_family(Vec::new()), None);
+    }
     use super::*;
     use crate::style::{Length, Style, TextStyle};
     use crate::tokens::{MEASURE_CH, TextSize};
