@@ -2740,10 +2740,15 @@ impl Frame {
     }
 
     fn walk_window_control(node: &FrameNode, point: Point) -> Option<WindowControl> {
-        let Some(visible) = node.visible else {
+        if node.style.display == Display::None {
             return None;
-        };
-        if !visible.contains(point) || !node.rect.contains(point) {
+        }
+        if let Some(v) = node.visible
+            && !v.contains(point)
+        {
+            return None;
+        }
+        if !node.rect.contains(point) {
             return None;
         }
         if let Some(c) = node
@@ -2757,10 +2762,16 @@ impl Frame {
     }
 
     fn walk_drag_region(node: &FrameNode, point: Point) -> bool {
-        let Some(visible) = node.visible else {
+        if node.style.display == Display::None {
             return false;
-        };
-        if !visible.contains(point) || !node.rect.contains(point) {
+        }
+        // `visible: None` means unclipped — only reject on a clip miss.
+        if let Some(v) = node.visible
+            && !v.contains(point)
+        {
+            return false;
+        }
+        if !node.rect.contains(point) {
             return false;
         }
         // Deepest interactive child wins over an ancestor region (a button

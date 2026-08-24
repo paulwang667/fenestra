@@ -320,6 +320,14 @@ impl WindowShell {
         if was_hidden {
             window.set_visible(true);
         }
+        if std::env::var("FENESTRA_DEBUG_INPUT").is_ok() {
+            let pos = window.outer_position().ok();
+            let size = window.outer_size();
+            eprintln!(
+                "[fenestra-window] outer_position={pos:?} outer_size={size:?} decorated={}",
+                window.is_decorated()
+            );
+        }
         Ok(())
     }
 
@@ -2081,24 +2089,45 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                 // deeper claimed first (checked after dispatch).
                 if state == winit::event::ElementState::Pressed
                     && let Some(window) = self.shell.window()
-                    && !window.is_decorated()
                 {
-                    let point = Point::new(self.cursor.x, self.cursor.y);
-                    if let Some((_view, frame)) = &self.last {
-                        match frame.window_control_at(point) {
-                            Some(fenestra_core::WindowControl::Minimize) => {
-                                window.set_minimized(true);
+                    let debug = std::env::var("FENESTRA_DEBUG_INPUT").is_ok();
+                    let decorated = window.is_decorated();
+                    if debug {
+                        eprintln!(
+                            "[fenestra-input] press: decorated={decorated} cursor=({},{})",
+                            self.cursor.x, self.cursor.y
+                        );
+                    }
+                    if !decorated {
+                        let point = Point::new(self.cursor.x, self.cursor.y);
+                        if let Some((_view, frame)) = &self.last {
+                            match frame.window_control_at(point) {
+                                Some(fenestra_core::WindowControl::Minimize) => {
+                                    if debug {
+                                        eprintln!("[fenestra-input] -> minimize");
+                                    }
+                                    window.set_minimized(true);
+                                    return;
+                                }
+                                Some(fenestra_core::WindowControl::Close) => {
+                                    if debug {
+                                        eprintln!("[fenestra-input] -> close");
+                                    }
+                                    event_loop.exit();
+                                    return;
+                                }
+                                None => {}
+                            }
+                            if frame.drag_region_at(point) {
+                                let result = window.drag_window();
+                                if debug {
+                                    eprintln!("[fenestra-input] -> drag_window: {result:?}");
+                                }
                                 return;
                             }
-                            Some(fenestra_core::WindowControl::Close) => {
-                                event_loop.exit();
-                                return;
+                            if debug {
+                                eprintln!("[fenestra-input] -> plain press (no region)");
                             }
-                            None => {}
-                        }
-                        if frame.drag_region_at(point) {
-                            let _ = window.drag_window();
-                            return;
                         }
                     }
                 }
