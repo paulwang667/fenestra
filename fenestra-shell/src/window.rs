@@ -12,6 +12,8 @@ use web_time::Instant;
 
 #[cfg(not(target_arch = "wasm32"))]
 use fenestra_core::Theme;
+#[allow(unused_imports)]
+pub use fenestra_core::WindowControl; // re-exported for borderless-title-bar apps
 use fenestra_core::{
     App, Element, Fonts, FrameState, GesturePhase, InputEvent, Key, KeyInput, build_frame,
     dispatch, refresh_hover,
@@ -2082,11 +2084,22 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                     && !window.is_decorated()
                 {
                     let point = Point::new(self.cursor.x, self.cursor.y);
-                    if let Some((_view, frame)) = &self.last
-                        && frame.drag_region_at(point)
-                    {
-                        let _ = window.drag_window();
-                        return;
+                    if let Some((_view, frame)) = &self.last {
+                        match frame.window_control_at(point) {
+                            Some(fenestra_core::WindowControl::Minimize) => {
+                                window.set_minimized(true);
+                                return;
+                            }
+                            Some(fenestra_core::WindowControl::Close) => {
+                                event_loop.exit();
+                                return;
+                            }
+                            None => {}
+                        }
+                        if frame.drag_region_at(point) {
+                            let _ = window.drag_window();
+                            return;
+                        }
                     }
                 }
                 self.input_main(

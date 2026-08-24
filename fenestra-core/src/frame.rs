@@ -12,6 +12,7 @@ use crate::element::{
     DrawerSide, Element, ExitAnim, Kind, Overlay, OverlayMode, OverlayPlacement, PathData,
     Semantics,
 };
+use crate::events::WindowControl;
 use crate::frame_state::{ExitRecord, FrameState};
 use crate::ghost::{GhostNode, GhostPaint};
 use crate::grid;
@@ -189,6 +190,8 @@ struct FrameNode {
     source: &'static std::panic::Location<'static>,
     /// Window drag region (borderless title bars).
     drag_region: bool,
+    /// Window control on a borderless title bar (minimize/close).
+    window_control: Option<WindowControl>,
     children: Vec<FrameNode>,
 }
 
@@ -343,6 +346,8 @@ struct BuiltNode {
     source: &'static std::panic::Location<'static>,
     /// Window drag region (borderless title bars).
     drag_region: bool,
+    /// Window control on a borderless title bar (minimize/close).
+    window_control: Option<WindowControl>,
     children: Vec<BuiltNode>,
 }
 
@@ -918,6 +923,7 @@ fn build<Msg>(
         access: (semantics, label, value, el.key.clone()),
         live: el.live,
         drag_region: el.drag_region,
+        window_control: el.window_control,
         selection: match &el.kind {
             Kind::Input(_) => state.editors.get(&id).map(|editor| {
                 let range = editor.editor.raw_selection().text_range();
@@ -1294,6 +1300,7 @@ impl Realize<'_> {
             exit: node.exit,
             source: node.source,
             drag_region: node.drag_region,
+            window_control: node.window_control,
             children,
         };
         // Record this node's measured rect for next frame's FLIP / departure
@@ -2716,6 +2723,37 @@ impl Frame {
             }
         }
         Self::walk_drag_region(&self.root, point)
+    }
+
+    /// The borderless-title-bar window control containing `point`, if any
+    /// (deepest wins, same clip rules as [`Self::hit_chain`]).
+    pub fn window_control_at(&self, point: Point) -> Option<WindowControl> {
+        for overlay in self.overlays.iter().rev() {
+            if !overlay.hittable {
+                continue;
+            }
+            if let Some(c) = Self::walk_window_control(&overlay.node, point) {
+                return Some(c);
+            }
+        }
+        Self::walk_window_control(&self.root, point)
+    }
+
+    fn walk_window_control(node: &FrameNode, point: Point) -> Option<WindowControl> {
+        let Some(visible) = node.visible else {
+            return None;
+        };
+        if !visible.contains(point) || !node.rect.contains(point) {
+            return None;
+        }
+        if let Some(c) = node
+            .children
+            .iter()
+            .find_map(|child| Self::walk_window_control(child, point))
+        {
+            return Some(c);
+        }
+        node.window_control
     }
 
     fn walk_drag_region(node: &FrameNode, point: Point) -> bool {

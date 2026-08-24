@@ -4,7 +4,7 @@
 
 use peniko::Color;
 
-use crate::events::{DragEvent, KeyInput, PinchEvent, WheelEvent};
+use crate::events::{DragEvent, KeyInput, PinchEvent, WheelEvent, WindowControl};
 use crate::style::{Length, Paint, Style, TextAlign, TextWrap, ThemedFn, Transition};
 use crate::theme::Theme;
 use crate::tokens::{ShadowToken, TextSize, Weight};
@@ -637,6 +637,10 @@ pub struct Element<Msg> {
     /// Window drag region (borderless title bars): press-drag moves the OS
     /// window; presses are swallowed for hit-testing purposes.
     pub(crate) drag_region: bool,
+    /// A window control rendered by a borderless title bar (traffic lights):
+    /// pressing it sends [`crate::events::InputEvent`]-routed control to the
+    /// runner (minimize / close).
+    pub(crate) window_control: Option<WindowControl>,
     /// Payload announced when a pointer drag starts on this element.
     pub(crate) drag_source: Option<String>,
     pub(crate) on_drop: Option<DropFn<Msg>>,
@@ -715,6 +719,7 @@ impl<Msg> Element<Msg> {
             on_close: None,
             on_file_drop: None,
             drag_region: false,
+            window_control: None,
             drag_source: None,
             on_drop: None,
             overlay: None,
@@ -1048,6 +1053,14 @@ impl<Msg> Element<Msg> {
     /// children (buttons, inputs) still win via the hit chain.
     pub fn drag_region(mut self) -> Self {
         self.drag_region = true;
+        self
+    }
+
+    /// Marks this element as a borderless-title-bar window control
+    /// (minimize / close). The runner intercepts the press before app
+    /// input and performs the OS action.
+    pub fn window_control(mut self, control: WindowControl) -> Self {
+        self.window_control = Some(control);
         self
     }
 
@@ -2323,6 +2336,7 @@ impl<Msg: 'static> Element<Msg> {
             }),
             on_close: self.on_close.map(&f),
             drag_region: self.drag_region,
+            window_control: self.window_control,
             on_file_drop: self.on_file_drop.map(|d| {
                 let f = f.clone();
                 Box::new(move |p: &std::path::Path| f(d(p))) as FileDropFn<B>
