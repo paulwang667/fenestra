@@ -258,6 +258,7 @@ pub enum InputEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowControl {
     Minimize,
+    Maximize,
     Close,
 }
 

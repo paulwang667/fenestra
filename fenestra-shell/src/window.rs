@@ -2109,6 +2109,10 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                                     window.set_minimized(true);
                                     return;
                                 }
+                                Some(fenestra_core::WindowControl::Maximize) => {
+                                    window.set_maximized(!window.is_maximized());
+                                    return;
+                                }
                                 Some(fenestra_core::WindowControl::Close) => {
                                     if debug {
                                         eprintln!("[fenestra-input] -> close");
