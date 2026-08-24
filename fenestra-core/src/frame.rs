@@ -1647,7 +1647,7 @@ pub fn build_frame<Msg>(
             let (w, h) = (f64::from(measured.width), f64::from(measured.height));
 
             // Enter animation progress.
-            let progress = if state.reduced_motion {
+            let progress = if state.reduced_motion || !p.def.enter {
                 1.0
             } else {
                 let opened = state.overlay_opened.get(&p.id).copied().unwrap_or(0.0);

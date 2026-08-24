@@ -187,6 +187,7 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
                     placement: OverlayPlacement::Below { gap: 4.0 },
                     backdrop: false,
                     trap_focus: false,
+                    enter: true,
                 })
                 .children(filtered.iter().enumerate().map(|(i, option)| {
                     option_row(option, cursor == Some(i), pick(option.clone()))

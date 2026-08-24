@@ -227,6 +227,10 @@ pub struct Overlay {
     pub backdrop: bool,
     /// Tab cycles only inside this overlay while it is open.
     pub trap_focus: bool,
+    /// Play the 200ms fade+slide enter animation. When `false` the overlay
+    /// appears instantly with no fade or slide (avoids a modal "flash");
+    /// every constructor defaults to `true`.
+    pub enter: bool,
 }
 
 impl Overlay {
@@ -237,6 +241,7 @@ impl Overlay {
             placement: OverlayPlacement::Below { gap: 4.0 },
             backdrop: false,
             trap_focus: false,
+            enter: true,
         }
     }
 
@@ -247,6 +252,7 @@ impl Overlay {
             placement: OverlayPlacement::BelowCenter { gap: 6.0 },
             backdrop: false,
             trap_focus: false,
+            enter: true,
         }
     }
 
@@ -257,6 +263,7 @@ impl Overlay {
             placement: OverlayPlacement::Center,
             backdrop: true,
             trap_focus: true,
+            enter: true,
         }
     }
 
@@ -270,6 +277,7 @@ impl Overlay {
             placement: OverlayPlacement::Pointer { gap: 2.0 },
             backdrop: false,
             trap_focus: false,
+            enter: true,
         }
     }
 
@@ -282,6 +290,7 @@ impl Overlay {
             placement: OverlayPlacement::TopRight { margin: 16.0 },
             backdrop: false,
             trap_focus: false,
+            enter: true,
         }
     }
 
@@ -294,6 +303,7 @@ impl Overlay {
             placement: OverlayPlacement::Edge { side },
             backdrop: true,
             trap_focus: true,
+            enter: true,
         }
     }
 
@@ -306,7 +316,18 @@ impl Overlay {
             placement: OverlayPlacement::RightStart { gap: 2.0 },
             backdrop: false,
             trap_focus: false,
+            enter: true,
         }
+    }
+}
+
+impl Overlay {
+    /// Skip the fade+slide enter animation. Callers that want the overlay to
+    /// appear instantly (no "flash") — e.g. a modal the user opens repeatedly —
+    /// use this; every constructor animates by default.
+    pub fn no_enter(mut self) -> Self {
+        self.enter = false;
+        self
     }
 }
 

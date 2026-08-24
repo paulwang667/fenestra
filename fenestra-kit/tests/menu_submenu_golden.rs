@@ -44,6 +44,7 @@ fn flyout_view(theme: &Theme) -> Element<()> {
         placement: OverlayPlacement::RightStart { gap: 6.0 },
         backdrop: false,
         trap_focus: false,
+        enter: true,
     });
     let menu: Element<()> = menu_items([
         menu_item("Cut").on_select(()),
