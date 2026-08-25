@@ -4412,3 +4412,30 @@ waiting for its pager).
 - **Verified** by dispatch-level tests (flick advances, wrong-way flick
   is silent, arrows clamp, Home/End jump, label in the yaml) and the
   `gallery_feedback` SWIPER section paired with `page_control`.
+
+## Roving focus: the primitive that closes the menu/accordion delta (2026-08-25)
+
+The APG sweep left menu roving and accordion arrows standing because both
+need focus *movement* — and widgets can only return messages. This tranche
+adds the primitive instead of more workarounds.
+
+- **`Element::roving(RovingAxis)`** marks a container as an arrow-roving
+  scope (Vertical or Horizontal). Three core behaviors follow: the scope's
+  focusable descendants leave `Frame::focusables()` (Tab skips the whole
+  subtree; the container, if focusable, is the single tab stop); Tab from
+  a focused item stands in for its container (`roving_scope_container`);
+  and unhandled axis arrows (plus Home/End) move focus between the
+  candidates with wraparound — entering from the container at the near
+  end, since the container itself is not a candidate.
+- **The focused item's own `on_key` still sees arrows first** (the roving
+  block runs after `on_key`, gated on `!key_handled`), so the app-driven
+  `menu` keyboard mode (highlight + `on_navigate`) keeps working unchanged
+  — it now has a zero-state default beneath it.
+- **Default-on in the kit**: `menu_items` panels (non-keyboard mode) and
+  `accordion` are Vertical roving scopes whose rows/headers are focusable
+  candidates; `menubar` is Horizontal across its triggers. Disabled rows
+  are filtered from candidates. No app state, no `on_navigate` wiring —
+  Enter/Space activates the focused item through core click activation.
+- **Verified** by dispatch-level tests in `fenestra-core/tests/roving.rs`
+  (Tab exclusion, container entry, wraparound both ends, Tab stand-in
+  probed by Enter activation) plus the unchanged workspace suites.

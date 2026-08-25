@@ -1012,6 +1012,9 @@ pub fn dispatch<Msg: Clone>(
             if !order.is_empty() {
                 let next = match state
                     .focus
+                    // A focused roving item stands in for its scope
+                    // container (the item itself is not in the Tab order).
+                    .map(|f| frame.roving_scope_container(f).unwrap_or(f))
                     .and_then(|f| order.iter().position(|id| *id == f))
                 {
                     Some(i) if matches!(event, InputEvent::Tab) => order[(i + 1) % order.len()],
@@ -1095,6 +1098,46 @@ pub fn dispatch<Msg: Clone>(
                             state.open_overlay(overlay_id);
                         }
                         out.redraw = true;
+                    }
+                }
+                // Arrow roving: when the focused widget sits in a roving
+                // scope and did not consume the key itself, the scope's
+                // axis arrows move focus between the scope's candidates
+                // (APG roving tabindex).
+                if !key_handled
+                    && let Some(scope) = frame.roving_focus(focus)
+                    && !scope.candidates.is_empty()
+                {
+                    use crate::element::RovingAxis;
+                    let forward = match &key.key {
+                        Key::Home => Some(false),
+                        Key::End => Some(true),
+                        _ => match (scope.axis, &key.key) {
+                            (RovingAxis::Vertical, Key::ArrowDown)
+                            | (RovingAxis::Horizontal, Key::ArrowRight) => Some(true),
+                            (RovingAxis::Vertical, Key::ArrowUp)
+                            | (RovingAxis::Horizontal, Key::ArrowLeft) => Some(false),
+                            _ => None,
+                        },
+                    };
+                    if let Some(forward) = forward {
+                        // The container itself is not a candidate: arrows
+                        // from it enter at the near end.
+                        let pos = scope
+                            .candidates
+                            .iter()
+                            .position(|id| *id == focus);
+                        let len = scope.candidates.len();
+                        let next = match (pos, forward) {
+                            (Some(i), true) => scope.candidates[(i + 1) % len],
+                            (Some(i), false) => scope.candidates[(i + len - 1) % len],
+                            (None, true) => scope.candidates[0],
+                            (None, false) => scope.candidates[len - 1],
+                        };
+                        state.focus = Some(next);
+                        state.focus_visible = true;
+                        out.redraw = true;
+                        key_handled = true;
                     }
                 }
             }

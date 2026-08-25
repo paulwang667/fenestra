@@ -46,7 +46,8 @@ pub use clipboard::{Clipboard, MemoryClipboard};
 pub use cmd::{Cmd, CmdFuture, CmdUnit, Sub, apply_cmd};
 pub use element::{
     Cursor, DrawerSide, Element, ExitAnim, ImageData, InputData, Kind, MAX_TREE_DEPTH,
-    OpticalCorrection, Overlay, OverlayMode, OverlayPlacement, PathData, Semantics, Span, SwipeDir,
+    OpticalCorrection, Overlay, OverlayMode, OverlayPlacement, PathData, RovingAxis, Semantics,
+    Span, SwipeDir,
     VirtualData, col, div, divider, image_from_data, image_payload, image_rgba8, path, raw_input,
     raw_text_area, responsive, responsive_hinted, rich_text, row, spacer, span, stack, text,
 };

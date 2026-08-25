@@ -21,7 +21,8 @@
 //! ```
 
 use fenestra_core::{
-    Cursor, Element, SP3, SP4, Semantics, TextSize, Theme, Transition, Weight, col, row, text,
+    Cursor, Element, RovingAxis, SP3, SP4, Semantics, TextSize, Theme, Transition, Weight, col,
+    row, text,
 };
 
 use crate::icons;
@@ -145,6 +146,11 @@ impl<Msg> From<Accordion<Msg>> for Element<Msg> {
         col()
             .w_full()
             .overflow_hidden()
+            // APG accordion arrows: the headers leave the Tab order; the
+            // accordion is the single tab stop and ↑/↓ move between them
+            // (Enter/Space still toggles the focused header).
+            .focusable(true)
+            .roving(RovingAxis::Vertical)
             .themed(|t: &Theme, s| s.rounded(t.radius.md).border(1.0, t.border))
             .children(sections)
     }

@@ -10,7 +10,7 @@ use vello::Scene;
 
 use crate::element::{
     DrawerSide, Element, ExitAnim, Kind, Overlay, OverlayMode, OverlayPlacement, PathData,
-    Semantics,
+    RovingAxis, Semantics,
 };
 use crate::events::WindowControl;
 use crate::frame_state::{ExitRecord, FrameState};
@@ -126,6 +126,7 @@ struct NodeMeta {
     /// Whether an input drops edits but keeps focus/selection/copy.
     read_only: bool,
     busy: bool,
+    roving: Option<RovingAxis>,
 }
 
 /// Scroll geometry of one scrollable container, resolved for this frame.
@@ -260,6 +261,19 @@ pub struct AccessNode {
     pub children: Vec<AccessNode>,
 }
 
+/// The arrow-roving scope governing a focused widget (see
+/// [`Frame::roving_focus`]).
+#[derive(Debug, Clone)]
+pub struct RovingFocus {
+    /// Which arrow pair moves focus.
+    pub axis: RovingAxis,
+    /// The scope container: the single Tab stop standing in for focused
+    /// items.
+    pub container: WidgetId,
+    /// Focusable candidates in tree order (the container excluded).
+    pub candidates: Vec<WidgetId>,
+}
+
 /// One text node's legibility, measured on the real resolved colors and size —
 /// produced by [`Frame::legibility`]. Reports both the APCA `Lc` and the WCAG 2
 /// ratio against the floor each standard sets for the rendered size, so an agent
@@ -364,6 +378,7 @@ struct BuiltNode {
     /// Whether the input drops edits but keeps focus/selection/copy.
     read_only: bool,
     busy: bool,
+    roving: Option<RovingAxis>,
     spin: Option<f32>,
     /// Scroll containers: pin to the bottom while content grows.
     stick_bottom: bool,
@@ -970,6 +985,7 @@ fn build<Msg>(
         invalid: el.invalid,
         read_only: el.read_only,
         busy: el.busy,
+        roving: el.roving,
         stick_bottom: el.stick_bottom,
         spin: el.spin,
         access: (semantics, label, value, el.key.clone()),
@@ -1338,6 +1354,7 @@ impl Realize<'_> {
             disabled: node.disabled,
             read_only: node.read_only,
             busy: node.busy,
+            roving: node.roving,
         };
         let frame_node = FrameNode {
             id: node.id,
@@ -3058,8 +3075,12 @@ impl Frame {
             if node.meta.focusable {
                 out.push(node.id);
             }
-            for child in &node.children {
-                walk(child, out);
+            // A roving scope leaves the Tab order as a whole: its container
+            // (above) is the single tab stop, and arrows move within it.
+            if node.meta.roving.is_none() {
+                for child in &node.children {
+                    walk(child, out);
+                }
             }
         }
         let mut out = Vec::new();
@@ -3074,6 +3095,81 @@ impl Frame {
             }
         }
         out
+    }
+
+    /// The arrow-roving scope governing `focus`: the deepest roving
+    /// ancestor-or-self, its container (the Tab stop that stands in for
+    /// focused items), and the focusable candidates in tree order — the
+    /// container itself excluded, so ↓ from the container enters at the
+    /// first item and wraparound goes last → first.
+    pub fn roving_focus(&self, focus: WidgetId) -> Option<RovingFocus> {
+        fn collect(node: &FrameNode, out: &mut Vec<WidgetId>) {
+            if node.style.display == Display::None {
+                return;
+            }
+            if node.meta.focusable && !node.meta.disabled {
+                out.push(node.id);
+            }
+            // A nested roving scope governs its own candidates.
+            if node.meta.roving.is_none() {
+                for child in &node.children {
+                    collect(child, out);
+                }
+            }
+        }
+        // The scope's own children are the candidates (the container is
+        // not); the nested-scope boundary applies one level down.
+        fn collect_scope_children(scope: &FrameNode, out: &mut Vec<WidgetId>) {
+            for child in &scope.children {
+                collect(child, out);
+            }
+        }
+        fn find(node: &FrameNode, focus: WidgetId) -> Option<(RovingAxis, WidgetId)> {
+            let deeper = node.children.iter().find_map(|c| find(c, focus));
+            match (node.meta.roving, deeper) {
+                (_, Some(found)) => Some(found),
+                (Some(axis), None) if node.id == focus => Some((axis, node.id)),
+                (Some(axis), None) => node
+                    .children
+                    .iter()
+                    .any(|c| contains(c, focus))
+                    .then_some((axis, node.id)),
+                (None, None) => None,
+            }
+        }
+        fn contains(node: &FrameNode, id: WidgetId) -> bool {
+            node.id == id || node.children.iter().any(|c| contains(c, id))
+        }
+        let (axis, container) = find(&self.root, focus)?;
+        let mut candidates = Vec::new();
+        if let Some(node) = self.frame_node(container) {
+            collect_scope_children(node, &mut candidates);
+        }
+        Some(RovingFocus {
+            axis,
+            container,
+            candidates,
+        })
+    }
+
+    /// The deepest roving-scope container that is an ancestor of (or is)
+    /// `id`, for Tab to treat a focused item as its container.
+    pub fn roving_scope_container(&self, id: WidgetId) -> Option<WidgetId> {
+        self.roving_focus(id).map(|r| r.container)
+    }
+
+    /// Resolves a node by id within this frame (overlays included).
+    fn frame_node(&self, id: WidgetId) -> Option<&FrameNode> {
+        fn walk(node: &FrameNode, id: WidgetId) -> Option<&FrameNode> {
+            if node.id == id {
+                return Some(node);
+            }
+            node.children.iter().find_map(|c| walk(c, id))
+        }
+        self.overlays
+            .iter()
+            .find_map(|o| walk(&o.node, id))
+            .or_else(|| walk(&self.root, id))
     }
 
     /// `true` if the id resolves to a scrollable with room to scroll.

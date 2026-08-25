@@ -529,6 +529,15 @@ pub enum Cursor {
     NotAllowed,
 }
 
+/// The arrow axes a [`Element::roving`] scope responds to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RovingAxis {
+    /// ↑/↓ move focus (menus, lists, accordions).
+    Vertical,
+    /// ←/→ move focus (tab strips, paginations, toolbars).
+    Horizontal,
+}
+
 /// How an element animates *out* when it leaves the tree (the counterpart of
 /// [`Element::enter`]). When an element tagged with [`Element::exit`] is
 /// removed, a paint-only snapshot ("ghost") is left in its place and animates
@@ -730,6 +739,11 @@ pub struct Element<Msg> {
     /// Whether the control is busy (ARIA `aria-busy`): a loading button,
     /// a saving form region. Projected to the accessibility tree.
     pub(crate) busy: bool,
+    /// Arrow-key roving focus over this container's focusable descendants
+    /// (APG roving tabindex): the subtree leaves the Tab order, the
+    /// container becomes its tab stop, and ↑/↓ (or ←/→) move focus
+    /// between the items with wraparound.
+    pub(crate) roving: Option<RovingAxis>,
     /// Whether the control is expanded (ARIA `aria-expanded`). Disclosure
     /// headers, comboboxes, and tree items set this; the projection carries it
     /// to the accessibility tree.
@@ -795,6 +809,7 @@ impl<Msg> Element<Msg> {
             read_only: false,
             busy: false,
             transition: None,
+            roving: None,
         }
     }
 
@@ -981,6 +996,16 @@ impl<Msg> Element<Msg> {
     /// own disabled state.
     pub fn busy(mut self, busy: bool) -> Self {
         self.busy = busy;
+        self
+    }
+
+    /// Enables arrow-key roving focus over this container's focusable
+    /// descendants (APG roving tabindex): the subtree leaves the Tab order,
+    /// the container becomes its single tab stop, and the axis arrows move
+    /// focus between items with wraparound. The focused item's own `on_key`
+    /// still sees the arrows first.
+    pub fn roving(mut self, axis: RovingAxis) -> Self {
+        self.roving = Some(axis);
         self
     }
 
@@ -2460,6 +2485,7 @@ impl<Msg: 'static> Element<Msg> {
             press_scale: self.press_scale,
             invalid: self.invalid,
             read_only: self.read_only,
+            roving: self.roving,
             busy: self.busy,
             transition: self.transition,
         }

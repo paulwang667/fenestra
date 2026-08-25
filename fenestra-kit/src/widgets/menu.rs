@@ -16,8 +16,8 @@
 //! ```
 
 use fenestra_core::{
-    Color, Cursor, Element, Key, Overlay, SP1, SP2, SP3, Semantics, Surface, TextSize, Theme,
-    Transition, Weight, col, div, row, spacer, text,
+    Color, Cursor, Element, Key, Overlay, RovingAxis, SP1, SP2, SP3, Semantics, Surface,
+    TextSize, Theme, Transition, Weight, col, div, row, spacer, text,
 };
 
 /// The styled panel of menu items (no overlay attached): rows that emit
@@ -333,7 +333,12 @@ impl<Msg: Clone + 'static> From<Menu<Msg>> for Element<Msg> {
             .items
             .into_iter()
             .enumerate()
-            .map(|(i, it)| menu_row(it, keyboard && highlighted == Some(i), keyboard))
+            .map(|(i, it)| {
+                let row = menu_row(it, keyboard && highlighted == Some(i), keyboard);
+                // Default (non-keyboard) mode: rows are roving candidates —
+                // core moves real focus between them; Tab skips the panel.
+                if keyboard { row } else { row.focusable(true) }
+            })
             .collect();
 
         let mut panel = col()
@@ -342,6 +347,12 @@ impl<Msg: Clone + 'static> From<Menu<Msg>> for Element<Msg> {
             .min_w(200.0)
             .surface(Surface::Menu)
             .children(rows);
+
+        if !keyboard {
+            // APG menu arrows without any app state: the panel is the single
+            // tab stop; core moves real focus between the rows.
+            panel = panel.focusable(true).roving(RovingAxis::Vertical);
+        }
 
         if keyboard {
             let nav = m.on_navigate;
@@ -471,6 +482,8 @@ impl<Msg> From<Menubar<Msg>> for Element<Msg> {
             .px(SP2)
             .h(40.0)
             .w_full()
+            .focusable(true)
+            .roving(RovingAxis::Horizontal)
             .themed(|t: &Theme, s| s.bg(t.surface_raised).border_bottom(1.0, t.border))
             .children(mb.triggers)
     }
