@@ -207,6 +207,10 @@ fn menu_row<Msg: Clone + 'static>(it: MenuItem<Msg>, active: bool, roving: bool)
         // works, but the per-item hover veil would fight the accent cursor.
         if !roving {
             row_el = row_el.state_layer(|t| t.text);
+            // Core roving moves real focus between rows (keyboard); the
+            // focused row reads as the APG active item — the accent veil
+            // rides focus-visible, so mouse hover never lights it.
+            row_el = row_el.focus_themed(|t: &Theme, s| s.bg(t.accent_bg));
         }
         if let Some(msg) = it.on_select {
             row_el = row_el.on_click(msg);

@@ -4458,3 +4458,28 @@ still lacked.
   to `page: 1` renders the second page; empty state authored in JSON),
   the vocabulary coherence tests, the regenerated `gallery_display`
   goldens, and the full workspace suite.
+
+## OTP input: the roving scope grows a text-commit trigger (2026-08-25)
+
+The repo roadmap's OTP/PIN item, unblocked by roving: an OTP is N
+single-character boxes, and the missing piece was auto-advance.
+
+- **`Element::max_chars(Option<usize>)`** caps an input's value: the
+  character-insert path ignores edits at the cap and paste truncates.
+  The cap lives on the input (not the OTP widget) so any constrained
+  field can use it.
+- **A capped input inside a roving scope advances on fill**: when a text
+  commit saturates the cap, dispatch moves focus to the next candidate.
+  This is the text-commit counterpart of arrow roving — the same scope,
+  a different trigger. Both commit paths (key insert and Text event)
+  advance; IME preedit does not (it ends in a Text commit anyway).
+- **`otp_input(code, len)`** renders `len` boxes from the app-owned code
+  string, each box a capped `text_input` splicing its character back
+  into the code on edit (an emptied box drops its character — a string
+  cannot hold a hole). `bind` a state text key in the grammar. Clearing
+  a middle box shifts the tail left; full-code paste lands in the
+  focused box and truncates — both documented on the builder.
+- **Verified** by dispatch-level tests (fill advances focus and emits
+  the reassembled code, cap rejects the next character) and the
+  `gallery_controls` OTP row (filled, empty, disabled).
+

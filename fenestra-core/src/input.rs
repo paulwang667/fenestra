@@ -30,6 +30,9 @@ pub(crate) struct EditorState {
     /// Read-only mode: selection and copy stay live, every mutation is a
     /// no-op (HTML `<input readonly>`).
     pub read_only: bool,
+    /// Character cap on the value (OTP digit boxes cap at 1). Insertions
+    /// past the cap are ignored; paste truncates.
+    pub max_chars: Option<usize>,
     /// Undo/redo history (QUndoStack semantics: coalesced runs,
     /// boundaries on caret moves, redo cleared by new edits).
     pub undo: UndoStack,
@@ -103,6 +106,7 @@ impl EditorState {
             seen: 0,
             multiline,
             read_only: false,
+            max_chars: None,
             undo: UndoStack::default(),
         }
     }
@@ -313,6 +317,13 @@ fn handle_key_inner(
             if state.read_only {
                 return IGNORED;
             }
+            // A full capped box takes no more characters (OTP auto-advance
+            // keys off exactly this saturation).
+            if state.max_chars.is_some_and(|m| {
+                state.editor.raw_text().chars().count() >= m
+            }) {
+                return IGNORED;
+            }
             state.undo.begin(&state.editor, EditRun::Insert);
             let (font_cx, layout_cx) = fonts.editor_contexts();
             let mut drv = state.editor.driver(font_cx, layout_cx);
@@ -464,7 +475,10 @@ pub(crate) fn handle_text(state: &mut EditorState, fonts: &mut Fonts, text: &str
         return IGNORED;
     }
     state.undo.begin(&state.editor, EditRun::Insert);
-    let sanitized = sanitize(text, state.multiline);
+    let mut sanitized = sanitize(text, state.multiline);
+    if let Some(max) = state.max_chars {
+        sanitized = sanitized.chars().take(max).collect();
+    }
     if sanitized.is_empty() {
         return IGNORED;
     }

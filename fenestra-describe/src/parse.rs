@@ -28,6 +28,7 @@ use fenestra_core::{
 use fenestra_kit::{
     ButtonVariant, Status as KitStatus, TreeNode as KitTreeNode, accordion, accordion_item, avatar,
     badge, breadcrumbs, button, callout, card, checkbox, chip, color_picker, combobox,
+    otp_input,
     command_palette, crumb, data_table, date_picker, date_range_picker, drawer, dropdown_menu,
     empty_state,
     fab, field, format_color_text, hyperlink, kbd, kbd_raised, menubar, meter, modal,
@@ -49,7 +50,8 @@ use crate::format::{
     FabNode,
     FieldNode, FilterSpec, GrowSpec, HyperlinkNode, IconNode, ImageNode, InputNode, KbdNode, Leaf,
     LineChartNode, MarkdownNode, MenubarNode, MeterNode, ModalNode, MultiSelectNode, NavListNode,
-    Node, PageControlNode, PaginationNode, PopoverNode, ProgressNode, RadioNode, RatingNode,
+    Node, OtpInputNode, PageControlNode, PaginationNode, PopoverNode, ProgressNode,
+    RadioNode, RatingNode,
     RepeatCount, SCHEMA_V1, SegmentedNode, SelectNode, SheenSpec, SizeSpec, SkeletonNode,
     SparklineNode, SpinButtonNode, SplitPaneNode, StatCardNode, StatusNode, StepperNode, Style,
     SwiperNode, TabsNode, TagInputNode, TextNode, TimePickerNode, ToastStackNode, ToolbarNode,
@@ -359,6 +361,7 @@ fn node_to_element(
         Node::Field(f) => field_node(f, theme, state, path, budget, errors),
         Node::Combobox(c) => combobox_node(c, state, path, errors),
         Node::MultiSelect(m) => multi_select_node(m, path, errors),
+        Node::OtpInput(o) => otp_input_node(o, state),
         Node::TagInput(t) => tag_input_node(t, path, errors),
         Node::DatePicker(d) => date_picker_node(d, path, errors),
         Node::ColorPicker(c) => color_picker_node(c, state, path, errors),
@@ -2100,6 +2103,18 @@ fn nav_list_node(n: &NavListNode, state: &StateMap) -> Element<Action> {
 
 fn page_control_node(p: &PageControlNode) -> Element<Action> {
     page_control(p.pages, p.current)
+}
+
+fn otp_input_node(o: &OtpInputNode, state: &StateMap) -> Element<Action> {
+    let code = bound_text(state, o.bind.as_deref().unwrap_or(""), &o.code);
+    let mut w = otp_input(code, o.len);
+    if o.disabled {
+        w = w.disabled(true);
+    }
+    if let Some(id) = &o.id {
+        w = w.id(id);
+    }
+    w.into()
 }
 
 fn rating_node(r: &RatingNode, state: &StateMap) -> Element<Action> {

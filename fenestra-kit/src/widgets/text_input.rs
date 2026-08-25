@@ -29,6 +29,7 @@ pub struct TextInput<Msg> {
     invalid: bool,
     disabled: bool,
     read_only: bool,
+    max_chars: Option<usize>,
     on_input: Option<std::rc::Rc<dyn Fn(String) -> Msg>>,
     key: Option<String>,
     prefix: Option<Element<Msg>>,
@@ -46,6 +47,7 @@ pub fn text_input<Msg>(value: impl Into<String>) -> TextInput<Msg> {
         invalid: false,
         read_only: false,
         disabled: false,
+        max_chars: None,
         on_input: None,
         key: None,
         prefix: None,
@@ -103,6 +105,13 @@ impl<Msg> TextInput<Msg> {
     /// Maps every edit of the value to a message.
     pub fn on_input(mut self, f: impl Fn(String) -> Msg + 'static) -> Self {
         self.on_input = Some(std::rc::Rc::new(f));
+        self
+    }
+
+    /// Caps the value at `max` characters: further character edits are
+    /// ignored and paste truncates (an OTP box caps at 1).
+    pub fn max_chars(mut self, max: usize) -> Self {
+        self.max_chars = Some(max);
         self
     }
 
@@ -169,7 +178,8 @@ impl<Msg: 'static> From<TextInput<Msg>> for Element<Msg> {
             .transition(Transition::colors())
             .disabled(t.disabled)
             .invalid(invalid)
-            .read_only(t.read_only);
+            .read_only(t.read_only)
+            .max_chars(t.max_chars);
         // Reserve room for adornments so the text clears them.
         if prefix.is_some() {
             el = el.pl(ADORN_SLOT);

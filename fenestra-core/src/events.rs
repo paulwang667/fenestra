@@ -1045,6 +1045,14 @@ pub fn dispatch<Msg: Clone>(
                                 out.msgs.push(f(editor.editor.raw_text()));
                             }
                             out.redraw = true;
+                            // A capped input inside a roving scope (an OTP
+                            // digit box) hands focus to the next candidate
+                            // when its commit fills the cap.
+                            if max_chars_of(el).is_some_and(|max| {
+                                editor.editor.raw_text().chars().count() >= max
+                            }) {
+                                advance_roving(st, frame, focus);
+                            }
                             return out;
                         }
                         if outcome.consumed {
@@ -1205,15 +1213,23 @@ pub fn dispatch<Msg: Clone>(
             {
                 if matches!(el.kind, Kind::Input(_)) {
                     let now = state.now();
+                    let mut filled = false;
                     if let Some(editor) = state.editors.get_mut(&focus) {
                         let outcome = input::handle_text(editor, fonts, &text);
                         editor.last_activity = now;
+                        filled = outcome.changed
+                            && max_chars_of(el).is_some_and(|max| {
+                                editor.editor.raw_text().chars().count() >= max
+                            });
                         if outcome.changed {
                             if let Some(f) = &el.on_input {
                                 out.msgs.push(f(editor.editor.raw_text()));
                             }
                             out.redraw = true;
                         }
+                    }
+                    if filled {
+                        advance_roving(state, frame, focus);
                     }
                 } else if text == " "
                     && let Some(msg) = &el.on_click
@@ -1262,6 +1278,25 @@ fn cursor_of<Msg>(handlers: &Handlers<'_, Msg>, chain: &[WidgetId]) -> Cursor {
 /// Maps a screen point into editor-layout coordinates for an input element:
 /// inside the padding box, with the horizontal follow-scroll applied. The y
 /// is the vertical middle (single-line editors clamp to the line anyway).
+fn max_chars_of<Msg>(el: &Element<Msg>) -> Option<usize> {
+    match &el.kind {
+        Kind::Input(data) => data.max_chars,
+        _ => None,
+    }
+}
+
+/// Moves focus to the next candidate in the focused input's roving scope
+/// (wrapping) — the OTP auto-advance.
+fn advance_roving(state: &mut FrameState, frame: &Frame, focus: WidgetId) {
+    if let Some(scope) = frame.roving_focus(focus)
+        && !scope.candidates.is_empty()
+        && let Some(i) = scope.candidates.iter().position(|id| *id == focus)
+    {
+        let next = scope.candidates[(i + 1) % scope.candidates.len()];
+        state.focus = Some(next);
+        state.focus_visible = true;
+    }
+}
 fn input_local<Msg>(
     frame: &Frame,
     state: &FrameState,

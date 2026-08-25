@@ -7,7 +7,7 @@ use fenestra_core::{
 
 use crate::{
     ButtonVariant, ControlSize, Status, avatar, badge, button, callout, card, checkbox, chip,
-    color_picker, empty_state, fab, hyperlink, icons, kbd, kbd_raised, page_control, progress,
+    color_picker, otp_input, empty_state, fab, hyperlink, icons, kbd, kbd_raised, page_control, progress,
     radio, rating, segmented, select, skeleton, skeleton_circle, skeleton_text, slider, spinner,
     stat_card, status, switch, swiper, table, tabs, text_area, text_input, time_picker,
     wavy_progress,
@@ -94,6 +94,13 @@ pub fn gallery_controls(theme: &Theme) -> Element<()> {
                 Element::from(time_picker(9, 30, 0).on_change(|_, _, _| ())),
                 Element::from(time_picker(14, 5, 59).with_seconds(true).on_change(|_, _, _| ())),
                 Element::from(time_picker(0, 0, 0).disabled(true).on_change(|_, _, _| ())),
+            ]),
+        ),
+        section(
+            "OTP",
+            row().gap(SP4).items_center().children([
+                Element::from(otp_input("42", 6).on_change(|_| ())),
+                Element::from(otp_input("", 4).disabled(true).on_change(|_| ())),
             ]),
         ),
         section(

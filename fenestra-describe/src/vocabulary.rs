@@ -152,6 +152,11 @@ const NODE_REGISTRY: &[(&str, &str, &str)] = &[
         r#"{"options":["Rust","Go","Zig"],"selected":[0,2]}"#,
     ),
     (
+        "otp_input",
+        "`len` single-character boxes in a roving scope: a filled box auto-advances. `bind` a root `state` text key for the code.",
+        r#"{"len":6,"code":"","bind":"code"}"#,
+    ),
+    (
         "tag_input",
         "Bordered field holding removable tag chips plus an inline entry field for typing new ones.",
         r#"{"tags":["design","rust"],"placeholder":"Add a tag…"}"#,

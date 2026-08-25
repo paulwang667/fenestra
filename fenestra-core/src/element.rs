@@ -112,6 +112,9 @@ pub struct InputData {
     /// Multiline editing: text wraps to the element width, Enter inserts a
     /// newline, and the measured height grows with the content.
     pub multiline: bool,
+    /// Cap on the value's character count (an OTP digit box caps at 1).
+    /// Edits beyond the cap are ignored; paste truncates.
+    pub max_chars: Option<usize>,
 }
 
 /// Optical corrections for a [`Kind::Path`] (see [`crate::optical`]): geometric
@@ -988,6 +991,16 @@ impl<Msg> Element<Msg> {
     /// owning the value; `on_input` simply never fires.
     pub fn read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
+        self
+    }
+
+    /// Caps an input's value at `max` characters: further character edits
+    /// are ignored and paste truncates. The OTP input pairs this with
+    /// [`Element::roving`] — a commit that fills the box advances focus.
+    pub fn max_chars(mut self, max: Option<usize>) -> Self {
+        if let Kind::Input(data) = &mut self.kind {
+            data.max_chars = max;
+        }
         self
     }
 
@@ -2251,6 +2264,7 @@ pub fn raw_input<Msg>(value: impl Into<String>, placeholder: impl Into<String>) 
         value: value.into(),
         placeholder: placeholder.into(),
         multiline: false,
+        max_chars: None,
     }))
     .focusable(true)
     .cursor(Cursor::Text)
@@ -2270,6 +2284,7 @@ pub fn raw_text_area<Msg>(
         value: value.into(),
         placeholder: placeholder.into(),
         multiline: true,
+        max_chars: None,
     }))
     .focusable(true)
     .cursor(Cursor::Text)

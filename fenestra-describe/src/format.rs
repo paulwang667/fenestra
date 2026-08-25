@@ -105,6 +105,9 @@ pub enum Node {
     /// A set of toggleable option chips. `selected` lists the pre-checked
     /// option indices.
     MultiSelect(MultiSelectNode),
+    /// An `len`-digit OTP/PIN entry. `bind` a root `state` text key for
+    /// the code.
+    OtpInput(OtpInputNode),
     /// A bordered field holding removable tag chips plus an inline entry
     /// field for typing new ones.
     TagInput(TagInputNode),
@@ -2222,6 +2225,26 @@ pub struct FabNode {
     pub id: Option<String>,
 }
 
+/// An `len`-digit OTP/PIN entry: single-character boxes in a roving scope.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OtpInputNode {
+    /// Digit-box count.
+    #[serde(default = "default_six")]
+    pub len: usize,
+    /// The app-owned code.
+    #[serde(default)]
+    pub code: String,
+    /// Bind a `state` text key for the code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+    /// Stable key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
 /// Accent-colored text link carrying the ARIA `link` role.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -2289,6 +2312,11 @@ pub fn default_half() -> f32 {
 /// Default `5` for the rating's `max` (serde `default` attribute).
 pub fn default_five() -> u32 {
     5
+}
+
+/// Default `6` for the OTP input's `len` (serde `default` attribute).
+pub fn default_six() -> usize {
+    6
 }
 
 /// Default value for `status`/`delta_status` fields (serde `default` attribute).

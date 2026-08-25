@@ -894,6 +894,7 @@ fn build<Msg>(
             editor.sync(&data.value, &resolved);
             editor.multiline = data.multiline;
             editor.read_only = el.read_only;
+            editor.max_chars = data.max_chars;
             editor.seen = frame_no;
             let focused = state.focused() == Some(id);
             if focused && !state.reduced_motion {
