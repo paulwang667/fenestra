@@ -1048,9 +1048,9 @@ pub fn dispatch<Msg: Clone>(
                             // A capped input inside a roving scope (an OTP
                             // digit box) hands focus to the next candidate
                             // when its commit fills the cap.
-                            if max_chars_of(el).is_some_and(|max| {
-                                editor.editor.raw_text().chars().count() >= max
-                            }) {
+                            if max_chars_of(el)
+                                .is_some_and(|max| editor.editor.raw_text().chars().count() >= max)
+                            {
                                 advance_roving(st, frame, focus);
                             }
                             return out;
@@ -1131,10 +1131,7 @@ pub fn dispatch<Msg: Clone>(
                     if let Some(forward) = forward {
                         // The container itself is not a candidate: arrows
                         // from it enter at the near end.
-                        let pos = scope
-                            .candidates
-                            .iter()
-                            .position(|id| *id == focus);
+                        let pos = scope.candidates.iter().position(|id| *id == focus);
                         let len = scope.candidates.len();
                         let next = match (pos, forward) {
                             (Some(i), true) => scope.candidates[(i + 1) % len],
@@ -1218,9 +1215,8 @@ pub fn dispatch<Msg: Clone>(
                         let outcome = input::handle_text(editor, fonts, &text);
                         editor.last_activity = now;
                         filled = outcome.changed
-                            && max_chars_of(el).is_some_and(|max| {
-                                editor.editor.raw_text().chars().count() >= max
-                            });
+                            && max_chars_of(el)
+                                .is_some_and(|max| editor.editor.raw_text().chars().count() >= max);
                         if outcome.changed {
                             if let Some(f) = &el.on_input {
                                 out.msgs.push(f(editor.editor.raw_text()));

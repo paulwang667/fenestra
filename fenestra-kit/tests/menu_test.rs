@@ -63,7 +63,7 @@ fn right_click_menu_opens_at_pointer_and_picks() {
     h.right_click(&by::id("target"));
     assert!(h.query(&by::id("ctx")).is_some(), "right-click opened it");
 
-    h.click(&by::role(Semantics::Button).name("Rename"));
+    h.click(&by::role(Semantics::MenuItem).name("Rename"));
     assert_eq!(h.app().picked, Some("rename"));
     assert!(!h.app().menu_open, "the app closed the menu on pick");
     assert!(h.query(&by::id("ctx")).is_none());

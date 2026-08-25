@@ -19,6 +19,7 @@ mod menu;
 mod multi_select;
 mod nav_list;
 mod navigation;
+mod otp_input;
 mod overlay_widgets;
 mod palette;
 mod panes;
@@ -34,7 +35,6 @@ mod switch;
 mod tag_input;
 mod text_area;
 mod text_input;
-mod otp_input;
 mod time_picker;
 mod timeline;
 mod toast;
@@ -43,21 +43,21 @@ mod tree;
 pub mod validation;
 mod virtual_list;
 pub use button::{Button, ButtonVariant, Fab, IconButton, button, fab, icon_button};
-pub use chip::{Chip, chip};
 pub use checkbox::{Checkbox, checkbox};
-pub use combobox::{Combobox, combobox};
+pub use chip::{Chip, chip};
 pub use color_picker::{
     ColorPicker, MAX_CHROMA, color_picker, format_color_text, parse_color_text,
 };
+pub use combobox::{Combobox, combobox};
 pub use data_table::{DataTable, data_table};
 pub use date_picker::{Date, DatePicker, date_picker, date_range_picker};
 pub use disclosure::{Accordion, AccordionItem, accordion, accordion_item};
-pub use empty_state::{EmptyState, empty_state};
 pub use display::{
     Hyperlink, Meter, StatCard, Status, StatusIndicator, WavyProgress, avatar, badge, badge_dot,
     callout, card, hyperlink, meter, progress, progress_indeterminate, reading_column,
     responsive_grid, spinner, stat_card, status, table, tabs, wavy_progress,
 };
+pub use empty_state::{EmptyState, empty_state};
 pub use field::{Field, field};
 pub use glass::{glass_panel, glass_surface};
 pub use kbd::{kbd, kbd_raised};
@@ -68,27 +68,26 @@ pub use menu::{
 pub use multi_select::{MultiSelect, multi_select};
 pub use nav_list::{NavList, nav_item, nav_list};
 pub use navigation::{
-    Breadcrumbs, Crumb, Pagination, Stepper, breadcrumbs, crumb, page_control, pagination,
-    stepper,
+    Breadcrumbs, Crumb, Pagination, Stepper, breadcrumbs, crumb, page_control, pagination, stepper,
 };
+pub use otp_input::{OtpInput, otp_input};
 pub use overlay_widgets::{Drawer, Modal, drawer, modal, tooltip};
 pub use palette::{CommandPalette, command_palette};
 pub use panes::{SplitPane, split_pane};
 pub use radio::{Radio, radio, radio_group};
-pub use segmented::{Segmented, segmented};
-pub use swiper::{Swiper, swiper};
 pub use rating::{Rating, rating};
+pub use segmented::{Segmented, segmented};
 pub use select::{Select, select};
 pub use skeleton::{skeleton, skeleton_circle, skeleton_text};
 pub use slider::{RangeSlider, Slider, range_slider, slider};
 pub use spin_button::{SpinButton, spin_button};
+pub use swiper::{Swiper, swiper};
 pub use switch::{Switch, switch};
 pub use tag_input::{TagInput, tag_input};
 pub use text_area::{TextArea, text_area};
-pub use timeline::{Timeline, timeline, timeline_item};
 pub use text_input::{TextInput, text_input};
 pub use time_picker::{TimePicker, time_picker};
-pub use otp_input::{OtpInput, otp_input};
+pub use timeline::{Timeline, timeline, timeline_item};
 pub use toast::{ToastStack, toast_stack};
 pub use toolbar::{Toolbar, toolbar};
 pub use tree::{TreeNode, TreeView, tree_view};
@@ -96,7 +95,13 @@ pub use virtual_list::{virtual_list, virtual_list_variable};
 
 /// Control sizes on a shared height grid (24 / 32 / 36 / 40 logical px), so a
 /// row of mixed controls — button, input, select — lines up on one baseline.
-/// Each size resolves to a [`ControlMetrics`] bundle.
+///
+/// **Target size.** `Comfortable` `Xs` is the grid minimum at `24px`, matching
+/// the WCAG 2.2 SC 2.5.8 pointer-target floor. `Compact` density tightens `Xs`
+/// to `22px` for dense pro-tool bars — an intentional, documented exception:
+/// per SC 2.5.8 a sub-24px target stays accessible when interactive elements
+/// are spaced so their 24px hit circles do not overlap. Density scales
+/// spacing, not type. Each size resolves to a [`ControlMetrics`] bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ControlSize {
     /// 24px tall: dense toolbars, inline chips.
@@ -191,7 +196,7 @@ impl ControlSize {
             Density::Comfortable => self.metrics(),
             Density::Compact => match self {
                 Self::Xs => ControlMetrics {
-                    height: 22.0,
+                    height: 22.0, // documented SC 2.5.8 target-size exception (see ControlSize)
                     pad_x: 6.0,
                     gap: 3.0,
                     font: TextSize::Xs,

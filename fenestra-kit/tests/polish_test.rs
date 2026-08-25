@@ -10,11 +10,15 @@ enum Msg {
 }
 
 fn loading_view() -> Element<Msg> {
-    col().p(16.0).child(button("Save").loading(true).on_click(Msg::Tap))
+    col()
+        .p(16.0)
+        .child(button("Save").loading(true).on_click(Msg::Tap))
 }
 
 fn link_view() -> Element<Msg> {
-    col().p(16.0).child(hyperlink("Read the docs").on_click(Msg::Tap))
+    col()
+        .p(16.0)
+        .child(hyperlink("Read the docs").on_click(Msg::Tap))
 }
 
 fn fab_view() -> Element<Msg> {
@@ -83,7 +87,10 @@ fn fab_is_a_named_button() {
         }
     }
     let mut h = Harness::new(App3 { clicks: 0 }, Theme::light(), (160, 120));
-    assert!(h.query(&by::role(Semantics::Button).name("Compose")).is_some());
+    assert!(
+        h.query(&by::role(Semantics::Button).name("Compose"))
+            .is_some()
+    );
     h.click(&by::role(Semantics::Button).name("Compose"));
     assert_eq!(h.app().clicks, 1);
 }
@@ -99,7 +106,10 @@ fn page_control_is_an_inert_indicator() {
             pager_view()
         }
     }
-    let mut h = Harness::new(App4, Theme::light(), (160, 80));
+    let h = Harness::new(App4, Theme::light(), (160, 80));
     let yaml = h.frame().access_yaml();
-    assert!(!yaml.contains("button"), "indicator must have no controls: {yaml}");
+    assert!(
+        !yaml.contains("button"),
+        "indicator must have no controls: {yaml}"
+    );
 }

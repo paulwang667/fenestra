@@ -53,7 +53,7 @@ fn date_picker_picks_and_navigates() {
     );
     assert!(h.query(&by::label("June 2026")).is_some());
 
-    h.click(&by::role(Semantics::Button).name("2026-06-12"));
+    h.click(&by::role(Semantics::GridCell { selected: false }).name("2026-06-12"));
     assert_eq!(h.app().picked, Some((2026, 6, 12)));
 
     // Month navigation wraps the year backwards from January.

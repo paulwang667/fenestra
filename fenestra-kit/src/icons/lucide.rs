@@ -41,10 +41,7 @@ pub fn names() -> impl Iterator<Item = &'static str> {
 /// stroke/fill control beyond the stock stroked rendering (the rating's
 /// filled star). `None` when the name is not vendored.
 pub(crate) fn raw_path(name: &str) -> Option<&'static str> {
-    data::ALL
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, d)| *d)
+    data::ALL.iter().find(|(n, _)| *n == name).map(|(_, d)| *d)
 }
 
 macro_rules! lucide_icons {

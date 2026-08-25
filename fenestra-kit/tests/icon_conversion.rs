@@ -18,7 +18,7 @@
 //! Source SVGs are under `tests/fixtures/icons/` (lucide-static v1.17.0,
 //! ISC license).
 
-use fenestra_core::{path, Element};
+use fenestra_core::{Element, path};
 use fenestra_shell::render_element;
 use kurbo::BezPath;
 
@@ -74,7 +74,16 @@ fn circle(cx: f64, cy: f64, r: f64) -> String {
     // circle glyph's arc with Z before any following sub-path).
     format!(
         "M{} {} A{} {} 0 1 0 {} {} A{} {} 0 1 0 {} {}Z",
-        fmt(cx - r), fmt(cy), fmt(r), fmt(r), fmt(cx + r), fmt(cy), fmt(r), fmt(r), fmt(cx - r), fmt(cy)
+        fmt(cx - r),
+        fmt(cy),
+        fmt(r),
+        fmt(r),
+        fmt(cx + r),
+        fmt(cy),
+        fmt(r),
+        fmt(r),
+        fmt(cx - r),
+        fmt(cy)
     )
 }
 
@@ -82,17 +91,45 @@ fn rect(x: f64, y: f64, w: f64, h: f64, rx: f64) -> String {
     if rx == 0.0 {
         return format!(
             "M{} {} L{} {} L{} {} L{} {} Z",
-            fmt(x), fmt(y), fmt(x + w), fmt(y), fmt(x + w), fmt(y + h), fmt(x), fmt(y + h)
+            fmt(x),
+            fmt(y),
+            fmt(x + w),
+            fmt(y),
+            fmt(x + w),
+            fmt(y + h),
+            fmt(x),
+            fmt(y + h)
         );
     }
     let r = rx;
     format!(
         "M{} {} L{} {} A{} {} 0 0 1 {} {} L{} {} A{} {} 0 0 1 {} {} L{} {} A{} {} 0 0 1 {} {} L{} {} A{} {} 0 0 1 {} {} Z",
-        fmt(x + r), fmt(y),
-        fmt(x + w - r), fmt(y), fmt(r), fmt(r), fmt(x + w), fmt(y + r),
-        fmt(x + w), fmt(y + h - r), fmt(r), fmt(r), fmt(x + w - r), fmt(y + h),
-        fmt(x + r), fmt(y + h), fmt(r), fmt(r), fmt(x), fmt(y + h - r),
-        fmt(x), fmt(y + r), fmt(r), fmt(r), fmt(x + r), fmt(y)
+        fmt(x + r),
+        fmt(y),
+        fmt(x + w - r),
+        fmt(y),
+        fmt(r),
+        fmt(r),
+        fmt(x + w),
+        fmt(y + r),
+        fmt(x + w),
+        fmt(y + h - r),
+        fmt(r),
+        fmt(r),
+        fmt(x + w - r),
+        fmt(y + h),
+        fmt(x + r),
+        fmt(y + h),
+        fmt(r),
+        fmt(r),
+        fmt(x),
+        fmt(y + h - r),
+        fmt(x),
+        fmt(y + r),
+        fmt(r),
+        fmt(r),
+        fmt(x + r),
+        fmt(y)
     )
 }
 
@@ -178,38 +215,50 @@ fn convert_svg(svg: &str) -> String {
             }
             continue;
         }
-        let name: String = after.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
-        let gt = match after.find('>') { Some(gt) => gt, None => break };
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphabetic())
+            .collect();
+        let gt = match after.find('>') {
+            Some(gt) => gt,
+            None => break,
+        };
         let inner = &after[..gt];
         match name.as_str() {
             "circle" => {
                 if let (Some(cx), Some(cy), Some(r)) =
                     (attr(inner, "cx"), attr(inner, "cy"), attr(inner, "r"))
+                    && let (Ok(cx), Ok(cy), Ok(r)) = (cx.parse(), cy.parse(), r.parse())
                 {
-                    if let (Ok(cx), Ok(cy), Ok(r)) = (cx.parse(), cy.parse(), r.parse()) {
-                        parts.push(circle(cx, cy, r));
-                    }
+                    parts.push(circle(cx, cy, r));
                 }
             }
             "rect" => {
-                if let (Some(x), Some(y), Some(w), Some(h), Some(rx)) =
-                    (attr(inner, "x"), attr(inner, "y"), attr(inner, "width"), attr(inner, "height"), attr(inner, "rx"))
-                {
+                if let (Some(x), Some(y), Some(w), Some(h), Some(rx)) = (
+                    attr(inner, "x"),
+                    attr(inner, "y"),
+                    attr(inner, "width"),
+                    attr(inner, "height"),
+                    attr(inner, "rx"),
+                ) {
                     let rx: f64 = rx.parse().unwrap_or(0.0);
-                    if let (Ok(x), Ok(y), Ok(w), Ok(h)) = (x.parse(), y.parse(), w.parse(), h.parse()) {
+                    if let (Ok(x), Ok(y), Ok(w), Ok(h)) =
+                        (x.parse(), y.parse(), w.parse(), h.parse())
+                    {
                         parts.push(rect(x, y, w, h, rx));
                     }
                 }
             }
             "line" => {
-                if let (Some(x1), Some(y1), Some(x2), Some(y2)) =
-                    (attr(inner, "x1"), attr(inner, "y1"), attr(inner, "x2"), attr(inner, "y2"))
+                if let (Some(x1), Some(y1), Some(x2), Some(y2)) = (
+                    attr(inner, "x1"),
+                    attr(inner, "y1"),
+                    attr(inner, "x2"),
+                    attr(inner, "y2"),
+                ) && let (Ok(x1), Ok(y1), Ok(x2), Ok(y2)) =
+                    (x1.parse(), y1.parse(), x2.parse(), y2.parse())
                 {
-                    if let (Ok(x1), Ok(y1), Ok(x2), Ok(y2)) =
-                        (x1.parse(), y1.parse(), x2.parse(), y2.parse())
-                    {
-                        parts.push(format!("M{} {}L{} {}", fmt(x1), fmt(y1), fmt(x2), fmt(y2)));
-                    }
+                    parts.push(format!("M{} {}L{} {}", fmt(x1), fmt(y1), fmt(x2), fmt(y2)));
                 }
             }
             "path" => {
@@ -270,9 +319,13 @@ fn every_proven_glyph_reconstructs_from_source() {
             failed.push((name, d, derived));
         }
     }
-    assert!(failed.is_empty(), "{}",
-        failed.iter()
+    assert!(
+        failed.is_empty(),
+        "{}",
+        failed
+            .iter()
             .map(|(n, d, p)| format!("{n}: {d} pixels differ; derived {p:?}"))
             .collect::<Vec<_>>()
-            .join("; "));
+            .join("; ")
+    );
 }

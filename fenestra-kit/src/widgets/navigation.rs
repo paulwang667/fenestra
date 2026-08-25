@@ -626,8 +626,6 @@ pub fn page_control<Msg>(pages: usize, current: usize) -> Element<Msg> {
                 .rounded_full()
                 .shrink0()
                 .transition(Transition::colors())
-                .themed(move |t: &Theme, s| {
-                    s.bg(if active { t.accent } else { t.element_hover })
-                })
+                .themed(move |t: &Theme, s| s.bg(if active { t.accent } else { t.element_hover }))
         }))
 }

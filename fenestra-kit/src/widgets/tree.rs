@@ -139,7 +139,9 @@ fn render_node<Msg: Clone + 'static>(
         .shrink0()
         .cursor(Cursor::Pointer)
         .id(&format!("tree-{}", node.id))
-        .semantics(Semantics::ListItem { selected: is_selected })
+        .semantics(Semantics::TreeItem {
+            selected: is_selected,
+        })
         .label(node.label.clone())
         .transition(Transition::colors())
         .state_layer(|t| t.text)
@@ -187,6 +189,7 @@ fn render_node<Msg: Clone + 'static>(
 impl<Msg: Clone + 'static> From<TreeView<Msg>> for Element<Msg> {
     fn from(tree: TreeView<Msg>) -> Self {
         let body = col()
+            .semantics(Semantics::Tree)
             .gap(2.0)
             .children(tree.roots.iter().map(|node| render_node(&tree, node, 0.0)));
 

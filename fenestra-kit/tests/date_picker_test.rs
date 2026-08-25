@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use fenestra_core::{App, Element, Key, KeyInput, Theme, col};
+use fenestra_core::{App, Element, Key, KeyInput, Locale, Theme, col};
 use fenestra_kit::{Date, date_picker, date_range_picker};
 use fenestra_shell::{Harness, render_element, testing::assert_png_snapshot};
 
@@ -446,21 +446,21 @@ fn clicking_disabled_day_does_not_pick() {
     use fenestra_core::{Semantics, by};
     // June 1 is before min (June 10) — should be present in the a11y tree.
     assert!(
-        h.query(&by::role(Semantics::Button).name("2026-06-01"))
+        h.query(&by::role(Semantics::GridCell { selected: false }).name("2026-06-01"))
             .is_some(),
         "disabled day is still in the a11y tree"
     );
     // Clicking a day inside range should work.
-    h.click(&by::role(Semantics::Button).name("2026-06-15"));
+    h.click(&by::role(Semantics::GridCell { selected: false }).name("2026-06-15"));
     assert_eq!(h.app().selected, Some((2026, 6, 15)));
     // Disabled days have no click handler; trying to click them should be a no-op.
     // (We verify this by checking the selection does not change.)
     let before = h.app().selected;
     // June 30 is beyond max (June 20) — also in the tree (last days of month exist).
-    if h.query(&by::role(Semantics::Button).name("2026-06-25"))
+    if h.query(&by::role(Semantics::GridCell { selected: false }).name("2026-06-25"))
         .is_some()
     {
-        h.click(&by::role(Semantics::Button).name("2026-06-25"));
+        h.click(&by::role(Semantics::GridCell { selected: false }).name("2026-06-25"));
     }
     // June 25 is disabled (max = June 20) — selection must be unchanged.
     assert_eq!(
@@ -487,7 +487,7 @@ fn range_first_click_sets_start() {
         (340, 360),
     );
     use fenestra_core::{Semantics, by};
-    h.click(&by::role(Semantics::Button).name("2026-06-10"));
+    h.click(&by::role(Semantics::GridCell { selected: false }).name("2026-06-10"));
     assert_eq!(h.app().start, Some((2026, 6, 10)));
     assert_eq!(h.app().end, None);
 }
@@ -505,7 +505,7 @@ fn range_second_click_completes_range() {
         (340, 360),
     );
     use fenestra_core::{Semantics, by};
-    h.click(&by::role(Semantics::Button).name("2026-06-20"));
+    h.click(&by::role(Semantics::GridCell { selected: false }).name("2026-06-20"));
     assert_eq!(h.app().start, Some((2026, 6, 10)));
     assert_eq!(h.app().end, Some((2026, 6, 20)));
 }
@@ -523,7 +523,7 @@ fn range_second_click_before_start_swaps_order() {
         (340, 360),
     );
     use fenestra_core::{Semantics, by};
-    h.click(&by::role(Semantics::Button).name("2026-06-05"));
+    h.click(&by::role(Semantics::GridCell { selected: false }).name("2026-06-05"));
     assert_eq!(h.app().start, Some((2026, 6, 5)));
     assert_eq!(h.app().end, Some((2026, 6, 20)));
 }
@@ -541,7 +541,7 @@ fn range_third_click_restarts() {
         (340, 360),
     );
     use fenestra_core::{Semantics, by};
-    h.click(&by::role(Semantics::Button).name("2026-06-15"));
+    h.click(&by::role(Semantics::GridCell { selected: false }).name("2026-06-15"));
     assert_eq!(h.app().start, Some((2026, 6, 15)));
     assert_eq!(h.app().end, None);
 }
@@ -648,4 +648,99 @@ fn date_picker_range_dark() {
     let theme = Theme::dark();
     let image = render_element(range_picker_element(), &theme, (340, 360));
     assert_png_snapshot(snapshot_dir(), "date_picker_range_dark", &image);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Locale hook
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct LocaleApp {
+    visible: (i32, u32),
+    first_day: u8,
+}
+
+impl App for LocaleApp {
+    type Msg = ();
+
+    fn update(&mut self, _: ()) {}
+
+    fn view(&self) -> Element<()> {
+        let de = Locale::new("de")
+            .with_month_names([
+                "Januar",
+                "Februar",
+                "März",
+                "April",
+                "Mai",
+                "Juni",
+                "Juli",
+                "August",
+                "September",
+                "Oktober",
+                "November",
+                "Dezember",
+            ])
+            .with_day_names(["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"])
+            .with_first_day(self.first_day);
+        col().p(12.0).items_start().children([Element::from(
+            date_picker(self.visible).locale(de).id("cal"),
+        )])
+    }
+}
+
+#[test]
+fn locale_hook_localizes_title_and_day_names() {
+    let h = Harness::new(
+        LocaleApp {
+            visible: (2026, 3),
+            first_day: 0,
+        },
+        Theme::light(),
+        (340, 360),
+    );
+    let yaml = h.frame().access_yaml();
+
+    // The month title comes from the locale's name table (German March).
+    assert!(
+        yaml.contains("März 2026"),
+        "the month title uses the locale's month names:\n{yaml}"
+    );
+    // German day initials replace the English defaults ("Tu" → "Di").
+    assert!(
+        yaml.contains("Di") && yaml.contains("Mi"),
+        "day-of-week initials come from the locale:\n{yaml}"
+    );
+}
+
+#[test]
+fn locale_first_day_shifts_the_day_of_week_row() {
+    // Sunday-first: the row starts with "So"; Monday-first starts with "Mo".
+    let monday = Harness::new(
+        LocaleApp {
+            visible: (2026, 3),
+            first_day: 0,
+        },
+        Theme::light(),
+        (340, 360),
+    );
+    let sunday = Harness::new(
+        LocaleApp {
+            visible: (2026, 3),
+            first_day: 6,
+        },
+        Theme::light(),
+        (340, 360),
+    );
+    let mo_yaml = monday.frame().access_yaml();
+    let so_yaml = sunday.frame().access_yaml();
+    let (mo, di) = (
+        mo_yaml.find("Mo").expect("Mo present"),
+        mo_yaml.find("Di").expect("Di present"),
+    );
+    assert!(mo < di, "Monday-first renders Mo before Di:\n{mo_yaml}");
+    let (so, mo2) = (
+        so_yaml.find("So").expect("So present"),
+        so_yaml.find("Mo").expect("Mo present"),
+    );
+    assert!(so < mo2, "Sunday-first renders So before Mo:\n{so_yaml}");
 }

@@ -4,11 +4,11 @@
 //! real `dispatch` pipeline (pointer events in, messages out).
 
 use fenestra_core::{
-    App, Element, Fonts, Frame, FrameState, InputEvent, Key, KeyInput, Theme, build_frame, by,
-    col, dispatch,
+    App, Element, Fonts, Frame, FrameState, InputEvent, Key, KeyInput, Theme, build_frame, by, col,
+    dispatch,
 };
-use fenestra_shell::Harness;
 use fenestra_kit::data_table;
+use fenestra_shell::Harness;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Msg {

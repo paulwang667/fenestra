@@ -57,19 +57,19 @@ impl App for Files {
 fn tree_toggles_branches_and_navigates_by_keyboard() {
     let mut h = Harness::new(Files::default(), Theme::light(), (300, 300));
     assert!(
-        h.query(&by::role(Semantics::ListItem { selected: false }).name("main.rs"))
+        h.query(&by::role(Semantics::TreeItem { selected: false }).name("main.rs"))
             .is_none(),
         "collapsed"
     );
 
-    h.click(&by::role(Semantics::ListItem { selected: false }).name("src"));
+    h.click(&by::role(Semantics::TreeItem { selected: false }).name("src"));
     assert!(
-        h.query(&by::role(Semantics::ListItem { selected: false }).name("main.rs"))
+        h.query(&by::role(Semantics::TreeItem { selected: false }).name("main.rs"))
             .is_some(),
         "expanded"
     );
 
-    h.click(&by::role(Semantics::ListItem { selected: false }).name("main.rs"));
+    h.click(&by::role(Semantics::TreeItem { selected: false }).name("main.rs"));
     assert_eq!(h.app().selected.as_deref(), Some("main"));
 
     // The whole tree is one tab stop; arrows navigate the selection.
@@ -84,7 +84,7 @@ fn tree_toggles_branches_and_navigates_by_keyboard() {
     // Left arrow on the open branch collapses it.
     h.key(KeyInput::plain(Key::ArrowLeft));
     assert!(
-        h.query(&by::role(Semantics::ListItem { selected: false }).name("main.rs"))
+        h.query(&by::role(Semantics::TreeItem { selected: false }).name("main.rs"))
             .is_none(),
         "collapsed again"
     );

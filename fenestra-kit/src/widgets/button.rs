@@ -199,23 +199,15 @@ impl<Msg> From<Button<Msg>> for Element<Msg> {
             .children({
                 let mut kids: Vec<Element<Msg>> = Vec::new();
                 if loading {
-                    kids.push(
-                        spinner()
-                            .w(m.icon)
-                            .h(m.icon)
-                            .themed(move |t: &Theme, s| {
-                                s.color(
-                                    if matches!(
-                                        variant,
-                                        ButtonVariant::Primary | ButtonVariant::Danger
-                                    ) {
-                                        t.on_accent
-                                    } else {
-                                        t.accent
-                                    },
-                                )
-                            }),
-                    );
+                    kids.push(spinner().w(m.icon).h(m.icon).themed(move |t: &Theme, s| {
+                        s.color(
+                            if matches!(variant, ButtonVariant::Primary | ButtonVariant::Danger) {
+                                t.on_accent
+                            } else {
+                                t.accent
+                            },
+                        )
+                    }));
                 }
                 kids.push(label);
                 kids
@@ -427,11 +419,7 @@ impl<Msg> From<Fab<Msg>> for Element<Msg> {
             .justify_center()
             .w(56.0)
             .h(56.0)
-            .themed(|t: &Theme, s| {
-                s.rounded(t.radius.lg)
-                    .bg(t.accent)
-                    .shadow(ShadowToken::Md)
-            })
+            .themed(|t: &Theme, s| s.rounded(t.radius.lg).bg(t.accent).shadow(ShadowToken::Md))
             .hover_themed(|t: &Theme, s| s.bg(t.accent_hover))
             .active_themed(|t: &Theme, s| s.bg(t.accent_active))
             .shrink0()

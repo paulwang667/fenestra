@@ -2,10 +2,9 @@
 //! Callout, Tabs, and Table.
 
 use fenestra_core::{
-    CubicBezier, Cursor, Element, GridTemplate, Key, Keyframes, Length, MEASURE_CH,
-    MotionDuration, R_FULL,
-    SP1, SP2, SP3, SP4, SP6, Semantics, StatusColors, Surface, TextSize, Theme, Track, Transition,
-    Weight, col, div, path, row, stack, text,
+    CubicBezier, Cursor, Element, GridTemplate, Key, Keyframes, Length, MEASURE_CH, MotionDuration,
+    R_FULL, SP1, SP2, SP3, SP4, SP6, Semantics, StatusColors, Surface, TextSize, Theme, Track,
+    Transition, Weight, col, div, path, row, stack, text,
 };
 use kurbo::BezPath;
 

@@ -302,11 +302,7 @@ fn handle_key_inner(
                 if state.read_only {
                     return IGNORED;
                 }
-                if redo(state, fonts) {
-                    HANDLED
-                } else {
-                    MOVED
-                }
+                if redo(state, fonts) { HANDLED } else { MOVED }
             }
             _ => IGNORED,
         },
@@ -319,9 +315,10 @@ fn handle_key_inner(
             }
             // A full capped box takes no more characters (OTP auto-advance
             // keys off exactly this saturation).
-            if state.max_chars.is_some_and(|m| {
-                state.editor.raw_text().chars().count() >= m
-            }) {
+            if state
+                .max_chars
+                .is_some_and(|m| state.editor.raw_text().chars().count() >= m)
+            {
                 return IGNORED;
             }
             state.undo.begin(&state.editor, EditRun::Insert);

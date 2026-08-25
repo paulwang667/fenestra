@@ -3,8 +3,8 @@
 //! edits at the cap.
 
 use fenestra_core::{
-    App, Element, Fonts, FrameState, InputEvent, Key, KeyInput, RovingAxis, Theme, build_frame,
-    col, dispatch, raw_input, row,
+    Element, Fonts, FrameState, InputEvent, Key, KeyInput, RovingAxis, Theme, build_frame, col,
+    dispatch, raw_input,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -17,28 +17,30 @@ fn view(code: &str) -> Element<Msg> {
     col().children([col()
         .focusable(true)
         .roving(RovingAxis::Horizontal)
-        .children((0..3)
-            .map(|i| {
-                let ch = code.chars().nth(i);
-                let code = code.to_string();
-                let mut b = raw_input(ch.map(|c| c.to_string()).unwrap_or_default(), "")
-                    .max_chars(Some(1))
-                    .w(44.0)
-                    .on_input(move |s| {
-                        let mut next: Vec<char> = code.chars().collect();
-                        match s.chars().next() {
-                            Some(c) if i < next.len() => next[i] = c,
-                            Some(c) => next.push(c),
-                            None => next.truncate(i),
-                        }
-                        Msg::Code(next.into_iter().collect())
-                    });
-                if let Some(c) = ch {
-                    b = b.read_only(false);
-                }
-                b
-            })
-            .collect::<Vec<_>>())])
+        .children(
+            (0..3)
+                .map(|i| {
+                    let ch = code.chars().nth(i);
+                    let code = code.to_string();
+                    let mut b = raw_input(ch.map(|c| c.to_string()).unwrap_or_default(), "")
+                        .max_chars(Some(1))
+                        .w(44.0)
+                        .on_input(move |s| {
+                            let mut next: Vec<char> = code.chars().collect();
+                            match s.chars().next() {
+                                Some(c) if i < next.len() => next[i] = c,
+                                Some(c) => next.push(c),
+                                None => next.truncate(i),
+                            }
+                            Msg::Code(next.into_iter().collect())
+                        });
+                    if ch.is_some() {
+                        b = b.read_only(false);
+                    }
+                    b
+                })
+                .collect::<Vec<_>>(),
+        )])
 }
 
 /// Typing fills box after box: each saturated commit advances focus to the
@@ -52,7 +54,7 @@ fn fill_advances_and_cap_rejects() {
     let mut code = String::new();
     let type_char = |c: char| InputEvent::Text(c.to_string());
     let steps = [
-        InputEvent::Tab,                                  // → scope container
+        InputEvent::Tab,                                   // → scope container
         InputEvent::Key(KeyInput::plain(Key::ArrowRight)), // → box 0
         type_char('4'),
         type_char('2'),
@@ -64,13 +66,15 @@ fn fill_advances_and_cap_rejects() {
         let frame = build_frame(&v, &theme, &mut fonts, &mut state, (240.0, 120.0), 1.0);
         let out = dispatch(&v, &frame, &mut state, &mut fonts, ev);
         for msg in out.msgs {
-            if let Msg::Code(c) = msg {
-                code = c;
-            }
+            let Msg::Code(c) = msg;
+            code = c;
         }
         assert!(out.redraw);
     }
-    assert_eq!(code, "427", "the fourth character must be rejected at the cap");
+    assert_eq!(
+        code, "427",
+        "the fourth character must be rejected at the cap"
+    );
 }
 
 /// Overwriting a filled box replaces in place and still advances.
@@ -81,7 +85,7 @@ fn overwrite_replaces_and_advances() {
     let mut state = FrameState::new();
     let mut code = String::from("4");
     let steps = [
-        InputEvent::Tab,                                  // → scope container
+        InputEvent::Tab,                                   // → scope container
         InputEvent::Key(KeyInput::plain(Key::ArrowRight)), // → box 0
         InputEvent::Text("9".into()),
     ];
@@ -90,9 +94,8 @@ fn overwrite_replaces_and_advances() {
         let frame = build_frame(&v, &theme, &mut fonts, &mut state, (240.0, 120.0), 1.0);
         let out = dispatch(&v, &frame, &mut state, &mut fonts, ev);
         for msg in out.msgs {
-            if let Msg::Code(c) = msg {
-                code = c;
-            }
+            let Msg::Code(c) = msg;
+            code = c;
         }
     }
     assert_eq!(code, "9");

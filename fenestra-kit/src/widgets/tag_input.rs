@@ -132,7 +132,11 @@ fn chip<Msg: 'static>(
         .h(16.0)
         .rounded_full()
         .shrink0()
-        .cursor(if disabled { Cursor::Default } else { Cursor::Pointer })
+        .cursor(if disabled {
+            Cursor::Default
+        } else {
+            Cursor::Pointer
+        })
         .disabled(disabled)
         .transition(Transition::colors())
         .state_layer(|t| t.text)

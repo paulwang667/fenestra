@@ -7,9 +7,9 @@ use fenestra_core::{
 
 use crate::{
     ButtonVariant, ControlSize, Status, avatar, badge, button, callout, card, checkbox, chip,
-    color_picker, otp_input, empty_state, fab, hyperlink, icons, kbd, kbd_raised, page_control, progress,
-    radio, rating, segmented, select, skeleton, skeleton_circle, skeleton_text, slider, spinner,
-    stat_card, status, switch, swiper, table, tabs, text_area, text_input, time_picker,
+    color_picker, empty_state, fab, hyperlink, icons, kbd, kbd_raised, otp_input, page_control,
+    progress, radio, rating, segmented, select, skeleton, skeleton_circle, skeleton_text, slider,
+    spinner, stat_card, status, swiper, switch, table, tabs, text_area, text_input, time_picker,
     wavy_progress,
 };
 
@@ -92,7 +92,11 @@ pub fn gallery_controls(theme: &Theme) -> Element<()> {
             "TIME PICKER",
             row().gap(SP4).items_center().children([
                 Element::from(time_picker(9, 30, 0).on_change(|_, _, _| ())),
-                Element::from(time_picker(14, 5, 59).with_seconds(true).on_change(|_, _, _| ())),
+                Element::from(
+                    time_picker(14, 5, 59)
+                        .with_seconds(true)
+                        .on_change(|_, _, _| ()),
+                ),
                 Element::from(time_picker(0, 0, 0).disabled(true).on_change(|_, _, _| ())),
             ]),
         ),
@@ -330,19 +334,25 @@ pub fn gallery_feedback(theme: &Theme) -> Element<()> {
                 Element::from(
                     swiper(1)
                         .page(
-                            col().w(280.0).h(72.0).p(SP3).child(
-                                text("Swipe or press ← →").size(TextSize::Sm),
-                            ),
+                            col()
+                                .w(280.0)
+                                .h(72.0)
+                                .p(SP3)
+                                .child(text("Swipe or press ← →").size(TextSize::Sm)),
                         )
                         .page(
-                            col().w(280.0).h(72.0).p(SP3).child(
-                                text("Second page").size(TextSize::Sm),
-                            ),
+                            col()
+                                .w(280.0)
+                                .h(72.0)
+                                .p(SP3)
+                                .child(text("Second page").size(TextSize::Sm)),
                         )
                         .page(
-                            col().w(280.0).h(72.0).p(SP3).child(
-                                text("Third page").size(TextSize::Sm),
-                            ),
+                            col()
+                                .w(280.0)
+                                .h(72.0)
+                                .p(SP3)
+                                .child(text("Third page").size(TextSize::Sm)),
                         )
                         .on_change(|_| ())
                         .id("sw-g"),

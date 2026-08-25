@@ -24,9 +24,7 @@
 //!     .into();
 //! ```
 
-use fenestra_core::{
-    Cursor, Element, Key, MotionDuration, Semantics, SwipeDir, Transition, col,
-};
+use fenestra_core::{Cursor, Element, Key, MotionDuration, Semantics, SwipeDir, Transition, col};
 
 /// A swiper under construction; converts into an [`Element`].
 pub struct Swiper<Msg> {

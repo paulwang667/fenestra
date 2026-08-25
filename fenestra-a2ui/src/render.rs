@@ -1439,9 +1439,7 @@ fn interpolate(ctx: &Ctx, id: &str, template: &str, scope: Option<&str>) -> Stri
             match bytes[i] {
                 // An escaped `\${` is literal text, not a nested
                 // expression: do not open a brace level for it.
-                b'{' if !(i >= 2 && bytes[i - 1] == b'$' && bytes[i - 2] == b'\\') => {
-                    depth += 1
-                }
+                b'{' if !(i >= 2 && bytes[i - 1] == b'$' && bytes[i - 2] == b'\\') => depth += 1,
                 b'}' => {
                     depth -= 1;
                     if depth == 0 {

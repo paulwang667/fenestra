@@ -100,21 +100,32 @@ impl<Msg> From<Field<Msg>> for Element<Msg> {
         }
 
         let mut kids: Vec<Element<Msg>> = vec![row().items_center().gap(2.0).children(header)];
+        // The error message wins over help, and reads in the danger tone. Each
+        // message is `.id`-ed so the control can `described_by` it; in the
+        // access-tree projection the control and its help/error sibling share
+        // the field's `col`, so the key resolves to the message node's id.
         if let Some(control) = f.control {
+            let mut control = control;
+            if f.error.is_some() {
+                control = control.described_by("error");
+            } else if f.help.is_some() {
+                control = control.described_by("help");
+            }
             kids.push(control);
         }
-        // The error message wins over help, and reads in the danger tone.
         if let Some(err) = f.error {
             kids.push(
                 text(err)
                     .size(TextSize::Xs)
-                    .themed(|t: &Theme, s| s.color(t.danger.solid)),
+                    .themed(|t: &Theme, s| s.color(t.danger.solid))
+                    .id("error"),
             );
         } else if let Some(help) = f.help {
             kids.push(
                 text(help)
                     .size(TextSize::Xs)
-                    .themed(|t: &Theme, s| s.color(t.text_muted)),
+                    .themed(|t: &Theme, s| s.color(t.text_muted))
+                    .id("help"),
             );
         }
 

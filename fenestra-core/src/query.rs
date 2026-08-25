@@ -217,6 +217,11 @@ pub(crate) fn role_name(semantics: &Semantics) -> &'static str {
         Semantics::Spinbutton { .. } => "spinbutton",
         Semantics::Meter { .. } => "meter",
         Semantics::ProgressBar { .. } => "progressbar",
+        Semantics::Tree => "tree",
+        Semantics::TreeItem { .. } => "treeitem",
+        Semantics::Menu => "menu",
+        Semantics::MenuItem => "menuitem",
+        Semantics::GridCell { .. } => "gridcell",
     }
 }
 

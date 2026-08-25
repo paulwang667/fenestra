@@ -38,8 +38,7 @@ impl App for Nav {
                     nav_item("Settings")
                         .icon(fenestra_kit::icons::lucide::by_name("settings").unwrap())
                         .badge("12"),
-                    nav_item("Profile")
-                        .icon(fenestra_kit::icons::lucide::by_name("user").unwrap()),
+                    nav_item("Profile").icon(fenestra_kit::icons::lucide::by_name("user").unwrap()),
                 ],
                 self.selected,
             )
@@ -88,19 +87,18 @@ impl App for Rated {
     }
 
     fn view(&self) -> Element<RatedMsg> {
-        col()
-            .p(16.0)
-            .child(rating(self.value, 5).precision(0.5).on_change(RatedMsg::Rate).id("stars"))
+        col().p(16.0).child(
+            rating(self.value, 5)
+                .precision(0.5)
+                .on_change(RatedMsg::Rate)
+                .id("stars"),
+        )
     }
 }
 
 #[test]
 fn rating_clicks_and_steps() {
-    let mut h = Harness::new(
-        Rated { value: 3.0 },
-        Theme::light(),
-        (220, 100),
-    );
+    let mut h = Harness::new(Rated { value: 3.0 }, Theme::light(), (220, 100));
     // Clicking the middle of the row lands on the 3rd star.
     h.click(&by::role(Semantics::Slider {
         value: 3.0,

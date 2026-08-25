@@ -121,7 +121,11 @@ impl<Msg: Clone + 'static> From<NavList<Msg>> for Element<Msg> {
     fn from(n: NavList<Msg>) -> Self {
         let m = n.size.metrics();
         let count = n.items.len();
-        let selected = if count > 0 { n.selected.min(count - 1) } else { 0 };
+        let selected = if count > 0 {
+            n.selected.min(count - 1)
+        } else {
+            0
+        };
 
         let rows: Vec<Element<Msg>> = n
             .items
@@ -132,21 +136,22 @@ impl<Msg: Clone + 'static> From<NavList<Msg>> for Element<Msg> {
                 let wired = n.on_select.is_some();
                 let mut kids: Vec<Element<Msg>> = Vec::with_capacity(3);
                 kids.extend(item.icon.map(|icon| {
-                    icon.w(16.0)
-                        .h(16.0)
-                        .shrink0()
-                        .themed(move |t: &Theme, s| {
-                            s.color(if is_selected || !wired {
-                                t.text
-                            } else {
-                                t.text_muted
-                            })
+                    icon.w(16.0).h(16.0).shrink0().themed(move |t: &Theme, s| {
+                        s.color(if is_selected || !wired {
+                            t.text
+                        } else {
+                            t.text_muted
                         })
+                    })
                 }));
                 kids.push(
                     text(item.label.clone())
                         .size(m.font)
-                        .weight(if is_selected { Weight::Medium } else { Weight::Regular })
+                        .weight(if is_selected {
+                            Weight::Medium
+                        } else {
+                            Weight::Regular
+                        })
                         .themed(move |t: &Theme, s| {
                             s.color(if is_selected || !wired {
                                 t.text
@@ -171,18 +176,15 @@ impl<Msg: Clone + 'static> From<NavList<Msg>> for Element<Msg> {
                                     s.bg(t.element)
                                 }
                             })
-                            .child(
-                                text(badge)
-                                    .size(TextSize::Xs)
-                                    .tabular()
-                                    .themed(move |t: &Theme, s| {
-                                        s.color(if is_selected {
-                                            t.accent_text
-                                        } else {
-                                            t.text_muted
-                                        })
-                                    }),
-                            ),
+                            .child(text(badge).size(TextSize::Xs).tabular().themed(
+                                move |t: &Theme, s| {
+                                    s.color(if is_selected {
+                                        t.accent_text
+                                    } else {
+                                        t.text_muted
+                                    })
+                                },
+                            )),
                     );
                 }
 
@@ -194,19 +196,22 @@ impl<Msg: Clone + 'static> From<NavList<Msg>> for Element<Msg> {
                     .w_full()
                     .themed(move |t: &Theme, s| s.rounded(t.radius.sm))
                     .shrink0()
-                    .semantics(Semantics::ListItem { selected: is_selected })
+                    .semantics(Semantics::ListItem {
+                        selected: is_selected,
+                    })
                     .label(item.label.clone())
                     .transition(Transition::colors())
-                    .themed(move |t: &Theme, s| {
-                        if is_selected {
-                            s.bg(t.element)
-                        } else {
-                            s
-                        }
-                    })
+                    .themed(
+                        move |t: &Theme, s| {
+                            if is_selected { s.bg(t.element) } else { s }
+                        },
+                    )
                     .children(kids);
                 if let Some(f) = &n.on_select {
-                    r = r.on_click(f(i)).cursor(Cursor::Pointer).state_layer(|t: &Theme| t.text);
+                    r = r
+                        .on_click(f(i))
+                        .cursor(Cursor::Pointer)
+                        .state_layer(|t: &Theme| t.text);
                 }
                 r
             })

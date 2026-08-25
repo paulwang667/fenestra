@@ -40,6 +40,7 @@ pub struct Combobox<Msg> {
     on_navigate: Option<std::rc::Rc<dyn Fn(usize) -> Msg>>,
     on_close: Option<Msg>,
     key: Option<String>,
+    disabled: bool,
 }
 
 /// An editable select: typing filters `options` (case-insensitive
@@ -63,6 +64,7 @@ pub fn combobox<Msg>(
         on_navigate: None,
         on_close: None,
         key: None,
+        disabled: false,
     }
 }
 
@@ -119,6 +121,15 @@ impl<Msg> Combobox<Msg> {
         self.key = Some(key.to_owned());
         self
     }
+
+    /// Disables the combobox: the trigger input becomes inert (dimmed) and
+    /// the list never opens, matching how [`crate::text_input`] and other
+    /// controls express `disabled`.
+    #[must_use]
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
 }
 
 impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
@@ -131,7 +142,7 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
             .cloned()
             .collect();
 
-        let show_list = c.open && !filtered.is_empty() && c.on_pick.is_some();
+        let show_list = c.open && !filtered.is_empty() && c.on_pick.is_some() && !c.disabled;
         // The keyboard cursor, clamped into the visible (filtered) range:
         // `active` is the option Enter accepts; `cursor` draws the veil, but
         // only once the app owns a highlight (an un-wired combobox keeps a
@@ -144,7 +155,8 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
 
         let mut input = text_input(&c.value)
             .placeholder(c.placeholder.clone())
-            .width(c.width);
+            .width(c.width)
+            .disabled(c.disabled);
         if let Some(f) = &c.on_input {
             let f = std::rc::Rc::clone(f);
             input = input.on_input(move |s| f(s));
@@ -173,7 +185,8 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
 
         let mut anchor = col()
             .w(c.width)
-            .semantics(Semantics::ComboBox).expanded(show_list)
+            .semantics(Semantics::ComboBox)
+            .expanded(show_list)
             .children([input]);
 
         if let Some(pick) = c.on_pick.clone().filter(|_| show_list) {
