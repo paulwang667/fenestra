@@ -80,11 +80,21 @@ const NODE_REGISTRY: &[(&str, &str, &str)] = &[
         "A run of text. Supports `on_click` for clickable labels.",
         r#"{"content":"Hello"}"#,
     ),
+    (
+        "hyperlink",
+        "Accent-colored text link carrying the ARIA `link` role.",
+        r#"{"label":"Read the docs","on_click":"open-docs"}"#,
+    ),
     // ── Form controls ──────────────────────────────────────────────────────
     (
         "button",
         "Activatable button. `variant`: primary | secondary | ghost | danger. `bind` a bool state key for toggle behavior.",
         r#"{"label":"Add","on_click":"add","variant":"primary"}"#,
+    ),
+    (
+        "fab",
+        "M3 floating action button: a 56px accent square holding a Lucide `icon`. `label` is the accessible name.",
+        r#"{"icon":"plus","label":"Compose","on_click":"compose"}"#,
     ),
     (
         "checkbox",
@@ -147,6 +157,11 @@ const NODE_REGISTRY: &[(&str, &str, &str)] = &[
         r#"{"tags":["design","rust"],"placeholder":"Add a tag…"}"#,
     ),
     (
+        "chip",
+        "Compact pill: a toggle with `on_toggle`, a dismissible token with `on_remove`, or a static label with neither. Both handlers are inert intents (the toggle's next state is computed, so it cannot ride a scalar write).",
+        r#"{"label":"Rust","selected":true,"on_toggle":"toggle-tag","on_remove":"remove-tag"}"#,
+    ),
+    (
         "date_picker",
         "Month calendar. Single-date by default; `range:true` switches to start/end selection. Drops the kit's WAI-ARIA keyboard grid navigation (`on_focus`/`focused_day`).",
         r#"{"year":2026,"month":6}"#,
@@ -155,6 +170,11 @@ const NODE_REGISTRY: &[(&str, &str, &str)] = &[
         "color_picker",
         "OKLCH color picker: lightness×chroma pad, hue/alpha strips, a swatch, and a hex/`oklch()` text entry. `value` is hex or `oklch()` text; `bind` a root `state` text key for the committed hex value.",
         r##"{"value":"#3b82f6","label":"Accent color"}"##,
+    ),
+    (
+        "time_picker",
+        "24-hour HH:MM[:SS] field with per-segment stepping. `bind` a root `state` number key for seconds-since-midnight.",
+        r#"{"hour":9,"minute":30,"bind":"at"}"#,
     ),
     // ── Navigation ────────────────────────────────────────────────────────
     (
@@ -183,6 +203,11 @@ const NODE_REGISTRY: &[(&str, &str, &str)] = &[
         r#"{"steps":["Account","Shipping","Payment"],"current":1}"#,
     ),
     (
+        "page_control",
+        "HIG dots indicator for paged content: `current` is an elongated accent pill. Inert — the pager owns navigation.",
+        r#"{"pages":5,"current":1}"#,
+    ),
+    (
         "toolbar",
         "Surface-framed bar grouping action controls (`children`). `vertical:true` stacks them.",
         r#"{"children":[{"button":{"label":"Bold"}},{"button":{"label":"Italic"}}]}"#,
@@ -196,6 +221,11 @@ const NODE_REGISTRY: &[(&str, &str, &str)] = &[
         "tree",
         "Nested disclosure tree with app-owned expansion/selection; one tab stop, keyboard-navigable (arrows, Home/End, type-ahead).",
         r#"{"items":[{"id":"root","label":"Root","children":[{"id":"child","label":"Child"}]}]}"#,
+    ),
+    (
+        "nav_list",
+        "Sidebar navigation rows (icon + label + optional badge). `bind` a root `state` number key for the selected row; arrows step it.",
+        r#"{"items":[{"label":"Inbox","icon":"bell","badge":"3"},{"label":"Sent"}],"selected":0}"#,
     ),
     // ── Display / feedback ─────────────────────────────────────────────────
     (
@@ -237,6 +267,11 @@ const NODE_REGISTRY: &[(&str, &str, &str)] = &[
         "meter",
         "Measurement bar within `min`..=`max`. With `low`/`high`/`optimum` set, the fill colours by zone (success/warning/danger). `bind` a state number for the value.",
         r#"{"value":62,"min":0,"max":100,"label":"Storage"}"#,
+    ),
+    (
+        "rating",
+        "Star rating over `max` stars (default 5); `step` 0.5 enables halves. `bind` a root `state` number key for the value; arrows step it.",
+        r#"{"value":3.5,"max":5,"step":0.5,"bind":"stars"}"#,
     ),
     (
         "accordion",

@@ -115,6 +115,12 @@ pub enum Node {
     /// swatch, and a hex/`oklch()` text entry. `bind` a root `state` text key
     /// for the committed hex value.
     ColorPicker(ColorPickerNode),
+    /// A compact labeled pill: a toggle with `on_toggle`, a dismissible
+    /// token with `on_remove`, or a static label with neither.
+    Chip(ChipNode),
+    /// A 24-hour time picker. `bind` a root `state` number key for
+    /// seconds-since-midnight.
+    TimePicker(TimePickerNode),
     // ── Navigation ────────────────────────────────────────────────────────
     /// An underline tab strip. `bind` a root `state` number key for the active index.
     Tabs(TabsNode),
@@ -134,6 +140,12 @@ pub enum Node {
     /// A nested disclosure tree with app-owned expansion and selection; one
     /// tab stop, keyboard-navigable (arrows, Home/End, type-ahead).
     Tree(TreeViewNode),
+    /// A sidebar navigation list. `bind` a root `state` number key for the
+    /// selected row.
+    NavList(NavListNode),
+    /// The HIG dots indicator for paged content. Inert: the pager owns
+    /// navigation.
+    PageControl(PageControlNode),
     // ── Display / feedback ─────────────────────────────────────────────────
     /// A status pill. `status`: accent (default) | danger | warning | success.
     Badge(BadgeNode),
@@ -190,6 +202,8 @@ pub enum Node {
     /// spans). Nested structure is flattened, so hostile sources cannot
     /// drive tree depth.
     Markdown(MarkdownNode),
+    /// A star rating. `bind` a root `state` number key for the value.
+    Rating(RatingNode),
     // ── Overlays ──────────────────────────────────────────────────────────
     /// A centered modal dialog with title, children, and optional `on_close` intent.
     Modal(ModalNode),
@@ -207,6 +221,10 @@ pub enum Node {
     /// match. Present in the tree = shown (like `modal`); omit it from the
     /// next description to close it.
     CommandPalette(CommandPaletteNode),
+    /// The M3 floating action button: a 56px accent square with `icon`.
+    Fab(FabNode),
+    /// Accent-colored text link carrying the ARIA `link` role.
+    Hyperlink(HyperlinkNode),
     // ── Decoration ────────────────────────────────────────────────────────
     /// A themed hairline rule.
     Divider(Leaf),
@@ -2055,9 +2073,172 @@ pub struct CommandPaletteNode {
     pub fallback: Option<String>,
 }
 
+/// One row of a [`NavListNode`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NavItemSpec {
+    /// Row label.
+    pub label: String,
+    /// Leading Lucide icon name (e.g. `"bell"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Trailing badge (a count or status word).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badge: Option<String>,
+}
+
+/// A compact labeled pill: a toggle with `on_toggle`, a dismissible token
+/// with `on_remove`, or a static label with neither.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChipNode {
+    /// Pill label.
+    pub label: String,
+    /// Renders selected (accent tint + check).
+    #[serde(default)]
+    pub selected: bool,
+    /// Intent emitted when the chip is toggled (the new state is computed,
+    /// so it cannot ride a scalar write).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_toggle: Option<String>,
+    /// Intent emitted by the dismiss ×.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_remove: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+    /// Stable key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// A 24-hour `HH:MM[:SS]` picker. `bind` carries **seconds since midnight**
+/// (one number, lossless for every field).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimePickerNode {
+    #[serde(default)]
+    pub hour: u32,
+    #[serde(default)]
+    pub minute: u32,
+    #[serde(default)]
+    pub second: u32,
+    /// Show (and edit) the seconds segment.
+    #[serde(default)]
+    pub seconds: bool,
+    /// Bind a `state` number key: seconds since midnight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
+    /// Intent emitted on any segment step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_change: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+    /// Stable key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// A sidebar navigation list: icon + label rows with an optional badge,
+/// one selected.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NavListNode {
+    /// Rows, in order.
+    pub items: Vec<NavItemSpec>,
+    /// Selected row index (0-based).
+    #[serde(default)]
+    pub selected: usize,
+    /// Bind a `state` number key for the selected index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
+    /// Intent emitted on row selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_change: Option<String>,
+    /// Stable key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// The HIG dots indicator: `pages` dots, `current` elongated.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PageControlNode {
+    /// Dot count.
+    pub pages: usize,
+    /// Current page index (0-based).
+    #[serde(default)]
+    pub current: usize,
+}
+
+/// A star rating over `max` stars. `bind` a `state` number key for the value.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RatingNode {
+    #[serde(default)]
+    pub value: f32,
+    /// Star count (default 5).
+    #[serde(default = "default_five")]
+    pub max: u32,
+    /// Step per star click / arrow press (default whole stars; `0.5` halves).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<f32>,
+    /// Display-only (no pointer or keyboard editing).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+    /// Bind a `state` number key for the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
+    /// Intent emitted on a new value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_change: Option<String>,
+    /// Stable key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// The M3 floating action button: a 56px accent square holding a Lucide icon.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FabNode {
+    /// Lucide icon name (e.g. `"plus"`).
+    pub icon: String,
+    /// Accessible name (icon-only control — set it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Intent emitted on click.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_click: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+    /// Stable key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// Accent-colored text link carrying the ARIA `link` role.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HyperlinkNode {
+    /// Link text.
+    pub label: String,
+    /// Intent emitted on click.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_click: Option<String>,
+    /// Stable key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
 /// Default `0.5` for the split pane's `fraction` (serde `default` attribute).
 pub fn default_half() -> f32 {
     0.5
+}
+
+/// Default `5` for the rating's `max` (serde `default` attribute).
+pub fn default_five() -> u32 {
+    5
 }
 
 /// Default value for `status`/`delta_status` fields (serde `default` attribute).

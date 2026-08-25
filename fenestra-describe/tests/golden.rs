@@ -142,3 +142,60 @@ fn described_charts_markdown_golden() {
     let image = render_element(el, &theme, (480, 640));
     assert_png_snapshot(snapshot_dir(), "described_charts_markdown", &image);
 }
+
+/// The tranche widgets authored entirely in `fenestra/1` — proving the JSON
+/// boundary produces the same elements the builders do for chip,
+/// time_picker, nav_list, rating, fab, hyperlink, and page_control.
+const TRANCHE: &str = r#"{
+  "schema": "fenestra/1",
+  "state": { "at": 34200, "stars": 3.5, "nav": 1 },
+  "root": { "col": {
+    "style": { "p": 24, "gap": 16, "bg": "surface" },
+    "children": [
+      { "row": { "style": { "gap": 8 }, "children": [
+        { "chip": { "label": "Rust", "selected": true, "on_toggle": "toggle" } },
+        { "chip": { "label": "Draft", "on_remove": "remove" } },
+        { "chip": { "label": "Locked", "disabled": true } }
+      ] } },
+      { "time_picker": { "bind": "at", "seconds": true } },
+      { "nav_list": { "items": [
+          { "label": "Inbox", "icon": "bell", "badge": "3" },
+          { "label": "Sent" }
+        ], "bind": "nav" } },
+      { "rating": { "bind": "stars", "step": 0.5 } },
+      { "row": { "style": { "gap": 12 }, "children": [
+        { "fab": { "icon": "plus", "label": "Compose", "on_click": "compose" } },
+        { "hyperlink": { "label": "Read the docs", "on_click": "open-docs" } }
+      ] } },
+      { "page_control": { "pages": 5, "current": 1 } }
+    ]
+  } }
+}"#;
+
+#[test]
+fn described_tranche_golden() {
+    let theme = Theme::light();
+    let el = to_element(&serde_json::from_str(TRANCHE).expect("valid"), &theme).expect("parses");
+    let image = render_element(el, &theme, (360, 560));
+    assert_png_snapshot(snapshot_dir(), "described_tranche", &image);
+}
+
+/// The bound widgets read their initial values from `state` (09:30 from
+/// 34200 s, 3.5 stars, the second nav row) and project their roles.
+#[test]
+fn described_tranche_bindings_and_aria() {
+    let aria =
+        aria_snapshot(&serde_json::from_str(TRANCHE).expect("valid"), &Theme::light(), (360, 560))
+            .unwrap();
+    for needle in [
+        r#"spinbutton "Hour" [value=9 min=0 max=23]"#,
+        r#"spinbutton "Minute" [value=30 min=0 max=59]"#,
+        r#"checkbox "Rust""#,
+        r#"listitem "Inbox""#,
+        "slider",
+        r#"button "Compose""#,
+        r#"link "Read the docs""#,
+    ] {
+        assert!(aria.contains(needle), "aria missing {needle:?}:\n{aria}");
+    }
+}

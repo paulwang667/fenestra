@@ -27,13 +27,14 @@ use fenestra_core::{
 };
 use fenestra_kit::{
     ButtonVariant, Status as KitStatus, TreeNode as KitTreeNode, accordion, accordion_item, avatar,
-    badge, breadcrumbs, button, callout, card, checkbox, color_picker, combobox, command_palette,
-    crumb, data_table, date_picker, date_range_picker, drawer, dropdown_menu, field,
-    format_color_text, kbd, kbd_raised, menubar, meter, modal, multi_select, pagination,
-    parse_color_text, popover, progress, progress_indeterminate, radio, segmented, select,
-    skeleton, skeleton_circle, skeleton_text, slider, spin_button, spinner, split_pane, stat_card,
-    status as kit_status, stepper, switch, tabs, tag_input, text_area, text_input, toast_stack,
-    toolbar, tooltip, tree_view, virtual_list,
+    badge, breadcrumbs, button, callout, card, checkbox, chip, color_picker, combobox,
+    command_palette, crumb, data_table, date_picker, date_range_picker, drawer, dropdown_menu,
+    fab, field, format_color_text, hyperlink, kbd, kbd_raised, menubar, meter, modal,
+    multi_select, nav_item, nav_list, page_control, pagination, parse_color_text, popover,
+    progress, progress_indeterminate, radio, rating, segmented, select, skeleton,
+    skeleton_circle, skeleton_text, slider, spin_button, spinner, split_pane, stat_card,
+    status as kit_status, stepper, switch, tabs, tag_input, text_area, text_input, time_picker,
+    toast_stack, toolbar, tooltip, tree_view, virtual_list,
 };
 use fenestra_markdown::markdown;
 use image::{ImageFormat, ImageReader, Limits};
@@ -42,13 +43,14 @@ use crate::color::resolve_color;
 use crate::error::DescribeError;
 use crate::format::{
     AccordionNode, AdaptiveSpec, AvatarNode, BadgeNode, BarChartNode, BreadcrumbsNode, CalloutNode,
-    ColorPickerNode, ComboboxNode, CommandPaletteNode, Container, DataTableNode, DatePickerNode,
-    DateSpec, Description, DrawerNode, DropdownMenuNode, EdgeSpec, FieldNode, FilterSpec, GrowSpec,
-    IconNode, ImageNode, InputNode, KbdNode, Leaf, LineChartNode, MarkdownNode, MenubarNode,
-    MeterNode, ModalNode, MultiSelectNode, Node, PaginationNode, PopoverNode, ProgressNode,
-    RadioNode, RepeatCount, SCHEMA_V1, SegmentedNode, SelectNode, SheenSpec, SizeSpec,
-    SkeletonNode, SparklineNode, SpinButtonNode, SplitPaneNode, StatCardNode, StatusNode,
-    StepperNode, Style, TabsNode, TagInputNode, TextNode, ToastStackNode, ToolbarNode, TooltipNode,
+    ChipNode, ColorPickerNode, ComboboxNode, CommandPaletteNode, Container, DataTableNode,
+    DatePickerNode, DateSpec, Description, DrawerNode, DropdownMenuNode, EdgeSpec, FabNode,
+    FieldNode, FilterSpec, GrowSpec, HyperlinkNode, IconNode, ImageNode, InputNode, KbdNode, Leaf,
+    LineChartNode, MarkdownNode, MenubarNode, MeterNode, ModalNode, MultiSelectNode, NavListNode,
+    Node, PageControlNode, PaginationNode, PopoverNode, ProgressNode, RadioNode, RatingNode,
+    RepeatCount, SCHEMA_V1, SegmentedNode, SelectNode, SheenSpec, SizeSpec, SkeletonNode,
+    SparklineNode, SpinButtonNode, SplitPaneNode, StatCardNode, StatusNode, StepperNode, Style,
+    TabsNode, TagInputNode, TextNode, TimePickerNode, ToastStackNode, ToolbarNode, TooltipNode,
     TrackSpec, TreeItemDto, TreeViewNode, VirtualListNode,
 };
 use crate::state::{Action, StateMap, bound_bool, bound_number, bound_text};
@@ -359,6 +361,13 @@ fn node_to_element(
         Node::ColorPicker(c) => color_picker_node(c, state, path, errors),
         // ── Navigation ────────────────────────────────────────────────────────
         Node::Tabs(t) => tabs_node(t, state),
+        Node::Chip(c) => chip_node(c, state),
+        Node::TimePicker(t) => time_picker_node(t, state),
+        Node::NavList(n) => nav_list_node(n, state),
+        Node::PageControl(p) => page_control_node(p),
+        Node::Rating(r) => rating_node(r, state),
+        Node::Fab(f) => fab_node(f),
+        Node::Hyperlink(h) => hyperlink_node(h),
         Node::Segmented(s) => segmented_node(s, state),
         Node::Breadcrumbs(b) => breadcrumbs_node(b),
         Node::Pagination(p) => pagination_node(p, state),
@@ -1999,6 +2008,158 @@ fn named_icon(name: &str) -> Option<Element<Action>> {
         other => other,
     };
     fenestra_kit::icons::lucide::by_name(name)
+}
+
+// ── Tranche: chip, time picker, nav list, pager, rating, fab, link ──────────
+
+/// A time-picker edit: the three fields, whichever segment moved.
+type TimeChange = Box<dyn Fn(u32, u32, u32) -> Action>;
+
+fn chip_node(c: &ChipNode, _state: &StateMap) -> Element<Action> {
+    let mut w = chip(c.label.clone()).selected(c.selected);
+    if let Some(intent) = &c.on_toggle {
+        let intent = intent.clone();
+        w = w.on_toggle(move |_| Action::Intent(intent.clone()));
+    }
+    if let Some(intent) = &c.on_remove {
+        w = w.on_remove(Action::Intent(intent.clone()));
+    }
+    if c.disabled {
+        w = w.disabled(true);
+    }
+    if let Some(id) = &c.id {
+        w = w.id(id);
+    }
+    w.into()
+}
+
+fn time_picker_node(t: &TimePickerNode, state: &StateMap) -> Element<Action> {
+    // A bound key carries seconds-since-midnight; it wins over the authored
+    // fields (midnight is a real time, so an existing key always applies).
+    let (h, m, s) = if let Some(key) = &t.bind {
+        let total = bound_number(state, key, 0.0).max(0.0) as u32;
+        ((total / 3600).min(23), (total % 3600) / 60, total % 60)
+    } else {
+        (t.hour, t.minute, t.second)
+    };
+    let mut w = time_picker(h, m, s).with_seconds(t.seconds);
+    let handler: Option<TimeChange> = match (&t.bind, &t.on_change) {
+        (Some(key), _) => {
+            let key = key.clone();
+            Some(Box::new(move |h, m, s| {
+                Action::SetNumber(key.clone(), (h * 3600 + m * 60 + s) as f32)
+            }))
+        }
+        (None, Some(intent)) => {
+            let intent = intent.clone();
+            Some(Box::new(move |_, _, _| Action::Intent(intent.clone())))
+        }
+        (None, None) => None,
+    };
+    if let Some(f) = handler {
+        w = w.on_change(f);
+    }
+    if t.disabled {
+        w = w.disabled(true);
+    }
+    if let Some(id) = &t.id {
+        w = w.id(id);
+    }
+    w.into()
+}
+
+fn nav_list_node(n: &NavListNode, state: &StateMap) -> Element<Action> {
+    let selected = bound_index(state, &n.bind, n.selected);
+    let handler = index_handler(&n.bind, &n.on_change);
+    let mut w = nav_list(
+        n.items.iter().map(|item| {
+            let mut row = nav_item(item.label.clone());
+            if let Some(name) = &item.icon
+                && let Some(icon) = named_icon(name)
+            {
+                row = row.icon(icon);
+            }
+            if let Some(badge) = &item.badge {
+                row = row.badge(badge.clone());
+            }
+            row
+        }),
+        selected,
+    )
+    .on_select(handler);
+    if let Some(id) = &n.id {
+        w = w.id(id);
+    }
+    w.into()
+}
+
+fn page_control_node(p: &PageControlNode) -> Element<Action> {
+    page_control(p.pages, p.current)
+}
+
+fn rating_node(r: &RatingNode, state: &StateMap) -> Element<Action> {
+    let value = bound_number(state, r.bind.as_deref().unwrap_or(""), r.value);
+    let mut w = rating(value, r.max);
+    if let Some(step) = r.step {
+        w = w.precision(step);
+    }
+    if r.read_only {
+        w = w.read_only(true);
+    }
+    if r.disabled {
+        w = w.disabled(true);
+    }
+    let handler: Option<Box<dyn Fn(f32) -> Action>> = match (&r.bind, &r.on_change) {
+        (Some(key), _) => {
+            let key = key.clone();
+            Some(Box::new(move |v| Action::SetNumber(key.clone(), v)))
+        }
+        (None, Some(intent)) => {
+            let intent = intent.clone();
+            Some(Box::new(move |_| Action::Intent(intent.clone())))
+        }
+        (None, None) => None,
+    };
+    if let Some(f) = handler {
+        w = w.on_change(f);
+    }
+    if let Some(id) = &r.id {
+        w = w.id(id);
+    }
+    w.into()
+}
+
+fn fab_node(f: &FabNode) -> Element<Action> {
+    // An unknown icon name degrades to the vendored `plus` glyph (no panic
+    // on hostile input).
+    let icon = named_icon(&f.icon)
+        .or_else(|| fenestra_kit::icons::lucide::by_name("plus"))
+        .expect("plus is vendored");
+    let mut w = fab(icon);
+    if let Some(label) = &f.label {
+        w = w.label(label.clone());
+    }
+    if let Some(intent) = &f.on_click {
+        w = w.on_click(Action::Intent(intent.clone()));
+    }
+    if f.disabled {
+        w = w.disabled(true);
+    }
+    if let Some(id) = &f.id {
+        w = w.id(id);
+    }
+    w.into()
+}
+
+fn hyperlink_node(h: &HyperlinkNode) -> Element<Action> {
+    let mut w = hyperlink(h.label.clone());
+    if let Some(intent) = &h.on_click {
+        w = w.on_click(Action::Intent(intent.clone()));
+    }
+    if let Some(id) = &h.id {
+        w = w.id(id);
+    }
+    w.into()
 }
 
 // ── Status helper ─────────────────────────────────────────────────────────────
