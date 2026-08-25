@@ -430,6 +430,30 @@ pub enum Semantics {
         /// Completed fraction `0.0..=1.0`, or `None` for indeterminate.
         value: Option<f32>,
     },
+    /// A tree container (ARIA `tree`): nodes carry [`Semantics::TreeItem`],
+    /// and the tree itself is the single keyboard tab stop.
+    Tree,
+    /// One node of a [`Semantics::Tree`]. Mirrors the ARIA `treeitem` role;
+    /// `selected` carries `aria-selected`, and the open/closed state rides
+    /// the element's `expanded` flag (`aria-expanded`).
+    TreeItem {
+        /// Whether this node is the currently selected one.
+        selected: bool,
+    },
+    /// A menu panel (ARIA `menu`): entries carry [`Semantics::MenuItem`].
+    Menu,
+    /// One activatable entry of a [`Semantics::Menu`]. Mirrors the ARIA
+    /// `menuitem` role. Menu *triggers* stay [`Semantics::Button`] —
+    /// `aria-haspopup` is a button concern, not a menu-item one.
+    MenuItem,
+    /// One selectable cell of a data or date grid (ARIA `gridcell`). The
+    /// grid container carries [`Semantics::Grid`]; row containers carry
+    /// [`Semantics::Row`].
+    GridCell {
+        /// Whether this cell is the selected one (or a selected range
+        /// endpoint).
+        selected: bool,
+    },
 }
 
 impl Semantics {
@@ -709,6 +733,12 @@ pub struct Element<Msg> {
     /// Explicit accessible value (ARIA `valuetext`), overriding the input-derived
     /// one. Widgets like spinbutton/meter set it to a formatted value string.
     pub(crate) access_value: Option<String>,
+    /// ARIA `aria-describedby`: the stable ids of elements describing this
+    /// control (e.g. a field's help/error text). Widget ids are assigned during
+    /// `build_frame`, so this holds *keys* (as set via `.id("...")` on the
+    /// described element) and is resolved to ids in the access-tree projection,
+    /// where the described element's id is in scope.
+    pub(crate) described_by: Vec<String>,
     /// Announce content changes to assistive technology (polite).
     pub(crate) live: bool,
     /// Static text: users can drag-select and copy it.
@@ -794,6 +824,7 @@ impl<Msg> Element<Msg> {
             responsive: None,
             semantics: None,
             access_value: None,
+            described_by: Vec::new(),
             live: false,
             selectable: false,
             enter: None,
@@ -1391,6 +1422,14 @@ impl<Msg> Element<Msg> {
     /// derive their value from the edited text; this overrides it.
     pub fn value(mut self, value: impl Into<String>) -> Self {
         self.access_value = Some(value.into());
+        self
+    }
+    /// Marks elements describing this control as their `.id("...")` keys.
+    /// Resolved to widget ids in the access-tree projection, where the
+    /// described elements are siblings in scope (e.g. a field's help/error text).
+    #[must_use]
+    pub fn described_by(mut self, key: impl Into<String>) -> Self {
+        self.described_by.push(key.into());
         self
     }
 
@@ -2485,6 +2524,7 @@ impl<Msg: 'static> Element<Msg> {
             }),
             semantics: self.semantics,
             access_value: self.access_value,
+            described_by: self.described_by,
             live: self.live,
             expanded: self.expanded,
             selectable: self.selectable,

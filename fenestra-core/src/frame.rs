@@ -5,6 +5,7 @@
 
 use kurbo::{Point, Rect};
 use serde::Serialize;
+use std::collections::HashMap;
 use taffy::prelude::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 
@@ -181,6 +182,19 @@ fn apply_sticky(natural: Rect, style: &Style, ctx: Option<StickyCtx>) -> Rect {
     Rect::new(x0, y0, x0 + w, y0 + h)
 }
 
+/// The per-node accessibility projection: role/state, accessible name and
+/// value, the stable `.id(...)` key, and the keys of the sibling elements
+/// that describe this node (ARIA `aria-describedby`; resolved to sibling
+/// ids in [`Frame::access_tree`]).
+#[derive(Clone)]
+struct Access {
+    semantics: Option<Semantics>,
+    label: Option<String>,
+    value: Option<String>,
+    key: Option<String>,
+    described_by: Vec<String>,
+}
+
 /// One node with its final absolute logical rect.
 struct FrameNode {
     id: WidgetId,
@@ -196,12 +210,7 @@ struct FrameNode {
     /// Continuous rotation period (ms) for spinner paths.
     spin: Option<f32>,
     /// Accessibility projection: role/state, name, value, and user key.
-    access: (
-        Option<Semantics>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ),
+    access: Access,
     /// Live region (polite announcements).
     live: bool,
     /// Text inputs: selected byte range (collapsed = caret position).
@@ -259,6 +268,10 @@ pub struct AccessNode {
     pub selection: Option<(usize, usize)>,
     /// Children in paint order.
     pub children: Vec<AccessNode>,
+    /// Widget ids of elements describing this node (resolved from the
+    /// `.id("...")` keys declared on `Element`, where the described elements
+    /// are in scope during projection).
+    pub described_by: Vec<WidgetId>,
 }
 
 /// The arrow-roving scope governing a focused widget (see
@@ -382,13 +395,7 @@ struct BuiltNode {
     spin: Option<f32>,
     /// Scroll containers: pin to the bottom while content grows.
     stick_bottom: bool,
-    /// Accessibility projection: role/state, name, value, and user key.
-    access: (
-        Option<Semantics>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ),
+    access: Access,
     /// Live region (polite announcements).
     live: bool,
     /// Text inputs: selected byte range (collapsed = caret position).
@@ -971,9 +978,10 @@ fn build<Msg>(
     // state lives in FrameState (the overlay system owns it), so the
     // anchor reads it here instead of waiting for the app to mirror it.
     let overlay_open = el.semantics == Some(Semantics::ComboBox)
-        && child_slice.iter().enumerate().any(|(i, c)| {
-            c.overlay.is_some() && state.overlay_open(id.child(i, c.key.as_deref()))
-        });
+        && child_slice
+            .iter()
+            .enumerate()
+            .any(|(i, c)| c.overlay.is_some() && state.overlay_open(id.child(i, c.key.as_deref())));
 
     BuiltNode {
         taffy,
@@ -989,7 +997,13 @@ fn build<Msg>(
         roving: el.roving,
         stick_bottom: el.stick_bottom,
         spin: el.spin,
-        access: (semantics, label, value, el.key.clone()),
+        access: Access {
+            semantics,
+            label,
+            value,
+            key: el.key.clone(),
+            described_by: el.described_by.clone(),
+        },
         live: el.live,
         drag_region: el.drag_region,
         window_control: el.window_control,
@@ -2484,7 +2498,13 @@ impl Frame {
     /// actually activates the element.
     pub fn access_tree(&self) -> AccessNode {
         fn project(node: &FrameNode, ancestor: kurbo::Affine) -> AccessNode {
-            let (semantics, label, value, key) = node.access.clone();
+            let Access {
+                semantics,
+                label,
+                value,
+                key,
+                ..
+            } = node.access.clone();
             let this = match node_transform(node) {
                 Some(t) => ancestor * t,
                 None => ancestor,
@@ -2494,6 +2514,28 @@ impl Frame {
             } else {
                 this.transform_rect_bbox(node.rect)
             };
+            // Sibling scope for `described_by`: each child's `.id("...")` key
+            // resolves to its id here, so a control can name its help/error
+            // siblings. Keys are scoped to this node's direct children.
+            let key_to_id: HashMap<&str, WidgetId> = node
+                .children
+                .iter()
+                .filter_map(|c| c.access.key.as_ref().map(|k| (k.as_str(), c.id)))
+                .collect();
+            let children = node
+                .children
+                .iter()
+                .map(|c| {
+                    let c_desc = &c.access.described_by;
+                    let mut child = project(c, this);
+                    child.described_by = c_desc
+                        .iter()
+                        .filter_map(|k| key_to_id.get(k.as_str()))
+                        .cloned()
+                        .collect();
+                    child
+                })
+                .collect();
             AccessNode {
                 id: node.id,
                 semantics,
@@ -2509,7 +2551,8 @@ impl Frame {
                 read_only: node.meta.read_only,
                 busy: node.meta.busy,
                 selection: node.selection,
-                children: node.children.iter().map(|c| project(c, this)).collect(),
+                described_by: Vec::new(),
+                children,
             }
         }
         let mut root = project(&self.root, kurbo::Affine::IDENTITY);
@@ -2631,7 +2674,13 @@ impl Frame {
             };
             out.push_str(&"  ".repeat(depth));
             out.push_str(kind);
-            let (semantics, label, value, key) = &node.access;
+            let Access {
+                semantics,
+                label,
+                value,
+                key,
+                ..
+            } = &node.access;
             if let Some(key) = key {
                 out.push_str(&format!(" #{key}"));
             }
@@ -3183,8 +3232,7 @@ impl Frame {
                     .is_some_and(|s| s.can_scroll_x || s.can_scroll_y))
                 || node.children.iter().any(|c| walk(c, id))
         }
-        walk(&self.root, id)
-            || self.overlays.iter().any(|o| walk(&o.node, id))
+        walk(&self.root, id) || self.overlays.iter().any(|o| walk(&o.node, id))
     }
     /// The persisted vertical scroll offset for `id` (0 when never
     /// scrolled). Exposes [`FrameState::scroll_offset`] for the same
@@ -3408,11 +3456,7 @@ mod tests {
         use crate::element::{col, div};
         // 40 rows * 20px = 800px of content, taller than the 440 cap.
         let rows: Vec<Element<()>> = (0..40).map(|_| div::<()>().w(50.0).h(20.0)).collect();
-        let panel = col::<>()
-            .w(384.0)
-            .h(440.0)
-            .scroll_y()
-            .children(rows);
+        let panel = col().w(384.0).h(440.0).scroll_y().children(rows);
         let frame = test_frame(&panel, (1440.0, 900.0));
         eprintln!("scroll-root ROOT rect = {:?}", frame.root.rect);
         assert_eq!(
@@ -3423,34 +3467,43 @@ mod tests {
     }
     #[test]
     fn wheel_routes_to_overlay_scroll() {
-        use crate::element::{col, div, Overlay, OverlayMode, OverlayPlacement};
+        use crate::element::{Overlay, OverlayMode, OverlayPlacement, col, div};
         // 40 rows * 20px = 800px of content in a 440px scroller.
-        let rows: Vec<Element<()>> = (0..40).map(|_| div::<()>().w(50.0).h(20.0).shrink0()).collect();
+        let rows: Vec<Element<()>> = (0..40)
+            .map(|_| div::<()>().w(50.0).h(20.0).shrink0())
+            .collect();
 
         // Overlay panel: MAX height (grows to content, capped at 440) rather
         // than a fixed height. A fixed height collapses taffy's content size
         // to 440 and disables scrolling.
-        let panel = col::<>()
+        let panel = col()
             .id("panel")
             .w(384.0)
             .max_h(440.0)
             .scroll_y()
             .children(rows);
-        let chip = col::<>().id("chip").w(384.0).h(30.0).child(panel.overlay(Overlay {
-            mode: OverlayMode::Open,
-            placement: OverlayPlacement::Below { gap: 4.0 },
-            backdrop: false,
-            trap_focus: false,
-            enter: true,
-        }));
-        let root = col::<>().child(chip);
+        let chip = col()
+            .id("chip")
+            .w(384.0)
+            .h(30.0)
+            .child(panel.overlay(Overlay {
+                mode: OverlayMode::Open,
+                placement: OverlayPlacement::Below { gap: 4.0 },
+                backdrop: false,
+                trap_focus: false,
+                enter: true,
+            }));
+        let root = col().child(chip);
         let frame = test_frame(&root, (1440.0, 900.0));
         let overlay_id = frame.overlays[0].id;
         let of = &frame.overlays[0];
         eprintln!(
             "overlay size={:?} scroll={:?} rect={:?}",
             of.node.rect,
-            of.node.scroll.as_ref().map(|s| (s.can_scroll_x, s.can_scroll_y)),
+            of.node
+                .scroll
+                .as_ref()
+                .map(|s| (s.can_scroll_x, s.can_scroll_y)),
             of.node.rect
         );
         let rect = frame.rect_of(overlay_id).expect("overlay rect");

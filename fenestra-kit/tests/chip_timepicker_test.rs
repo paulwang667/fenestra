@@ -36,7 +36,9 @@ impl App for Chips {
 
     fn view(&self) -> Element<ChipsMsg> {
         col().p(16.0).gap(8.0).children([row().gap(8.0).children([
-            chip("Rust").selected(self.selected).on_toggle(ChipsMsg::Toggle),
+            chip("Rust")
+                .selected(self.selected)
+                .on_toggle(ChipsMsg::Toggle),
             chip("Static"),
             chip("Tag").on_remove(ChipsMsg::Remove),
             chip("Locked").disabled(true),
@@ -55,18 +57,21 @@ fn chip_toggles_and_removes() {
         (420, 120),
     );
     // The toggle chip is a checkbox to assistive tech; clicking flips it.
-    h.click(&by::role(Semantics::Checkbox {
-        checked: false,
-        mixed: false,
-    })
-    .name("Rust"));
+    h.click(
+        &by::role(Semantics::Checkbox {
+            checked: false,
+            mixed: false,
+        })
+        .name("Rust"),
+    );
     assert!(h.app().selected);
-    assert!(h
-        .query(&by::role(Semantics::Checkbox {
+    assert!(
+        h.query(&by::role(Semantics::Checkbox {
             checked: true,
             mixed: false,
         }))
-        .is_some());
+        .is_some()
+    );
     // The dismissible chip's × is its own accessible button.
     h.click(&by::role(Semantics::Button).name("Remove Tag"));
     assert!(h.app().removed);
@@ -95,17 +100,17 @@ impl App for Clock {
     }
 
     fn view(&self) -> Element<ClockMsg> {
-        col().p(16.0).child(time_picker(self.h, self.m, self.s).with_seconds(true).on_change(ClockMsg::At))
+        col().p(16.0).child(
+            time_picker(self.h, self.m, self.s)
+                .with_seconds(true)
+                .on_change(ClockMsg::At),
+        )
     }
 }
 
 #[test]
 fn time_picker_steps_with_wraparound() {
-    let mut h = Harness::new(
-        Clock { h: 23, m: 0, s: 59 },
-        Theme::light(),
-        (240, 120),
-    );
+    let mut h = Harness::new(Clock { h: 23, m: 0, s: 59 }, Theme::light(), (240, 120));
     h.click(&by::label("Hour"));
     h.key(KeyInput::plain(Key::ArrowUp)); // 23 wraps to 00
     assert_eq!((h.app().h, h.app().m, h.app().s), (0, 0, 59));
@@ -124,22 +129,16 @@ fn time_picker_steps_with_wraparound() {
 // ---------------------------------------------------------------- goldens
 
 fn chip_scene(theme: &Theme) -> Element<()> {
-    col()
-        .p(16.0)
-        .gap(8.0)
-        .bg(theme.bg)
-        .children([
-            row().gap(8.0).children([
-                chip("Rust"),
-                chip("Rust").selected(true),
-                chip("Static"),
-            ]),
-            row().gap(8.0).children([
-                chip("Draft").on_remove(()),
-                chip("Draft").selected(true).on_remove(()),
-                chip("Locked").disabled(true),
-            ]),
-        ])
+    col().p(16.0).gap(8.0).bg(theme.bg).children([
+        row()
+            .gap(8.0)
+            .children([chip("Rust"), chip("Rust").selected(true), chip("Static")]),
+        row().gap(8.0).children([
+            chip("Draft").on_remove(()),
+            chip("Draft").selected(true).on_remove(()),
+            chip("Locked").disabled(true),
+        ]),
+    ])
 }
 
 #[test]
@@ -157,15 +156,13 @@ fn chip_states_dark_golden() {
 }
 
 fn time_scene(theme: &Theme) -> Element<()> {
-    col()
-        .p(16.0)
-        .gap(8.0)
-        .bg(theme.bg)
-        .children([
-            time_picker(9, 30, 0).on_change(|_, _, _| ()),
-            time_picker(14, 5, 59).with_seconds(true).on_change(|_, _, _| ()),
-            time_picker(0, 0, 0).disabled(true).on_change(|_, _, _| ()),
-        ])
+    col().p(16.0).gap(8.0).bg(theme.bg).children([
+        time_picker(9, 30, 0).on_change(|_, _, _| ()),
+        time_picker(14, 5, 59)
+            .with_seconds(true)
+            .on_change(|_, _, _| ()),
+        time_picker(0, 0, 0).disabled(true).on_change(|_, _, _| ()),
+    ])
 }
 
 #[test]

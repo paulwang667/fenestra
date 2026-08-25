@@ -18,7 +18,7 @@ fn view() -> Element<Msg> {
         .id("card")
         .w(200.0)
         .h(200.0)
-        .on_swipe(Msg::Swiped)
+        .on_swipe(|dir| Some(Msg::Swiped(dir)))
         .on_click(Msg::Tapped)])
 }
 

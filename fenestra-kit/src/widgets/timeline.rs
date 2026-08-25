@@ -94,10 +94,8 @@ impl<Msg> From<Timeline<Msg>> for Element<Msg> {
                     .shrink0()
                     .transition(Transition::colors())
                     .themed(move |t: &Theme, s| {
-                        s.bg(item.status.colors(t).solid).border(
-                            3.0,
-                            item.status.colors(t).bg,
-                        )
+                        s.bg(item.status.colors(t).solid)
+                            .border(3.0, item.status.colors(t).bg)
                     });
                 // The rail stretches to the item's content height; the last
                 // item's rail ends at its dot.
@@ -128,17 +126,14 @@ impl<Msg> From<Timeline<Msg>> for Element<Msg> {
                     content = content.child(body);
                 }
 
-                row()
-                    .gap(SP2)
-                    .shrink0()
-                    .children([
-                        col().w(RAIL).items_center().shrink0().children({
-                            let mut rail = vec![dot];
-                            rail.extend(line);
-                            rail
-                        }),
-                        content,
-                    ])
+                row().gap(SP2).shrink0().children([
+                    col().w(RAIL).items_center().shrink0().children({
+                        let mut rail = vec![dot];
+                        rail.extend(line);
+                        rail
+                    }),
+                    content,
+                ])
             })
             .collect();
         col().gap(SP3).children(rows)

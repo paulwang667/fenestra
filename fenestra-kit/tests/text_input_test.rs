@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 
 use fenestra_core::{
-    App, Element, Fonts, FrameState, Key, KeyInput, Semantics, SP3, SP4, Theme, build_frame, col,
-    by,
+    App, Element, Fonts, FrameState, Key, KeyInput, SP3, SP4, Semantics, Theme, build_frame, by,
+    col,
 };
 use fenestra_kit::text_input;
 use fenestra_shell::{Harness, SyntheticEvent, render_app, testing::assert_png_snapshot};
@@ -256,9 +256,7 @@ fn read_only_keeps_selection_blocks_edits() {
         Theme::light(),
         (300, 80),
     );
-    h.click(&by::role(Semantics::TextInput {
-        multiline: false,
-    }));
+    h.click(&by::role(Semantics::TextInput { multiline: false }));
     // Select all: the selection must survive on a read-only field.
     h.key(KeyInput {
         key: Key::Char('a'),
@@ -269,9 +267,7 @@ fn read_only_keeps_selection_blocks_edits() {
     });
     fn sel(h: &Harness<Locked>) -> Option<(usize, usize)> {
         h.frame()
-            .get(&by::role(Semantics::TextInput {
-                multiline: false,
-            }))
+            .get(&by::role(Semantics::TextInput { multiline: false }))
             .selection
     }
     assert_eq!(sel(&h), Some((0, 6)), "select-all should span the value");

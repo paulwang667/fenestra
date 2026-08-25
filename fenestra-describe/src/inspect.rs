@@ -846,7 +846,7 @@ fn role_from_str(role: &str) -> Result<Semantics, String> {
         "progressbar" => Semantics::ProgressBar { value: None },
         other => {
             return Err(format!(
-                 "unknown role {other:?} (expected button/checkbox/switch/radio/slider/\
+                "unknown role {other:?} (expected button/checkbox/switch/radio/slider/\
                   textbox/combobox/dialog/tab/listitem/alert/text/image/spinbutton/meter/progressbar)"
             ));
         }

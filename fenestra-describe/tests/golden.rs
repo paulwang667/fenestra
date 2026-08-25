@@ -190,9 +190,12 @@ fn described_tranche_golden() {
 /// 34200 s, 3.5 stars, the second nav row) and project their roles.
 #[test]
 fn described_tranche_bindings_and_aria() {
-    let aria =
-        aria_snapshot(&serde_json::from_str(TRANCHE).expect("valid"), &Theme::light(), (360, 900))
-            .unwrap();
+    let aria = aria_snapshot(
+        &serde_json::from_str(TRANCHE).expect("valid"),
+        &Theme::light(),
+        (360, 900),
+    )
+    .unwrap();
     for needle in [
         r#"spinbutton "Hour" [value=9 min=0 max=23]"#,
         r#"spinbutton "Minute" [value=30 min=0 max=59]"#,

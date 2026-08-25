@@ -368,7 +368,8 @@ fn ring_marker<Msg: 'static>(cx: f32, cy: f32) -> Element<Msg> {
 
 /// Everything resolved once per render: the sanitized channels, whether
 /// interaction is allowed, and the shared `on_change` mapper. Passed by
-/// value (cheap: four floats, a bool, an `Rc` clone) into each sub-builder
+/// value (cheap: four floats, a bool, four label strings, an `Rc` clone)
+/// into each sub-builder
 /// instead of threading half a dozen separate arguments through every fn.
 #[derive(Clone)]
 struct Resolved<Msg> {
@@ -378,6 +379,10 @@ struct Resolved<Msg> {
     a: f32,
     disabled: bool,
     on_change: Option<Rc<dyn Fn(Color) -> Msg>>,
+    hue_label: String,
+    chroma_label: String,
+    lightness_label: String,
+    alpha_label: String,
 }
 
 impl<Msg> Resolved<Msg> {
@@ -413,7 +418,7 @@ fn pad_el<Msg: Clone + 'static>(side: f32, r: Resolved<Msg>) -> Element<Msg> {
         .left(0.0)
         .w(side)
         .h(side)
-        .label("Chroma")
+        .label(r.chroma_label.as_str())
         .semantics(Semantics::Slider {
             value: r.c,
             min: 0.0,
@@ -421,7 +426,7 @@ fn pad_el<Msg: Clone + 'static>(side: f32, r: Resolved<Msg>) -> Element<Msg> {
         });
 
     let mut puck = ring_marker::<Msg>(cx, cy)
-        .label("Lightness")
+        .label(r.lightness_label.as_str())
         .semantics(Semantics::Slider {
             value: r.l,
             min: 0.0,
@@ -492,7 +497,7 @@ type ToColor<Msg> = Rc<dyn Fn(f32, &Resolved<Msg>) -> Color>;
 struct Strip<Msg> {
     track: Element<Msg>,
     frac: f32,
-    label: &'static str,
+    label: String,
     min: f32,
     max: f32,
     step: f32,
@@ -502,7 +507,7 @@ struct Strip<Msg> {
 fn strip_row<Msg: Clone + 'static>(width: f32, r: Resolved<Msg>, s: Strip<Msg>) -> Element<Msg> {
     let cx = s.frac.clamp(0.0, 1.0) * width;
     let mut thumb = ring_marker::<Msg>(cx, STRIP_ROW_H / 2.0)
-        .label(s.label)
+        .label(s.label.as_str())
         .semantics(Semantics::Slider {
             value: s.frac.clamp(0.0, 1.0) * (s.max - s.min) + s.min,
             min: s.min,
@@ -572,21 +577,16 @@ fn hue_row<Msg: Clone + 'static>(width: f32, r: Resolved<Msg>) -> Element<Msg> {
     .rounded(R_FULL);
 
     let frac = r.h / 360.0;
-    strip_row(
-        width,
-        r,
-        Strip {
-            track,
-            frac,
-            label: "Hue",
-            min: 0.0,
-            max: 360.0,
-            step: H_STEP,
-            to_color: Rc::new(|frac, r| {
-                oklch(r.l, r.c, sanitize_hue(frac * 360.0)).with_alpha(r.a)
-            }),
-        },
-    )
+    let strip = Strip {
+        track,
+        frac,
+        label: r.hue_label.clone(),
+        min: 0.0,
+        max: 360.0,
+        step: H_STEP,
+        to_color: Rc::new(|frac, r| oklch(r.l, r.c, sanitize_hue(frac * 360.0)).with_alpha(r.a)),
+    };
+    strip_row(width, r, strip)
 }
 
 fn alpha_row<Msg: Clone + 'static>(width: f32, r: Resolved<Msg>) -> Element<Msg> {
@@ -637,19 +637,16 @@ fn alpha_row<Msg: Clone + 'static>(width: f32, r: Resolved<Msg>) -> Element<Msg>
         .children([checker, gradient]);
 
     let frac = r.a;
-    strip_row(
-        width,
-        r,
-        Strip {
-            track,
-            frac,
-            label: "Alpha",
-            min: 0.0,
-            max: 1.0,
-            step: A_STEP,
-            to_color: Rc::new(|frac, r| oklch(r.l, r.c, r.h).with_alpha(sanitize_alpha(frac))),
-        },
-    )
+    let strip = Strip {
+        track,
+        frac,
+        label: r.alpha_label.clone(),
+        min: 0.0,
+        max: 1.0,
+        step: A_STEP,
+        to_color: Rc::new(|frac, r| oklch(r.l, r.c, r.h).with_alpha(sanitize_alpha(frac))),
+    };
+    strip_row(width, r, strip)
 }
 
 fn gamut_badge<Msg: 'static>() -> Element<Msg> {
@@ -715,6 +712,10 @@ pub struct ColorPicker<Msg> {
     on_change: Option<Rc<dyn Fn(Color) -> Msg>>,
     on_text_change: Option<OnTextChange<Msg>>,
     key: Option<String>,
+    hue_label: Option<String>,
+    chroma_label: Option<String>,
+    lightness_label: Option<String>,
+    alpha_label: Option<String>,
 }
 
 /// An OKLCH color picker showing `value` (any [`Color`] — the framework's
@@ -734,6 +735,10 @@ pub fn color_picker<Msg>(value: Color) -> ColorPicker<Msg> {
         on_change: None,
         on_text_change: None,
         key: None,
+        hue_label: None,
+        chroma_label: None,
+        lightness_label: None,
+        alpha_label: None,
     }
 }
 
@@ -752,6 +757,35 @@ impl<Msg> ColorPicker<Msg> {
     #[must_use]
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = label.into();
+        self
+    }
+
+    /// The accessible label for the hue strip (default `"Hue"`). Override
+    /// the four part labels to localize the picker for your locale.
+    #[must_use]
+    pub fn hue_label(mut self, label: impl Into<String>) -> Self {
+        self.hue_label = Some(label.into());
+        self
+    }
+
+    /// The accessible label for the chroma pad overlay (default `"Chroma"`).
+    #[must_use]
+    pub fn chroma_label(mut self, label: impl Into<String>) -> Self {
+        self.chroma_label = Some(label.into());
+        self
+    }
+
+    /// The accessible label for the lightness puck (default `"Lightness"`).
+    #[must_use]
+    pub fn lightness_label(mut self, label: impl Into<String>) -> Self {
+        self.lightness_label = Some(label.into());
+        self
+    }
+
+    /// The accessible label for the alpha strip (default `"Alpha"`).
+    #[must_use]
+    pub fn alpha_label(mut self, label: impl Into<String>) -> Self {
+        self.alpha_label = Some(label.into());
         self
     }
 
@@ -833,6 +867,10 @@ impl<Msg: Clone + 'static> From<ColorPicker<Msg>> for Element<Msg> {
             a,
             disabled: p.disabled,
             on_change: p.on_change.clone(),
+            hue_label: p.hue_label.unwrap_or_else(|| "Hue".to_owned()),
+            chroma_label: p.chroma_label.unwrap_or_else(|| "Chroma".to_owned()),
+            lightness_label: p.lightness_label.unwrap_or_else(|| "Lightness".to_owned()),
+            alpha_label: p.alpha_label.unwrap_or_else(|| "Alpha".to_owned()),
         };
         let resolved_color = resolved.color();
         let side = p.pad_size;

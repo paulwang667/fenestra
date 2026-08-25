@@ -75,20 +75,20 @@ fn official_examples_hold_the_fidelity_contract() {
             // The kit has no password masking, and the crate refuses to
             // paint a value the stream asked to obscure: the field renders
             // visible and the note says so. Closes when masking lands.
-            ("00_simple-login-form.json", NoteKind::SecretExposed) => Some(
-                "no password masking in the kit yet; the note is the honest state",
-            ),
+            ("00_simple-login-form.json", NoteKind::SecretExposed) => {
+                Some("no password masking in the kit yet; the note is the honest state")
+            }
             // Nested function calls — `formatString` inside
             // `formatString` — are a documented gap in `functions.rs`.
-            ("05_product-card.json", NoteKind::UnimplementedFunction) => Some(
-                "nested function calls are not implemented yet",
-            ),
+            ("05_product-card.json", NoteKind::UnimplementedFunction) => {
+                Some("nested function calls are not implemented yet")
+            }
             // `priority_high` is not in the spec's basic-catalog icon
             // enum; the fixture is off-spec, and a labeled placeholder is
             // the correct answer.
-            ("07_task-card.json", NoteKind::UnknownIcon) => Some(
-                "priority_high is not a spec icon name",
-            ),
+            ("07_task-card.json", NoteKind::UnknownIcon) => {
+                Some("priority_high is not a spec icon name")
+            }
             _ => None,
         }
     }
@@ -106,7 +106,11 @@ fn official_examples_hold_the_fidelity_contract() {
             .unwrap_or_else(|| panic!("{name}: one surface per example"))
             .render(&Theme::light());
         checked += 1;
-        for note in rendered.notes.iter().filter(|n| n.severity() == NoteSeverity::Broken) {
+        for note in rendered
+            .notes
+            .iter()
+            .filter(|n| n.severity() == NoteSeverity::Broken)
+        {
             let reason = exemption_for(&name, note.kind).unwrap_or_else(|| {
                 panic!(
                     "{name}: broken note with no exemption — a regression, or a \
@@ -131,7 +135,10 @@ fn official_examples_hold_the_fidelity_contract() {
             .expect("one surface per example")
             .render(&Theme::light());
         assert!(
-            rendered.notes.iter().any(|n| n.kind == kind && n.severity() == NoteSeverity::Broken),
+            rendered
+                .notes
+                .iter()
+                .any(|n| n.kind == kind && n.severity() == NoteSeverity::Broken),
             "{name}: exemption for {kind:?} no longer fires — the gap is \
              closed, remove the entry"
         );
@@ -381,14 +388,20 @@ fn pluralize_resolves_the_zero_category() {
     let stream = |count: u8| template.replace("@COUNT@", &count.to_string());
     for (count, want) in [(0, "no items"), (1, "1 item"), (3, "many items")] {
         let client = client_from(&stream(count));
-        let rendered = client.surface("s").expect("surface").render(&Theme::light());
+        let rendered = client
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
         assert!(
             rendered.notes.is_empty(),
             "count {count}: a faithful pluralize records nothing, got: {:?}",
             rendered.notes
         );
         let tree = rendered_tree(&rendered.element, (420.0, 320.0));
-        assert!(tree.contains(want), "count {count}: wanted {want:?}, tree:\n{tree}");
+        assert!(
+            tree.contains(want),
+            "count {count}: wanted {want:?}, tree:\n{tree}"
+        );
     }
 }
 
@@ -409,7 +422,10 @@ fn escaped_dollar_brace_renders_literal() {
         ]}}
     ]"#;
     let client = client_from(stream);
-    let rendered = client.surface("s").expect("surface").render(&Theme::light());
+    let rendered = client
+        .surface("s")
+        .expect("surface")
+        .render(&Theme::light());
     assert!(
         rendered.notes.is_empty(),
         "the escape must not be reported, got: {:?}",
@@ -449,7 +465,10 @@ fn array_delete_nulls_the_slot_and_preserves_length() {
         .as_array()
         .expect("still an array");
     assert_eq!(items.len(), 3, "the length is preserved");
-    assert!(items[1].is_null(), "the deleted slot is nulled, not removed");
+    assert!(
+        items[1].is_null(),
+        "the deleted slot is nulled, not removed"
+    );
     assert_eq!(items[2].as_str(), Some("c"), "later indices must not shift");
     let rendered = surface.render(&Theme::light());
     let tree = rendered_tree(&rendered.element, (420.0, 320.0));

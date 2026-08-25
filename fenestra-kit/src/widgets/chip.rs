@@ -17,9 +17,7 @@
 //! ]);
 //! ```
 
-use fenestra_core::{
-    Cursor, Element, Semantics, Theme, Transition, Weight, col, row, text,
-};
+use fenestra_core::{Cursor, Element, Semantics, Theme, Transition, Weight, col, row, text};
 
 use super::ControlSize;
 use crate::icons;
@@ -175,16 +173,13 @@ impl<Msg: Clone + 'static> From<Chip<Msg>> for Element<Msg> {
         if let Some(remove) = c.on_remove {
             // The dismiss affordance is its own accessible button so the ×
             // never reads as part of the label.
-            let x = icons::x()
-                .w(12.0)
-                .h(12.0)
-                .themed(move |t: &Theme, s| {
-                    if selected {
-                        s.color(t.accent_text)
-                    } else {
-                        s.color(t.text_muted)
-                    }
-                });
+            let x = icons::x().w(12.0).h(12.0).themed(move |t: &Theme, s| {
+                if selected {
+                    s.color(t.accent_text)
+                } else {
+                    s.color(t.text_muted)
+                }
+            });
             let remove_btn = col()
                 .items_center()
                 .justify_center()

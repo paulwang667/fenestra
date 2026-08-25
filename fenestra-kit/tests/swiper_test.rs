@@ -16,15 +16,9 @@ const SIZE: (f32, f32) = (320.0, 160.0);
 fn view(current: usize) -> Element<Msg> {
     col().p(16.0).child(
         swiper(current)
-            .page(
-                col().w(280.0).h(100.0).p(24.0).child(text("First")),
-            )
-            .page(
-                col().w(280.0).h(100.0).p(24.0).child(text("Second")),
-            )
-            .page(
-                col().w(280.0).h(100.0).p(24.0).child(text("Third")),
-            )
+            .page(col().w(280.0).h(100.0).p(24.0).child(text("First")))
+            .page(col().w(280.0).h(100.0).p(24.0).child(text("Second")))
+            .page(col().w(280.0).h(100.0).p(24.0).child(text("Third")))
             .on_change(Msg::Page)
             .id("sw"),
     )
@@ -80,9 +74,7 @@ fn swipe_flicks_navigate() {
 #[test]
 fn arrows_step_and_label_announces() {
     let key = |current: usize, k: Key| (view(current), InputEvent::Key(KeyInput::plain(k)));
-    let tap = |current: usize| {
-        (view(current), flick(160.0, 159.0, 60.0)[3].clone())
-    };
+    let tap = |current: usize| (view(current), flick(160.0, 159.0, 60.0)[3].clone());
     // The tap focuses the container (a 1px press is below the swipe floor
     // and the container has no click, so it emits nothing). The drive does
     // not echo state back, so each step pins the view it asserts against.

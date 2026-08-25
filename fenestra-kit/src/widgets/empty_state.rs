@@ -16,9 +16,7 @@
 //!     .into();
 //! ```
 
-use fenestra_core::{
-    Element, SP3, SP6, Semantics, TextSize, Theme, Weight, col, text,
-};
+use fenestra_core::{Element, SP3, SP6, Semantics, TextSize, Theme, Weight, col, text};
 
 use super::button::{ButtonVariant, button};
 use crate::icons;
@@ -77,23 +75,18 @@ impl<Msg: Clone + 'static> From<EmptyState<Msg>> for Element<Msg> {
     fn from(e: EmptyState<Msg>) -> Self {
         let icon = e
             .icon
-            .unwrap_or_else(|| {
-                icons::lucide::by_name("search").expect("search is vendored")
-            })
+            .unwrap_or_else(|| icons::lucide::by_name("search").expect("search is vendored"))
             .w(36.0)
             .h(36.0)
             .themed(|t: &Theme, s| s.color(t.text_subtle));
 
-        let mut kids = col()
-            .items_center()
-            .gap(SP3)
-            .children([
-                col().items_center().child(icon),
-                text(e.title)
-                    .size(TextSize::Base)
-                    .weight(Weight::Medium)
-                    .semantics(Semantics::Label),
-            ]);
+        let mut kids = col().items_center().gap(SP3).children([
+            col().items_center().child(icon),
+            text(e.title)
+                .size(TextSize::Base)
+                .weight(Weight::Medium)
+                .semantics(Semantics::Label),
+        ]);
 
         if let Some(message) = e.message {
             kids = kids.child(

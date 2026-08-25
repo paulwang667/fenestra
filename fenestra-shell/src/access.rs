@@ -67,6 +67,17 @@ fn push_node(nodes: &mut Vec<(NodeId, Node)>, an: &AccessNode, is_root: bool, sc
     if an.expanded {
         node.set_expanded(true);
     }
+    if !an.described_by.is_empty() {
+        // ARIA `aria-describedby` — links this node to the elements that
+        // describe it (e.g. a field's help/error text), resolved in the
+        // access-tree projection.
+        node.set_described_by(
+            an.described_by
+                .iter()
+                .map(|id| accesskit::NodeId(id.0))
+                .collect::<Vec<_>>(),
+        );
+    }
     match an.semantics {
         Some(Semantics::Checkbox { checked, mixed }) => node.set_toggled(if mixed {
             accesskit::Toggled::Mixed
@@ -75,8 +86,10 @@ fn push_node(nodes: &mut Vec<(NodeId, Node)>, an: &AccessNode, is_root: bool, sc
         }),
         Some(Semantics::Switch { on }) => node.set_toggled(toggled(on)),
         Some(Semantics::Radio { selected }) => node.set_toggled(toggled(selected)),
-        Some(Semantics::Tab { selected }) => node.set_selected(selected),
-        Some(Semantics::ListItem { selected }) => node.set_selected(selected),
+        Some(Semantics::Tab { selected })
+        | Some(Semantics::ListItem { selected })
+        | Some(Semantics::TreeItem { selected })
+        | Some(Semantics::GridCell { selected }) => node.set_selected(selected),
         Some(Semantics::Slider { value, min, max })
         | Some(Semantics::Spinbutton { value, min, max })
         | Some(Semantics::Meter { value, min, max }) => {
@@ -94,18 +107,23 @@ fn push_node(nodes: &mut Vec<(NodeId, Node)>, an: &AccessNode, is_root: bool, sc
     if an.focusable {
         node.add_action(Action::Focus);
     }
-    if !an.disabled && matches!(
-        an.semantics,
-        Some(
-            Semantics::Button
-                | Semantics::Checkbox { .. }
-                | Semantics::Switch { .. }
-                | Semantics::Radio { .. }
-                | Semantics::Tab { .. }
-                | Semantics::ListItem { .. }
-                | Semantics::ComboBox
+    if !an.disabled
+        && matches!(
+            an.semantics,
+            Some(
+                Semantics::Button
+                    | Semantics::Checkbox { .. }
+                    | Semantics::Switch { .. }
+                    | Semantics::Radio { .. }
+                    | Semantics::Tab { .. }
+                    | Semantics::ListItem { .. }
+                    | Semantics::TreeItem { .. }
+                    | Semantics::GridCell { .. }
+                    | Semantics::MenuItem
+                    | Semantics::ComboBox
+            )
         )
-    ) {
+    {
         node.add_action(Action::Click);
     }
     node.set_children(
@@ -138,6 +156,11 @@ fn role_of(an: &AccessNode) -> Role {
         Some(Semantics::Tab { .. }) => Role::Tab,
         Some(Semantics::Alert) => Role::Alert,
         Some(Semantics::Label) => Role::Label,
+        Some(Semantics::Tree) => Role::Tree,
+        Some(Semantics::TreeItem { .. }) => Role::TreeItem,
+        Some(Semantics::Menu) => Role::Menu,
+        Some(Semantics::MenuItem) => Role::MenuItem,
+        Some(Semantics::GridCell { .. }) => Role::GridCell,
         Some(Semantics::Image) => Role::Image,
         Some(Semantics::Spinbutton { .. }) => Role::SpinButton,
         Some(Semantics::Meter { .. }) => Role::Meter,

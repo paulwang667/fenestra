@@ -47,9 +47,9 @@ pub use cmd::{Cmd, CmdFuture, CmdUnit, Sub, apply_cmd};
 pub use element::{
     Cursor, DrawerSide, Element, ExitAnim, ImageData, InputData, Kind, MAX_TREE_DEPTH,
     OpticalCorrection, Overlay, OverlayMode, OverlayPlacement, PathData, RovingAxis, Semantics,
-    Span, SwipeDir,
-    VirtualData, col, div, divider, image_from_data, image_payload, image_rgba8, path, raw_input,
-    raw_text_area, responsive, responsive_hinted, rich_text, row, spacer, span, stack, text,
+    Span, SwipeDir, VirtualData, col, div, divider, image_from_data, image_payload, image_rgba8,
+    path, raw_input, raw_text_area, responsive, responsive_hinted, rich_text, row, spacer, span,
+    stack, text,
 };
 pub use events::{
     Dispatch, DragEvent, GesturePhase, InputEvent, Key, KeyInput, Mods, PinchEvent, WheelEvent,
@@ -57,7 +57,7 @@ pub use events::{
 };
 pub use frame::{AccessNode, Frame, TextLegibility, build_frame, build_scene, frame_epoch};
 pub use frame_state::FrameState;
-pub use i18n::{Catalog, Locale};
+pub use i18n::{Catalog, DateOrder, Locale, PluralCategory};
 pub use id::WidgetId;
 pub use menu::{MenuDesc, MenuItemDesc, MenuSpec};
 pub use nav::Nav;

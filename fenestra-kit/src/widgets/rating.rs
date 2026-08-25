@@ -103,8 +103,8 @@ impl<Msg> Rating<Msg> {
 /// One star at `fill` (0..=1): an outline, a filled star, or a clipped
 /// filled copy over the outline for fractional fills.
 fn star<Msg>(fill: f32, px: f32, msg: Option<Msg>) -> Element<Msg> {
-    let bez = BezPath::from_svg(lucide::raw_path("star").expect("star is vendored"))
-        .unwrap_or_default();
+    let bez =
+        BezPath::from_svg(lucide::raw_path("star").expect("star is vendored")).unwrap_or_default();
     let outline = path(bez.clone(), (24.0, 24.0), Some(2.0))
         .w(px)
         .h(px)
@@ -182,9 +182,7 @@ impl<Msg: Clone + 'static> From<Rating<Msg>> for Element<Msg> {
             let down = r.on_change.clone();
             let (v, p) = (r.value, r.precision);
             el = el.focusable(true).on_key(move |k| match k.key {
-                Key::ArrowRight | Key::ArrowUp => {
-                    up.as_ref().map(|f| f(snap((v + p).min(max), p)))
-                }
+                Key::ArrowRight | Key::ArrowUp => up.as_ref().map(|f| f(snap((v + p).min(max), p))),
                 Key::ArrowLeft | Key::ArrowDown => {
                     down.as_ref().map(|f| f(snap((v - p).max(0.0), p)))
                 }

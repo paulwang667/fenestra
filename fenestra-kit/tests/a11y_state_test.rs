@@ -3,7 +3,9 @@
 //! headlessly.
 
 use fenestra_core::{App, Element, Key, KeyInput, Semantics, Theme, by, col, div, text};
-use fenestra_kit::{accordion, accordion_item, checkbox, combobox, text_input, TreeNode, tree_view};
+use fenestra_kit::{
+    TreeNode, accordion, accordion_item, checkbox, combobox, text_input, tree_view,
+};
 use fenestra_shell::Harness;
 
 #[derive(Default)]
@@ -115,20 +117,14 @@ impl App for State {
     }
 
     fn view(&self) -> Element<Msg> {
-        col()
-            .p(16.0)
-            .gap(8.0)
-            .items_start()
-            .children((
-                checkbox(true)
-                    .disabled(true)
-                    .id("dis"),
-                text_input(&self.value)
-                    .invalid(true)
-                    .width(200.0)
-                    .on_input(Msg::Set)
-                    .id("inv"),
-            ))
+        col().p(16.0).gap(8.0).items_start().children((
+            checkbox(true).disabled(true).id("dis"),
+            text_input(&self.value)
+                .invalid(true)
+                .width(200.0)
+                .on_input(Msg::Set)
+                .id("inv"),
+        ))
     }
 }
 
@@ -141,7 +137,13 @@ fn disabled_and_invalid_states_reach_the_access_tree() {
     assert!(dis.disabled, "disabled checkbox is marked disabled");
     assert!(!dis.focusable, "disabled controls cannot be tabbed to");
     assert!(
-        matches!(dis.semantics, Some(Semantics::Checkbox { checked: true, mixed: false })),
+        matches!(
+            dis.semantics,
+            Some(Semantics::Checkbox {
+                checked: true,
+                mixed: false
+            })
+        ),
         "role is preserved while disabled (not dropped from the tree)\n{}",
         h.frame().access_yaml()
     );
@@ -152,8 +154,16 @@ fn disabled_and_invalid_states_reach_the_access_tree() {
 
     // Both states surface on the YAML too — the same vocabulary AccessKit emits.
     let yaml = h.frame().access_yaml();
-    assert!(yaml.contains("[disabled]"), "yaml shows [disabled]:\n{}", yaml);
-    assert!(yaml.contains("[invalid]"), "yaml shows [invalid]:\n{}", yaml);
+    assert!(
+        yaml.contains("[disabled]"),
+        "yaml shows [disabled]:\n{}",
+        yaml
+    );
+    assert!(
+        yaml.contains("[invalid]"),
+        "yaml shows [invalid]:\n{}",
+        yaml
+    );
 }
 
 /// `expanded` (ARIA `aria-expanded`) is modeled on `AccessNode` and projected
@@ -174,8 +184,11 @@ impl App for Disclosure {
                 .open(true)
                 .on_toggle(Msg::Set(String::new()))
                 .id("disc"),
-            accordion_item("Section B", text("Closed body")).open(false).id("closed"),
-        ]).into()
+            accordion_item("Section B", text("Closed body"))
+                .open(false)
+                .id("closed"),
+        ])
+        .into()
     }
 }
 
@@ -201,7 +214,11 @@ fn expanded_state_reach_the_access_tree() {
 
     // The state surfaces on the YAML too — the same vocabulary AccessKit emits.
     let yaml = h.frame().access_yaml();
-    assert!(yaml.contains("[expanded]"), "yaml shows [expanded]:\n{}", yaml);
+    assert!(
+        yaml.contains("[expanded]"),
+        "yaml shows [expanded]:\n{}",
+        yaml
+    );
 }
 
 /// A tree branch that owns its expanded set (Elm-pure) must project
@@ -222,10 +239,8 @@ impl App for TreeApp {
     fn update(&mut self, _msg: Msg) {}
 
     fn view(&self) -> Element<Msg> {
-        tree_view([TreeNode::new("root", "root").children([
-            TreeNode::new("src", "src"),
-            TreeNode::new("docs", "docs"),
-        ])])
+        tree_view([TreeNode::new("root", "root")
+            .children([TreeNode::new("src", "src"), TreeNode::new("docs", "docs")])])
         .expanded(self.expanded.iter().cloned())
         .selected(self.selected.clone())
         .into()
@@ -243,36 +258,51 @@ fn tree_branch_states_reach_the_access_tree() {
         (300, 200),
     );
 
-    // Branch headers expose aria-expanded; every node is a listitem, not a
-    // bare button — a screen reader gets list structure, not activation.
+    // Branch headers expose aria-expanded; every node is a treeitem, not a
+    // bare button — a screen reader gets tree structure, not activation.
     let root = h.get(&by::id("tree-root"));
     assert!(
-        matches!(root.semantics, Some(Semantics::ListItem { .. })),
-        "tree branch projects listitem\n{}",
+        matches!(root.semantics, Some(Semantics::TreeItem { .. })),
+        "tree branch projects treeitem\n{}",
         h.frame().access_yaml()
     );
     assert!(root.expanded, "expanded tree branch is marked expanded");
     assert!(
-        matches!(root.semantics, Some(Semantics::ListItem { selected: false })),
+        matches!(
+            root.semantics,
+            Some(Semantics::TreeItem { selected: false })
+        ),
         "a non-selected branch is not selected"
     );
 
     // The selected leaf carries aria-selected = true; the others false.
     let src = h.get(&by::id("tree-src"));
     assert!(
-        matches!(src.semantics, Some(Semantics::ListItem { selected: true })),
+        matches!(src.semantics, Some(Semantics::TreeItem { selected: true })),
         "selected leaf is marked selected\n{}",
         h.frame().access_yaml()
     );
     let docs = h.get(&by::id("tree-docs"));
     assert!(
-        matches!(docs.semantics, Some(Semantics::ListItem { selected: false })),
+        matches!(
+            docs.semantics,
+            Some(Semantics::TreeItem { selected: false })
+        ),
         "non-selected leaf is not selected\n{}",
         h.frame().access_yaml()
     );
 
     let yaml = h.frame().access_yaml();
-    assert!(yaml.contains("[expanded]"), "yaml shows [expanded]:\n{}", yaml);
+    assert!(
+        yaml.contains("treeitem"),
+        "yaml shows the treeitem role:\n{}",
+        yaml
+    );
+    assert!(
+        yaml.contains("[expanded]"),
+        "yaml shows [expanded]:\n{}",
+        yaml
+    );
 }
 
 /// A combobox's listbox options are `listitem` (not buttons), so assistive
@@ -303,7 +333,10 @@ fn combobox_options_are_listitem() {
 
     let rust = h.get(&by::role(Semantics::ListItem { selected: false }).name("Rust"));
     assert!(
-        matches!(rust.semantics, Some(Semantics::ListItem { selected: false })),
+        matches!(
+            rust.semantics,
+            Some(Semantics::ListItem { selected: false })
+        ),
         "a combobox option is a listitem, not a button\n{}",
         h.frame().access_yaml()
     );

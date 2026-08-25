@@ -194,11 +194,13 @@ impl<Msg: Clone + 'static> From<TimePicker<Msg>> for Element<Msg> {
         });
 
         let colon = |disabled| {
-            text(":")
-                .size(font)
-                .themed(move |th: &Theme, st| {
-                    st.color(if disabled { th.text_disabled } else { th.text_muted })
+            text(":").size(font).themed(move |th: &Theme, st| {
+                st.color(if disabled {
+                    th.text_disabled
+                } else {
+                    th.text_muted
                 })
+            })
         };
 
         let mut kids: Vec<Element<Msg>> = vec![seg_h, colon(disabled), seg_m];

@@ -70,7 +70,10 @@ impl<Msg: Clone + 'static> From<OtpInput<Msg>> for Element<Msg> {
         let key = o.key.clone().unwrap_or_else(|| "otp".to_owned());
         let chars = std::rc::Rc::new(o.code.chars().take(len).collect::<Vec<char>>());
 
-        let mut w = row().gap(SP2).focusable(true).roving(RovingAxis::Horizontal);
+        let mut w = row()
+            .gap(SP2)
+            .focusable(true)
+            .roving(RovingAxis::Horizontal);
         for i in 0..len {
             let chars = std::rc::Rc::clone(&chars);
             let box_code: String = chars.get(i).map(|c| c.to_string()).unwrap_or_default();

@@ -5,8 +5,8 @@
 //! behaviorally — Enter fires the focused item's click.
 
 use fenestra_core::{
-    App, Element, Fonts, FrameState, InputEvent, Key, KeyInput, RovingAxis, Theme, build_frame,
-    col, dispatch, row, text,
+    Element, Fonts, FrameState, InputEvent, Key, KeyInput, RovingAxis, Theme, build_frame, col,
+    dispatch, row, text,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -16,16 +16,31 @@ enum Msg {
 
 fn view() -> Element<Msg> {
     col().children([
-        col().focusable(true).on_click(Msg::Pick(9)).child(text("Before")),
+        col()
+            .focusable(true)
+            .on_click(Msg::Pick(9))
+            .child(text("Before")),
         col()
             .focusable(true)
             .roving(RovingAxis::Vertical)
             .children([
-                row().focusable(true).on_click(Msg::Pick(0)).child(text("One")),
-                row().focusable(true).on_click(Msg::Pick(1)).child(text("Two")),
-                row().focusable(true).on_click(Msg::Pick(2)).child(text("Three")),
+                row()
+                    .focusable(true)
+                    .on_click(Msg::Pick(0))
+                    .child(text("One")),
+                row()
+                    .focusable(true)
+                    .on_click(Msg::Pick(1))
+                    .child(text("Two")),
+                row()
+                    .focusable(true)
+                    .on_click(Msg::Pick(2))
+                    .child(text("Three")),
             ]),
-        col().focusable(true).on_click(Msg::Pick(3)).child(text("After")),
+        col()
+            .focusable(true)
+            .on_click(Msg::Pick(3))
+            .child(text("After")),
     ])
 }
 
@@ -52,17 +67,17 @@ fn arrows_move_focus_probed_by_enter() {
     let mut picked: Vec<usize> = Vec::new();
     let key = |k: Key| InputEvent::Key(KeyInput::plain(k));
     let steps = [
-        (InputEvent::Tab, None),              // → Before
-        (InputEvent::Tab, None),              // → scope container
-        (key(Key::ArrowDown), None),          // container enters at One
+        (InputEvent::Tab, None),     // → Before
+        (InputEvent::Tab, None),     // → scope container
+        (key(Key::ArrowDown), None), // container enters at One
         (key(Key::Enter), Some(0)),
         (key(Key::ArrowDown), None),
         (key(Key::Enter), Some(1)),
         (key(Key::ArrowDown), None),
         (key(Key::Enter), Some(2)),
-        (key(Key::ArrowDown), None),          // wraps: Three → One
+        (key(Key::ArrowDown), None), // wraps: Three → One
         (key(Key::Enter), Some(0)),
-        (key(Key::ArrowUp), None),            // wraps back: One → Three
+        (key(Key::ArrowUp), None), // wraps back: One → Three
         (key(Key::Enter), Some(2)),
     ];
     for (ev, expect) in steps {
@@ -70,9 +85,8 @@ fn arrows_move_focus_probed_by_enter() {
         let frame = build_frame(&v, &theme, &mut fonts, &mut state, (200.0, 300.0), 1.0);
         let out = dispatch(&v, &frame, &mut state, &mut fonts, ev.clone());
         for msg in out.msgs {
-            if let Msg::Pick(i) = msg {
-                picked.push(i);
-            }
+            let Msg::Pick(i) = msg;
+            picked.push(i);
         }
         if let Some(i) = expect {
             assert_eq!(picked.last(), Some(&i), "focus probe after {ev:?}");
@@ -91,20 +105,19 @@ fn tab_from_an_item_stands_in_for_the_container() {
     let mut picked: Vec<usize> = Vec::new();
     let key = |k: Key| InputEvent::Key(KeyInput::plain(k));
     let steps = [
-        InputEvent::Tab,                      // → Before
-        InputEvent::Tab,                      // → scope container
-        key(Key::ArrowDown),                  // → One
-        InputEvent::Tab,                      // container stands in → After
-        key(Key::Enter),                      // activates After (3), not an item
+        InputEvent::Tab,     // → Before
+        InputEvent::Tab,     // → scope container
+        key(Key::ArrowDown), // → One
+        InputEvent::Tab,     // container stands in → After
+        key(Key::Enter),     // activates After (3), not an item
     ];
     for ev in steps {
         let v = view();
         let frame = build_frame(&v, &theme, &mut fonts, &mut state, (200.0, 300.0), 1.0);
         let out = dispatch(&v, &frame, &mut state, &mut fonts, ev);
         for msg in out.msgs {
-            if let Msg::Pick(i) = msg {
-                picked.push(i);
-            }
+            let Msg::Pick(i) = msg;
+            picked.push(i);
         }
     }
     assert_eq!(picked, vec![3]);

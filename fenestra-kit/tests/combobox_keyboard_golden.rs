@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use fenestra_core::{App, Element, Key, KeyInput, SP6, Theme, col};
+use fenestra_core::{App, Element, Key, KeyInput, SP6, Theme, by, col};
 use fenestra_kit::{combobox, command_palette};
 use fenestra_shell::{Harness, render_element, testing::assert_png_snapshot};
 
@@ -155,6 +155,60 @@ fn combobox_arrows_clamp_and_enter_picks_the_cursor() {
     h.key(KeyInput::plain(Key::Enter));
     assert_eq!(h.app().picked.as_deref(), Some("Python"));
     assert!(!h.app().open, "picking closes the listbox");
+}
+
+// ------------------------------------------------------ combobox disabled
+
+#[derive(Clone)]
+enum FrozenMsg {
+    Type(String),
+    Pick(String),
+}
+
+#[derive(Default)]
+struct FrozenApp {
+    value: String,
+    picked: Option<String>,
+}
+
+impl App for FrozenApp {
+    type Msg = FrozenMsg;
+
+    fn update(&mut self, msg: FrozenMsg) {
+        match msg {
+            FrozenMsg::Type(s) => self.value = s,
+            FrozenMsg::Pick(s) => self.picked = Some(s),
+        }
+    }
+
+    fn view(&self) -> Element<FrozenMsg> {
+        col().p(16.0).items_start().children([combobox(
+            &self.value,
+            true, // forced open in state — a disabled combobox still shows no list
+            ["Rust", "Ruby", "Python"],
+        )
+        .on_input(FrozenMsg::Type)
+        .on_pick(FrozenMsg::Pick)
+        .disabled(true)
+        .id("lang")])
+    }
+}
+
+#[test]
+fn disabled_combobox_shows_no_list_and_reports_disabled() {
+    let mut h = Harness::new(FrozenApp::default(), Theme::light(), (400, 360));
+    h.click(&by::id("lang"));
+
+    let yaml = h.frame().access_yaml();
+    assert!(
+        !yaml.contains("listitem"),
+        "a disabled combobox never shows its option list:\n{yaml}"
+    );
+    assert!(
+        yaml.contains("[disabled]"),
+        "the disabled state reaches the access tree:\n{yaml}"
+    );
+    assert!(h.app().picked.is_none(), "a disabled combobox cannot pick");
 }
 
 // ------------------------------------------------ command-palette keyboard

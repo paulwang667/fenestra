@@ -16,8 +16,8 @@
 //! ```
 
 use fenestra_core::{
-    Color, Cursor, Element, Key, Overlay, RovingAxis, SP1, SP2, SP3, Semantics, Surface,
-    TextSize, Theme, Transition, Weight, col, div, row, spacer, text,
+    Color, Cursor, Element, Key, Overlay, RovingAxis, SP1, SP2, SP3, Semantics, Surface, TextSize,
+    Theme, Transition, Weight, col, div, row, spacer, text,
 };
 
 /// The styled panel of menu items (no overlay attached): rows that emit
@@ -31,6 +31,7 @@ pub fn menu<Msg: Clone + 'static>(
         .gap(2.0)
         .min_w(160.0)
         .surface(Surface::Menu)
+        .semantics(Semantics::Menu)
         .children(items.into_iter().map(|(label, msg)| {
             let label = label.into();
             row()
@@ -44,7 +45,7 @@ pub fn menu<Msg: Clone + 'static>(
                 .shrink0()
                 .cursor(Cursor::Pointer)
                 .on_click(msg)
-                .semantics(Semantics::Button)
+                .semantics(Semantics::MenuItem)
                 .label(label.clone())
                 .transition(Transition::colors())
                 .state_layer(|t| t.text)
@@ -182,7 +183,7 @@ fn menu_row<Msg: Clone + 'static>(it: MenuItem<Msg>, active: bool, roving: bool)
         .h(30.0)
         .themed(|t: &Theme, s| s.rounded((t.radius.lg - SP1).max(0.0)))
         .shrink0()
-        .semantics(Semantics::Button)
+        .semantics(Semantics::MenuItem)
         .label(label_text)
         .children(kids);
     if active {

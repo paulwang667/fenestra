@@ -13,7 +13,8 @@
 //! - Year quick-jump (‹‹ / ›› header buttons)
 
 use fenestra_core::{
-    Cursor, Element, Key, SP1, SP2, Semantics, TextSize, Theme, Transition, Weight, col, row, text,
+    Cursor, Element, Key, Locale, SP1, SP2, Semantics, TextSize, Theme, Transition, Weight, col,
+    row, text,
 };
 
 /// A calendar date as plain numbers: year, month 1..=12, day 1..=31.
@@ -150,6 +151,7 @@ pub struct DatePicker<Msg> {
     on_month: Option<MonthFn<Msg>>,
     on_focus: Option<std::rc::Rc<dyn Fn(Date) -> Msg>>,
     key: Option<String>,
+    locale: Option<Locale>,
 }
 
 fn make_picker<Msg>(visible: (i32, u32), mode: PickMode) -> DatePicker<Msg> {
@@ -165,6 +167,7 @@ fn make_picker<Msg>(visible: (i32, u32), mode: PickMode) -> DatePicker<Msg> {
         on_month: None,
         on_focus: None,
         key: None,
+        locale: None,
     }
 }
 
@@ -269,6 +272,16 @@ impl<Msg> DatePicker<Msg> {
         self.key = Some(key.to_owned());
         self
     }
+
+    /// Localizes the picker: month title, day-of-week initials, and the
+    /// first day of week come from the [`Locale`] (override its name tables
+    /// with `Locale::with_month_names` / `with_day_names` for translated
+    /// calendars). Without it the picker renders English defaults.
+    #[must_use]
+    pub fn locale(mut self, locale: Locale) -> Self {
+        self.locale = Some(locale);
+        self
+    }
 }
 
 // ─── selection helpers ────────────────────────────────────────────────────────
@@ -328,7 +341,10 @@ impl<Msg: Clone + 'static> From<DatePicker<Msg>> for Element<Msg> {
     fn from(p: DatePicker<Msg>) -> Self {
         let (year, month) = p.visible;
         let month = month.clamp(1, 12);
-        let title = format!("{} {year}", MONTHS[(month - 1) as usize]);
+        let title = match &p.locale {
+            Some(loc) => format!("{} {year}", loc.month_name(month)),
+            None => format!("{} {year}", MONTHS[(month - 1) as usize]),
+        };
 
         // Snapshot values used both in rendering and in the on_key closure.
         let min = p.min;
@@ -396,23 +412,40 @@ impl<Msg: Clone + 'static> From<DatePicker<Msg>> for Element<Msg> {
 
         // ── day-of-week row ───────────────────────────────────────────────────
 
-        let dow_row = row()
-            .gap(2.0)
-            .children(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(|d| {
-                row()
-                    .w(30.0)
-                    .h(22.0)
-                    .items_center()
-                    .justify_center()
-                    .shrink0()
-                    .children([text(d)
-                        .size(TextSize::Xs)
-                        .themed(|t: &Theme, s| s.color(t.text_muted))])
-            }));
+        let dow_row = row().gap(2.0).children({
+            let first = p
+                .locale
+                .as_ref()
+                .map_or(0, |loc| u32::from(loc.first_day_of_week()));
+            let day_name = |wd: u32| {
+                p.locale.as_ref().map_or(
+                    ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"][wd as usize],
+                    |loc| loc.day_name_short(wd),
+                )
+            };
+            (0..7)
+                .map(|i| {
+                    let wd = (first + i) % 7;
+                    row()
+                        .w(30.0)
+                        .h(22.0)
+                        .items_center()
+                        .justify_center()
+                        .shrink0()
+                        .children([text(day_name(wd))
+                            .size(TextSize::Xs)
+                            .themed(|t: &Theme, s| s.color(t.text_muted))])
+                })
+                .collect::<Vec<_>>()
+        });
 
         // ── week rows ─────────────────────────────────────────────────────────
 
-        let first_col = weekday(year, month, 1);
+        let first_col = match &p.locale {
+            // Shift the leading blanks so column 0 is the locale's first day.
+            Some(loc) => (weekday(year, month, 1) + 7 - u32::from(loc.first_day_of_week())) % 7,
+            None => weekday(year, month, 1),
+        };
         let total = days_in_month(year, month);
         let mut weeks: Vec<Element<Msg>> = Vec::new();
         let mut day: u32 = 1;
@@ -450,7 +483,9 @@ impl<Msg: Clone + 'static> From<DatePicker<Msg>> for Element<Msg> {
                     .justify_center()
                     .themed(|t: &Theme, s| s.rounded((t.radius.md - 2.0).max(0.0)))
                     .shrink0()
-                    .semantics(Semantics::Button)
+                    .semantics(Semantics::GridCell {
+                        selected: is_selected || is_endpoint,
+                    })
                     .label(format!("{year}-{month:02}-{day:02}"))
                     .transition(Transition::colors());
 
@@ -499,14 +534,19 @@ impl<Msg: Clone + 'static> From<DatePicker<Msg>> for Element<Msg> {
                 cells.push(cell.children([day_text]));
                 day += 1;
             }
-            weeks.push(row().gap(2.0).children(cells));
+            weeks.push(
+                row()
+                    .gap(2.0)
+                    .semantics(Semantics::Row { selected: false })
+                    .children(cells),
+            );
         }
 
         // ── keyboard-navigable grid container ─────────────────────────────────
 
         let has_keyboard = p.on_focus.is_some() || p.on_pick.is_some() || p.on_pick_range.is_some();
 
-        let grid = col().gap(2.0).children(weeks);
+        let grid = col().gap(2.0).semantics(Semantics::Grid).children(weeks);
 
         let grid = if has_keyboard {
             // Capture everything the on_key closure needs.
