@@ -4200,3 +4200,215 @@ opener, but the check lived only where the renderer resolved an action, and
 `A2uiMsg::OpenUrl` is a public variant a host can build, replay from a log,
 or round-trip through its own message type. `Surface::handle` re-checks it,
 so the promise belongs to the type.
+
+## Read-only inputs: one flag, gated at the editor (2026-08-25)
+
+The kit had `disabled` but no `readonly` — the audit's top a11y gap. HTML
+draws the distinction sharply: a disabled control is excluded from the tab
+order and its value is dimmed; a read-only one stays focusable, selectable,
+copyable, and screen-reader-legible — only mutation is barred.
+
+- **The flag lives on `Element` (like `invalid`), the gate lives in
+  `EditorState`.** `Element::read_only(bool)` sets it; the frame build
+  threads it into the retained editor (`editor.read_only = el.read_only`),
+  and `input::handle_key` / `handle_text` / `handle_preedit` check it
+  there. Gating inside the editor (not in `events::dispatch`) means every
+  entry path — key, text commit, IME preedit, paste, cut, undo — is
+  covered by the one check, and selection/copy arms stay shared code.
+- **Mutating arms return `IGNORED`, not `MOVED`.** `IGNORED` is
+  unconsumed, so an app's own `on_key` still sees keystrokes on a
+  read-only field (e.g. Enter-to-submit keeps working). Selection keys and
+  Cmd+A/Cmd+C pass through untouched.
+- **Projection, both halves.** `AccessNode.read_only` renders as
+  `[readonly]` in `access_yaml` and maps to AccessKit's `ReadOnly` state
+  ("allows focus/selection but not input" — their words, same concept).
+  The kit's `text_input` / `text_area` gain `.read_only(b)` with the
+  interactive-element fill (`theme.element`): visibly not editable, text
+  at full contrast — no opacity dim, which would read as `disabled`.
+- **Verified** by a harness test (select-all survives, typing/Backspace
+  leave the value and selection untouched), a yaml projection test, and
+  the `input_states` goldens (light + dark) gaining a fifth row.
+
+## The data table becomes an ARIA grid (2026-08-25)
+
+The audit's second finding: a table with sort/resize/reorder/virtualization
+but no keyboard path and no grid semantics. The fix follows the tree view's
+roving pattern, adapted to a multi-select grid.
+
+- **Row-as-focus-unit, not cell-as-cell.** APG's full grid pattern makes
+  every cell a gridcell with 2-D arrow roving; that doubles the a11y node
+  count on a 100k-row virtualized body and buys nothing for a
+  select-a-row table. The table projects `grid` > `row` (`aria-selected`
+  from the checkbox / single-select state), and the grid frame is the one
+  tab stop. Cells stay plain content children — screen readers read the
+  row's text.
+- **The cursor is app state, like everything else.** `on_navigate(i)`
+  emits the arrow/Home/End target; `update` stores it; `.cursor_row(i)`
+  echoes it back and tints the row (the focus indicator). Space toggles
+  the row checkbox (multi-select), Enter activates (same message as a row
+  click). Unwired tables are unchanged — not focusable, byte-identical
+  goldens.
+- **The user `.id` moved to the grid frame.** It used to name only the
+  scrolled body's scroll container; keyboard focus must survive view
+  rebuilds on the focusable element, so the key now lands on the outer
+  frame in both layouts (the body keeps its derived `dt-body-*` id).
+- **Verified** by a harness test (arrows step and clamp, Home/End jump,
+  Space toggles, Enter activates, yaml shows `grid`/`row`/`[selected]`)
+  plus the unchanged 68-binary kit suite.
+
+## Chips and the time picker: closing the M3/ArkUI gap (2026-08-25)
+
+The inventory audit named chips and a time picker as the two most-traveled
+components the kit lacked (present in M3, ArkUI, Ant, and shadcn alike).
+
+- **Chip is one builder with optional wires.** `on_toggle` makes it an
+  M3 filter chip — projected as a `Checkbox { checked }` (M3's own ARIA
+  mapping), selected state draws the check + accent tint; `on_remove`
+  makes it an input chip whose × is a separate `Button` labeled
+  `"Remove {label}"` so the affordance never reads as part of the name;
+  neither wire leaves a static token. Pills are `rounded_full`, hover is
+  the uniform state layer, press dips to `PRESS_SCALE`.
+- **Time picker is segments, not a clock.** The macOS field model: three
+  focusable `HH`/`MM`/`SS` segments (24h), each an ARIA `spinbutton` with
+  zero-padded `valuetext`, ↑/↓ stepping with wraparound (23→00, 00→59),
+  Tab between segments. Typing digits needs a per-segment buffer the
+  kit can't own statelessly — arrows-only is the honest v1, documented on
+  the builder. No `on_change` renders a passive readout instead.
+- **Verified** by harness tests (toggle flips + projects `[checked]`, ×
+  emits, wraparound steps all three segments) and light/dark state
+  goldens for both widgets.
+
+## Sidebar nav and the rating scale (2026-08-25)
+
+The last two inventory gaps with cross-species demand: a sidebar navigation
+list (HIG sidebar, ArkUI SideBarContainer, every app shell) and a star
+rating (App Store model).
+
+- **`nav_list` reuses the tree's keyboard contract** — one tab stop on the
+  list, ↑/↓ step the selection with wraparound, Home/End jump — and
+  projects `listitem` + `aria-selected`. Rows are icon + label + optional
+  trailing badge; the selected row tints `element` and takes Medium weight
+  (the HIG-sidebar recipe), unselected labels rest at `text_muted`.
+- **`rating` projects as a slider** (`value`/`min`/`max` + a friendly
+  valuetext "3.5 of 5 stars") — the APG's stateless-widget reading of a
+  star scale. Filled stars are the warning amber (theme-routed, the
+  conventional review color); half stars are a clipped filled copy over
+  the outline, so precision 0.5 needs no new paint primitive — the
+  lucide star renders filled via `stroke_width: None` (path's fill mode).
+  ←/↓ →/↑ step by one precision, Home/End clear and max; `.read_only`
+  and `.disabled` drop the interactivity, not the semantics.
+- **Verified** by harness tests (click + arrow steps + wraparound + yaml
+  roles) and light/dark goldens for both.
+
+## The APG compliance sweep, and the three deltas left standing (2026-08-25)
+
+The audit's last batch: small keyboard/semantics fixes plus the two
+findings that turned out to be wrong or blocked.
+
+- **`aria-expanded` now follows the overlay.** A `ComboBox`-semantics
+  anchor with an overlay child projects `expanded` from the overlay
+  system's own open state (`FrameState::overlay_open`) — `select`,
+  `combobox`, and `dropdown_menu` get the attribute with no app
+  cooperation, because the open state was never app state to mirror.
+- **Combobox options track selection.** The listbox rows hardcoded
+  `ListItem { selected: false }`; an option is now `selected` when it
+  matches the field's current value (the keyboard cursor stays the
+  separate `active` veil).
+- **Toast dismissal is keyboard-reachable**: the close × is a focusable,
+  labeled `Button` ("Dismiss") — Enter/Space fire it through core's
+  click-activation.
+- **`tag_input` gained `.disabled`** (chips lose their remove buttons,
+  the inline editor locks, container dims) — the audit's "no disabled
+  anywhere near tag_input" closed.
+- **Left standing, recorded:** (1) menu roving stays opt-in — the APG
+  arrow pattern needs either app-owned highlight (supported:
+  `on_navigate` + `highlighted`) or a core focus-move primitive that
+  does not exist; per-item Tab is the stateless default. (2) Accordion
+  arrow navigation has the same blocker. (3) `spin_button` Home/End is
+  APG-optional and would need min/max message APIs — skipped.
+  (4) `aria-current` for pagination/breadcrumbs has no AccessKit
+  mapping (checked against accesskit 0.24), so a core field would be
+  headless-yaml-only — not worth the surface today.
+- **Verified** by the unchanged workspace suites: clippy clean,
+  every core/kit/shell binary green, no golden churn.
+
+## Loading buttons, links, the FAB, and the page control (2026-08-25)
+
+The tranche after the audit's five priorities: the remaining named defects
+and the small cross-species components.
+
+- **`button().loading(b)`** appends a spinner beside the label (width
+  stable, so button rows don't reflow), disables the button, and marks it
+  `aria-busy`. Busy is a real `Element` field projected the full length —
+  `AccessNode.busy` → yaml `[busy]` → AccessKit `set_busy()` — not a
+  disabled-with-extra-steps: the semantics distinguish "inert" from
+  "working, wait".
+- **`Semantics::Link` + `hyperlink()`**: the kit conflated every click
+  target into `Button`; navigation affordances now project the `link`
+  role. The helper is accent-colored Medium text (core has no underline
+  primitive; desktop convention is color-alone), hover steps to the solid
+  accent, Enter/Space activate.
+- **`fab()`** is the M3 floating action button: 56px, `radius.lg`,
+  accent fill with the ramp-step hover/press, `ShadowToken::Md`,
+  press scale, `.label` required for the accessible name.
+- **`page_control(pages, current)`** is the HIG dots indicator — current
+  page an elongated accent pill — deliberately inert: the pager (swipe,
+  arrows) owns navigation and echoes the index.
+- **Gallery**: chips, time picker, FAB + link joined `gallery_controls`;
+  rating + page control joined `gallery_feedback`; the loading button
+  sits in the BUTTONS row. Regenerated goldens eyeballed in both modes.
+  (Console/display goldens re-encoded byte-different but pixel-identical
+  within tolerance — old and new both pass.)
+- **Verified** by four harness tests (loading inert + `[busy]`, link role
+  + click, FAB named + click, pager inert) and the full workspace suite.
+
+## The tranche widgets become authorable in `fenestra/1` (2026-08-25)
+
+New widgets that can't be authored in the describe grammar are second-class
+for agents; the grammar registry and the parser must not drift.
+
+- **Seven nodes join the grammar**: `chip`, `time_picker`, `nav_list`,
+  `rating`, `fab`, `hyperlink`, `page_control` — each with a registry
+  entry (the advertised vocabulary) and a parser branch, so
+  `describe_vocabulary` cannot claim a node the engine cannot build.
+- **Handler mapping follows the two legal shapes.** Scalar writes where
+  the value is a state fact: `nav_list`/`rating`/`page_control`-style
+  `bind` (index / value / inert), and `time_picker` binds **seconds since
+  midnight** — one lossless number for all three fields, midnight being a
+  real time so an existing key always wins over the authored fields.
+  Inert intents where the payload is computed: chip `on_toggle` (the next
+  selected state is `!selected` — a computed value can never ride a
+  scalar write), chip `on_remove`, fab/hyperlink `on_click`.
+- **Unknown icon names degrade, never panic**: `fab`/`nav_list` icons
+  resolve through `named_icon` with a vendored fallback (`plus`), keeping
+  the hostile-input guarantee at the JSON boundary.
+- **Verified** by the vocabulary coherence tests (every advertised node
+  builds; the variant↔tag↔registry triple must agree), plus a JSON
+  fixture golden: a full scene authored only in `fenestra/1` with bound
+  state (`34200 s → 09:30:00`, `3.5` stars, second nav row selected)
+  rendering pixel-identically to the builder-written equivalent, with
+  aria assertions per widget.
+
+## Swiper: the pager that owns no animation state (2026-08-25)
+
+The last named inventory gap — the paged container (`page_control` was
+waiting for its pager).
+
+- **One page renders; the crossfade is the honest transition.** A
+  directional slide needs the previous index to aim the exit ghost —
+  state an Elm-pure widget cannot own (the exit config bakes at build
+  time, when the leaving page is no longer rendered). The incoming page
+  fades in (`.enter`), the outgoing ghost fades in place
+  (`.exit_to(0, 1, 0, 0)`); both primitives express exactly what ships.
+- **`on_swipe` became optional-message** (`Fn(SwipeDir) -> Option<Msg>`):
+  a carousel only acts on left/right flicks, and a dismissible card only
+  on some directions — forcing every recognizer hit to emit a message
+  made direction-filtering impossible. The one existing user (toast
+  dismiss) wraps in `Some`; dispatch skips `None`.
+- Navigation: ←/→ step clamped, Home/End jump, one tab stop (a press on
+  the page focuses the container — the deepest-interactive-node press
+  rule walks up to the `on_swipe` owner). The container announces
+  `"Page N of M"`.
+- **Verified** by dispatch-level tests (flick advances, wrong-way flick
+  is silent, arrows clamp, Home/End jump, label in the yaml) and the
+  `gallery_feedback` SWIPER section paired with `page_control`.
