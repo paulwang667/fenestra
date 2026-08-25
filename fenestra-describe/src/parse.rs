@@ -29,12 +29,13 @@ use fenestra_kit::{
     ButtonVariant, Status as KitStatus, TreeNode as KitTreeNode, accordion, accordion_item, avatar,
     badge, breadcrumbs, button, callout, card, checkbox, chip, color_picker, combobox,
     command_palette, crumb, data_table, date_picker, date_range_picker, drawer, dropdown_menu,
+    empty_state,
     fab, field, format_color_text, hyperlink, kbd, kbd_raised, menubar, meter, modal,
     multi_select, nav_item, nav_list, page_control, pagination, parse_color_text, popover,
     progress, progress_indeterminate, radio, rating, segmented, select, skeleton,
     skeleton_circle, skeleton_text, slider, spin_button, spinner, split_pane, stat_card,
-    status as kit_status, stepper, switch, tabs, tag_input, text_area, text_input, time_picker,
-    toast_stack, toolbar, tooltip, tree_view, virtual_list,
+    status as kit_status, stepper, swiper, switch, tabs, tag_input, text_area, text_input,
+    time_picker, toast_stack, toolbar, tooltip, tree_view, virtual_list,
 };
 use fenestra_markdown::markdown;
 use image::{ImageFormat, ImageReader, Limits};
@@ -44,13 +45,15 @@ use crate::error::DescribeError;
 use crate::format::{
     AccordionNode, AdaptiveSpec, AvatarNode, BadgeNode, BarChartNode, BreadcrumbsNode, CalloutNode,
     ChipNode, ColorPickerNode, ComboboxNode, CommandPaletteNode, Container, DataTableNode,
-    DatePickerNode, DateSpec, Description, DrawerNode, DropdownMenuNode, EdgeSpec, FabNode,
+    DatePickerNode, DateSpec, Description, DrawerNode, DropdownMenuNode, EdgeSpec, EmptyStateNode,
+    FabNode,
     FieldNode, FilterSpec, GrowSpec, HyperlinkNode, IconNode, ImageNode, InputNode, KbdNode, Leaf,
     LineChartNode, MarkdownNode, MenubarNode, MeterNode, ModalNode, MultiSelectNode, NavListNode,
     Node, PageControlNode, PaginationNode, PopoverNode, ProgressNode, RadioNode, RatingNode,
     RepeatCount, SCHEMA_V1, SegmentedNode, SelectNode, SheenSpec, SizeSpec, SkeletonNode,
     SparklineNode, SpinButtonNode, SplitPaneNode, StatCardNode, StatusNode, StepperNode, Style,
-    TabsNode, TagInputNode, TextNode, TimePickerNode, ToastStackNode, ToolbarNode, TooltipNode,
+    SwiperNode, TabsNode, TagInputNode, TextNode, TimePickerNode, ToastStackNode, ToolbarNode,
+    TooltipNode,
     TrackSpec, TreeItemDto, TreeViewNode, VirtualListNode,
 };
 use crate::state::{Action, StateMap, bound_bool, bound_number, bound_text};
@@ -368,6 +371,8 @@ fn node_to_element(
         Node::Rating(r) => rating_node(r, state),
         Node::Fab(f) => fab_node(f),
         Node::Hyperlink(h) => hyperlink_node(h),
+        Node::Swiper(s) => swiper_node(s, theme, state, path, budget, errors),
+        Node::EmptyState(e) => empty_state_node(e),
         Node::Segmented(s) => segmented_node(s, state),
         Node::Breadcrumbs(b) => breadcrumbs_node(b),
         Node::Pagination(p) => pagination_node(p, state),
@@ -2157,6 +2162,49 @@ fn hyperlink_node(h: &HyperlinkNode) -> Element<Action> {
         w = w.on_click(Action::Intent(intent.clone()));
     }
     if let Some(id) = &h.id {
+        w = w.id(id);
+    }
+    w.into()
+}
+
+fn swiper_node(
+    s: &SwiperNode,
+    theme: &Theme,
+    state: &StateMap,
+    path: &str,
+    budget: &mut usize,
+    errors: &mut Vec<DescribeError>,
+) -> Element<Action> {
+    let current = bound_index(state, &s.bind, s.current);
+    let handler = index_handler(&s.bind, &s.on_change);
+    let mut w = swiper(current);
+    for (i, page) in s.pages.iter().enumerate() {
+        let page_path = format!("{path}/pages[{i}]");
+        let page_el = node_to_element(page, theme, state, &page_path, budget, errors);
+        w = w.page(page_el);
+    }
+    let f = handler;
+    w = w.on_change(f);
+    if let Some(id) = &s.id {
+        w = w.id(id);
+    }
+    w.into()
+}
+
+fn empty_state_node(e: &EmptyStateNode) -> Element<Action> {
+    let mut w = empty_state(e.title.clone());
+    if let Some(message) = &e.message {
+        w = w.message(message.clone());
+    }
+    if let Some(name) = &e.icon
+        && let Some(icon) = named_icon(name)
+    {
+        w = w.icon(icon);
+    }
+    if let (Some(label), Some(intent)) = (&e.action_label, &e.on_action) {
+        w = w.action(label.clone(), Action::Intent(intent.clone()));
+    }
+    if let Some(id) = &e.id {
         w = w.id(id);
     }
     w.into()

@@ -7,9 +7,10 @@ use fenestra_core::{
 
 use crate::{
     ButtonVariant, ControlSize, Status, avatar, badge, button, callout, card, checkbox, chip,
-    color_picker, fab, hyperlink, icons, kbd, kbd_raised, page_control, progress, radio, rating,
-    segmented, select, skeleton, skeleton_circle, skeleton_text, slider, spinner, stat_card,
-    status, switch, swiper, table, tabs, text_area, text_input, time_picker, wavy_progress,
+    color_picker, empty_state, fab, hyperlink, icons, kbd, kbd_raised, page_control, progress,
+    radio, rating, segmented, select, skeleton, skeleton_circle, skeleton_text, slider, spinner,
+    stat_card, status, switch, swiper, table, tabs, text_area, text_input, time_picker,
+    wavy_progress,
 };
 
 fn section<Msg>(title: &str, content: Element<Msg>) -> Element<Msg> {
@@ -195,6 +196,15 @@ pub fn gallery_display(theme: &Theme) -> Element<()> {
             )]),
         ),
         section("DIVIDER", col().w(320.0).children([divider()])),
+        section(
+            "EMPTY STATE",
+            Element::from(
+                empty_state("No results")
+                    .message("Try different keywords or clear the filters.")
+                    .action("Clear filters", ())
+                    .id("es-g"),
+            ),
+        ),
         section(
             "LUCIDE ICONS",
             col().gap(SP3).children([

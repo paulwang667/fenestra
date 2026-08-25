@@ -11,6 +11,7 @@ mod data_table;
 mod date_picker;
 mod disclosure;
 mod display;
+mod empty_state;
 mod field;
 mod glass;
 mod kbd;
@@ -49,6 +50,7 @@ pub use color_picker::{
 pub use data_table::{DataTable, data_table};
 pub use date_picker::{Date, DatePicker, date_picker, date_range_picker};
 pub use disclosure::{Accordion, AccordionItem, accordion, accordion_item};
+pub use empty_state::{EmptyState, empty_state};
 pub use display::{
     Hyperlink, Meter, StatCard, Status, StatusIndicator, WavyProgress, avatar, badge, badge_dot,
     callout, card, hyperlink, meter, progress, progress_indeterminate, reading_column,

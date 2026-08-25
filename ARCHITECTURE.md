@@ -4439,3 +4439,22 @@ adds the primitive instead of more workarounds.
 - **Verified** by dispatch-level tests in `fenestra-core/tests/roving.rs`
   (Tab exclusion, container entry, wraparound both ends, Tab stand-in
   probed by Enter activation) plus the unchanged workspace suites.
+
+## Swiper in the grammar, and the empty state (2026-08-25)
+
+Grammar parity for the pager, plus the one common component the inventory
+still lacked.
+
+- **`swiper` joins `fenestra/1`**: literal `pages` nodes (never closures),
+  `bind` a state number for the current page, or an `on_change` intent.
+  The pager itself owns navigation — the description just echoes the
+  index, same contract as `pagination`.
+- **`empty_state`**: muted icon (Lucide `search` by default, overridable),
+  title, optional message, optional Secondary action. Centered column,
+  title at body size Medium, message muted — the shadcn/Ant recipe with
+  every color on tokens. Joins `gallery_display` and the grammar
+  (`action_label` + `on_action` intent).
+- **Verified** by the extended `described_tranche` fixture (swiper bound
+  to `page: 1` renders the second page; empty state authored in JSON),
+  the vocabulary coherence tests, the regenerated `gallery_display`
+  goldens, and the full workspace suite.

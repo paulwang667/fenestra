@@ -208,6 +208,11 @@ const NODE_REGISTRY: &[(&str, &str, &str)] = &[
         r#"{"pages":5,"current":1}"#,
     ),
     (
+        "swiper",
+        "Paged container: one `pages` entry visible at a time; swipe or ←/→ navigates. `bind` a root `state` number key for the current page.",
+        r#"{"pages":[{"text":{"content":"First"}},{"text":{"content":"Second"}}],"current":0}"#,
+    ),
+    (
         "toolbar",
         "Surface-framed bar grouping action controls (`children`). `vertical:true` stacks them.",
         r#"{"children":[{"button":{"label":"Bold"}},{"button":{"label":"Italic"}}]}"#,
@@ -272,6 +277,11 @@ const NODE_REGISTRY: &[(&str, &str, &str)] = &[
         "rating",
         "Star rating over `max` stars (default 5); `step` 0.5 enables halves. `bind` a root `state` number key for the value; arrows step it.",
         r#"{"value":3.5,"max":5,"step":0.5,"bind":"stars"}"#,
+    ),
+    (
+        "empty_state",
+        "Nothing-to-show placeholder: muted icon, title, optional message, optional action button.",
+        r#"{"title":"No results","message":"Try different keywords.","action_label":"Clear","on_action":"clear"}"#,
     ),
     (
         "accordion",

@@ -115,6 +115,9 @@ pub enum Node {
     /// swatch, and a hex/`oklch()` text entry. `bind` a root `state` text key
     /// for the committed hex value.
     ColorPicker(ColorPickerNode),
+    /// A paged container: one `pages` entry visible at a time. `bind` a
+    /// root `state` number key for the current page.
+    Swiper(SwiperNode),
     /// A compact labeled pill: a toggle with `on_toggle`, a dismissible
     /// token with `on_remove`, or a static label with neither.
     Chip(ChipNode),
@@ -146,7 +149,6 @@ pub enum Node {
     /// The HIG dots indicator for paged content. Inert: the pager owns
     /// navigation.
     PageControl(PageControlNode),
-    // ── Display / feedback ─────────────────────────────────────────────────
     /// A status pill. `status`: accent (default) | danger | warning | success.
     Badge(BadgeNode),
     /// A status callout: tinted background, status border, icon, and message.
@@ -204,6 +206,9 @@ pub enum Node {
     Markdown(MarkdownNode),
     /// A star rating. `bind` a root `state` number key for the value.
     Rating(RatingNode),
+    /// An empty-state placeholder: muted icon, title, message, optional
+    /// action.
+    EmptyState(EmptyStateNode),
     // ── Overlays ──────────────────────────────────────────────────────────
     /// A centered modal dialog with title, children, and optional `on_close` intent.
     Modal(ModalNode),
@@ -2226,6 +2231,51 @@ pub struct HyperlinkNode {
     /// Intent emitted on click.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_click: Option<String>,
+    /// Stable key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// A paged container: one `pages` entry visible at a time, navigated by
+/// swipe or arrows. `bind` a root `state` number key for the current page.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SwiperNode {
+    /// Page nodes, in order.
+    pub pages: Vec<Node>,
+    /// Current page index (0-based).
+    #[serde(default)]
+    pub current: usize,
+    /// Bind a `state` number key for the current page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
+    /// Intent emitted on page change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_change: Option<String>,
+    /// Stable key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// An empty-state placeholder: a muted icon, a title, an optional message,
+/// and an optional action.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EmptyStateNode {
+    /// The headline (e.g. "No results").
+    pub title: String,
+    /// Secondary guidance line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Lucide icon name (default `"search"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// The action button's label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_label: Option<String>,
+    /// Intent emitted by the action button.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_action: Option<String>,
     /// Stable key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,

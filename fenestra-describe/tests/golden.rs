@@ -148,7 +148,7 @@ fn described_charts_markdown_golden() {
 /// time_picker, nav_list, rating, fab, hyperlink, and page_control.
 const TRANCHE: &str = r#"{
   "schema": "fenestra/1",
-  "state": { "at": 34200, "stars": 3.5, "nav": 1 },
+  "state": { "at": 34200, "stars": 3.5, "nav": 1, "page": 1 },
   "root": { "col": {
     "style": { "p": 24, "gap": 16, "bg": "surface" },
     "children": [
@@ -167,7 +167,13 @@ const TRANCHE: &str = r#"{
         { "fab": { "icon": "plus", "label": "Compose", "on_click": "compose" } },
         { "hyperlink": { "label": "Read the docs", "on_click": "open-docs" } }
       ] } },
-      { "page_control": { "pages": 5, "current": 1 } }
+      { "page_control": { "pages": 5, "current": 1 } },
+      { "swiper": { "pages": [
+          { "text": { "content": "First page" } },
+          { "text": { "content": "Second page" } }
+        ], "bind": "page" } },
+      { "empty_state": { "title": "No results", "message": "Try different keywords.",
+          "action_label": "Clear", "on_action": "clear" } }
     ]
   } }
 }"#;
@@ -176,7 +182,7 @@ const TRANCHE: &str = r#"{
 fn described_tranche_golden() {
     let theme = Theme::light();
     let el = to_element(&serde_json::from_str(TRANCHE).expect("valid"), &theme).expect("parses");
-    let image = render_element(el, &theme, (360, 560));
+    let image = render_element(el, &theme, (360, 900));
     assert_png_snapshot(snapshot_dir(), "described_tranche", &image);
 }
 
@@ -185,7 +191,7 @@ fn described_tranche_golden() {
 #[test]
 fn described_tranche_bindings_and_aria() {
     let aria =
-        aria_snapshot(&serde_json::from_str(TRANCHE).expect("valid"), &Theme::light(), (360, 560))
+        aria_snapshot(&serde_json::from_str(TRANCHE).expect("valid"), &Theme::light(), (360, 900))
             .unwrap();
     for needle in [
         r#"spinbutton "Hour" [value=9 min=0 max=23]"#,
@@ -195,6 +201,8 @@ fn described_tranche_bindings_and_aria() {
         "slider",
         r#"button "Compose""#,
         r#"link "Read the docs""#,
+        r#"text "Second page""#,
+        r#"text "No results""#,
     ] {
         assert!(aria.contains(needle), "aria missing {needle:?}:\n{aria}");
     }
