@@ -55,6 +55,12 @@ fn push_node(nodes: &mut Vec<(NodeId, Node)>, an: &AccessNode, is_root: bool, sc
     if an.invalid {
         node.set_invalid(accesskit::Invalid::True);
     }
+    if an.read_only {
+        node.set_read_only();
+    }
+    if an.busy {
+        node.set_busy();
+    }
     if an.disabled {
         node.set_disabled();
     }
@@ -123,10 +129,13 @@ fn role_of(an: &AccessNode) -> Role {
         Some(Semantics::Slider { .. }) => Role::Slider,
         Some(Semantics::TextInput { multiline: false }) => Role::TextInput,
         Some(Semantics::TextInput { multiline: true }) => Role::MultilineTextInput,
+        Some(Semantics::Grid) => Role::Grid,
+        Some(Semantics::Row { .. }) => Role::Row,
+        Some(Semantics::Link) => Role::Link,
+        Some(Semantics::ListItem { .. }) => Role::ListItem,
         Some(Semantics::ComboBox) => Role::ComboBox,
         Some(Semantics::Dialog) => Role::Dialog,
         Some(Semantics::Tab { .. }) => Role::Tab,
-        Some(Semantics::ListItem { .. }) => Role::ListItem,
         Some(Semantics::Alert) => Role::Alert,
         Some(Semantics::Label) => Role::Label,
         Some(Semantics::Image) => Role::Image,

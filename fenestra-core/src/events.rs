@@ -927,7 +927,9 @@ pub fn dispatch<Msg: Clone>(
                         (state.press_origin, state.pointer)
                     && let Some(dir) = recognize_swipe(px - ox, py - oy, state.now() - ot)
                 {
-                    out.msgs.push(f(dir));
+                    if let Some(msg) = f(dir) {
+                        out.msgs.push(msg);
+                    }
                     out.redraw = true;
                 }
                 out.redraw = true;

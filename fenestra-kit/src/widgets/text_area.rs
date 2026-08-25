@@ -26,6 +26,7 @@ pub struct TextArea<Msg> {
     min_height: f32,
     invalid: bool,
     disabled: bool,
+    read_only: bool,
     on_input: Option<std::rc::Rc<dyn Fn(String) -> Msg>>,
     key: Option<String>,
 }
@@ -41,6 +42,7 @@ pub fn text_area<Msg>(value: impl Into<String>) -> TextArea<Msg> {
         min_height: 80.0,
         invalid: false,
         disabled: false,
+        read_only: false,
         on_input: None,
         key: None,
     }
@@ -77,6 +79,15 @@ impl<Msg> TextArea<Msg> {
         self
     }
 
+    /// Makes the area read-only: focus, selection, and copy stay live but
+    /// typing, paste, IME, and undo cannot change the value (HTML
+    /// `<textarea readonly>` — unlike `disabled`, the value stays readable
+    /// and the area stays in the tab order).
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
     /// Maps every edit of the value to a message.
     pub fn on_input(mut self, f: impl Fn(String) -> Msg + 'static) -> Self {
         self.on_input = Some(std::rc::Rc::new(f));
@@ -93,6 +104,7 @@ impl<Msg> TextArea<Msg> {
 impl<Msg: 'static> From<TextArea<Msg>> for Element<Msg> {
     fn from(t: TextArea<Msg>) -> Self {
         let invalid = t.invalid;
+        let read_only = t.read_only;
         let placeholder = t.placeholder.clone();
         let mut el = raw_text_area(t.value, t.placeholder)
             .w(t.width)
@@ -104,13 +116,20 @@ impl<Msg: 'static> From<TextArea<Msg>> for Element<Msg> {
             .size(TextSize::Sm)
             .transition(Transition::colors())
             .disabled(t.disabled)
-            .invalid(invalid);
+            .invalid(invalid)
+            .read_only(t.read_only);
         if !placeholder.is_empty() {
             el = el.label(placeholder);
         }
 
         el = el.themed(move |theme: &Theme, s| {
-            let base = s.bg(theme.surface_raised);
+            // Read-only fills with the interactive-element tone: visibly
+            // not editable, but the value keeps full-contrast text.
+            let base = s.bg(if read_only {
+                theme.element
+            } else {
+                theme.surface_raised
+            });
             if invalid {
                 base.border(1.0, theme.danger.border)
             } else {

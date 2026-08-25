@@ -21,7 +21,7 @@ pub(crate) type DragEventFn<Msg> = Box<dyn Fn(DragEvent) -> Option<Msg>>;
 /// Maps a trackpad magnification gesture to an optional message.
 pub(crate) type PinchFn<Msg> = Box<dyn Fn(PinchEvent) -> Option<Msg>>;
 /// Maps a recognized [`SwipeDir`] to a message.
-pub(crate) type SwipeFn<Msg> = Box<dyn Fn(SwipeDir) -> Msg>;
+pub(crate) type SwipeFn<Msg> = Box<dyn Fn(SwipeDir) -> Option<Msg>>;
 /// Maps the edited text to a message.
 pub(crate) type InputFn<Msg> = Box<dyn Fn(&str) -> Msg>;
 /// Maps a dropped OS file path to a message.
@@ -388,11 +388,22 @@ pub enum Semantics {
     },
     /// A transient notification (toasts).
     Alert,
+    /// A data grid (ARIA `grid`): rows carry [`Semantics::Row`], and the
+    /// grid itself is the single keyboard tab stop.
+    Grid,
+    /// One row of a [`Semantics::Grid`]. Mirrors the ARIA `row` role;
+    /// `selected` carries `aria-selected`.
+    Row {
+        /// Whether the row is selected (checkbox, single-select, or both).
+        selected: bool,
+    },
+    /// A navigation link (ARIA `link`): styled text that navigates rather
+    /// than performs an action.
+    Link,
     /// Static text (automatic for text leaves).
     Label,
     /// An image (automatic for image leaves).
     Image,
-    /// A numeric input stepped by buttons / arrow keys (CSS `<input type=number>`).
     Spinbutton {
         /// Current value.
         value: f32,
@@ -713,6 +724,12 @@ pub struct Element<Msg> {
     pub(crate) press_scale: bool,
     /// Recolor the focus ring (and swapped border) to the danger hue.
     pub(crate) invalid: bool,
+    /// Whether an input keeps focus, selection, and copy but drops edits
+    /// (ARIA/HTML `readonly`). Only meaningful on [`Kind::Input`] elements.
+    pub(crate) read_only: bool,
+    /// Whether the control is busy (ARIA `aria-busy`): a loading button,
+    /// a saving form region. Projected to the accessibility tree.
+    pub(crate) busy: bool,
     /// Whether the control is expanded (ARIA `aria-expanded`). Disclosure
     /// headers, comboboxes, and tree items set this; the projection carries it
     /// to the accessibility tree.
@@ -775,6 +792,8 @@ impl<Msg> Element<Msg> {
             press_scale: false,
             invalid: false,
             expanded: false,
+            read_only: false,
+            busy: false,
             transition: None,
         }
     }
@@ -948,6 +967,23 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Makes an input read-only: it stays focusable, selectable, and
+    /// copyable, but keystrokes, paste, IME, and undo can no longer change
+    /// the value (HTML `<input readonly>`, not `disabled`). The app keeps
+    /// owning the value; `on_input` simply never fires.
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// Marks the control busy (ARIA `aria-busy`): assistive tech announces
+    /// the change when it clears. A loading button sets this alongside its
+    /// own disabled state.
+    pub fn busy(mut self, busy: bool) -> Self {
+        self.busy = busy;
+        self
+    }
+
     /// Theme-deferred base styling, applied during style resolution. This is
     /// how kit widgets route every color through tokens without a theme in
     /// scope: `view()` has no theme parameter.
@@ -1045,7 +1081,7 @@ impl<Msg> Element<Msg> {
     /// small threshold, and release fire the closure with the dominant
     /// [`SwipeDir`]. Good for carousels, dismissible cards, and back gestures —
     /// the element captures the press, so it works without `on_drag`.
-    pub fn on_swipe(mut self, f: impl Fn(SwipeDir) -> Msg + 'static) -> Self {
+    pub fn on_swipe(mut self, f: impl Fn(SwipeDir) -> Option<Msg> + 'static) -> Self {
         self.on_swipe = Some(Box::new(f));
         self
     }
@@ -2368,7 +2404,7 @@ impl<Msg: 'static> Element<Msg> {
             }),
             on_swipe: self.on_swipe.map(|s| {
                 let f = f.clone();
-                Box::new(move |d: SwipeDir| f(s(d))) as SwipeFn<B>
+                Box::new(move |d: SwipeDir| s(d).map(&f)) as SwipeFn<B>
             }),
             on_input: self.on_input.map(|i| {
                 let f = f.clone();
@@ -2423,6 +2459,8 @@ impl<Msg: 'static> Element<Msg> {
             state_layer: self.state_layer,
             press_scale: self.press_scale,
             invalid: self.invalid,
+            read_only: self.read_only,
+            busy: self.busy,
             transition: self.transition,
         }
     }

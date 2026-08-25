@@ -6,10 +6,10 @@ use fenestra_core::{
 };
 
 use crate::{
-    ButtonVariant, ControlSize, Status, avatar, badge, button, callout, card, checkbox,
-    color_picker, icons, kbd, kbd_raised, progress, radio, segmented, select, skeleton,
-    skeleton_circle, skeleton_text, slider, spinner, stat_card, status, switch, table, tabs,
-    text_area, text_input, wavy_progress,
+    ButtonVariant, ControlSize, Status, avatar, badge, button, callout, card, checkbox, chip,
+    color_picker, fab, hyperlink, icons, kbd, kbd_raised, page_control, progress, radio, rating,
+    segmented, select, skeleton, skeleton_circle, skeleton_text, slider, spinner, stat_card,
+    status, switch, swiper, table, tabs, text_area, text_input, time_picker, wavy_progress,
 };
 
 fn section<Msg>(title: &str, content: Element<Msg>) -> Element<Msg> {
@@ -34,6 +34,7 @@ pub fn gallery_controls(theme: &Theme) -> Element<()> {
                     button("Ghost").variant(ButtonVariant::Ghost),
                     button("Danger").variant(ButtonVariant::Danger),
                     button("Disabled").disabled(true),
+                    button("Loading…").loading(true),
                 ]),
                 row().gap(SP3).items_center().children([
                     button("Small").size(ControlSize::Sm),
@@ -63,6 +64,15 @@ pub fn gallery_controls(theme: &Theme) -> Element<()> {
             ]),
         ),
         section(
+            "CHIPS",
+            row().gap(SP3).items_center().children([
+                chip("Rust"),
+                chip("Selected").selected(true),
+                chip("Dismissible").on_remove(()),
+                chip("Locked").disabled(true),
+            ]),
+        ),
+        section(
             "SLIDERS",
             row().gap(SP4).items_center().children([
                 slider(0.0),
@@ -75,6 +85,27 @@ pub fn gallery_controls(theme: &Theme) -> Element<()> {
             row().gap(SP4).items_center().children([
                 select(1, ["Daily", "Weekly", "Monthly"]).id("sel-a"),
                 select(0, ["Disabled"]).disabled(true).id("sel-b"),
+            ]),
+        ),
+        section(
+            "TIME PICKER",
+            row().gap(SP4).items_center().children([
+                Element::from(time_picker(9, 30, 0).on_change(|_, _, _| ())),
+                Element::from(time_picker(14, 5, 59).with_seconds(true).on_change(|_, _, _| ())),
+                Element::from(time_picker(0, 0, 0).disabled(true).on_change(|_, _, _| ())),
+            ]),
+        ),
+        section(
+            "FAB + LINK",
+            row().gap(SP4).items_center().children([
+                Element::from(fab(icons::plus()).label("Compose").on_click(())),
+                Element::from(
+                    fab(icons::plus())
+                        .label("Disabled")
+                        .disabled(true)
+                        .on_click(()),
+                ),
+                Element::from(hyperlink("Read the docs").on_click(())),
             ]),
         ),
         section(
@@ -265,6 +296,41 @@ pub fn gallery_feedback(theme: &Theme) -> Element<()> {
                 Element::from(wavy_progress(0.35, 280.0)),
                 Element::from(wavy_progress(0.7, 280.0)),
                 Element::from(wavy_progress(0.96, 280.0)),
+            ]),
+        ),
+        section(
+            "RATING + PAGE CONTROL",
+            col().gap(SP3).items_start().children([
+                Element::from(rating(3.0, 5).on_change(|_| ())),
+                Element::from(rating(3.5, 5).on_change(|_| ())),
+                Element::from(rating(4.0, 5).read_only(true)),
+                page_control(5, 1),
+            ]),
+        ),
+        section(
+            "SWIPER",
+            col().gap(SP3).items_start().children([
+                Element::from(
+                    swiper(1)
+                        .page(
+                            col().w(280.0).h(72.0).p(SP3).child(
+                                text("Swipe or press ← →").size(TextSize::Sm),
+                            ),
+                        )
+                        .page(
+                            col().w(280.0).h(72.0).p(SP3).child(
+                                text("Second page").size(TextSize::Sm),
+                            ),
+                        )
+                        .page(
+                            col().w(280.0).h(72.0).p(SP3).child(
+                                text("Third page").size(TextSize::Sm),
+                            ),
+                        )
+                        .on_change(|_| ())
+                        .id("sw-g"),
+                ),
+                page_control(3, 1),
             ]),
         ),
     ])

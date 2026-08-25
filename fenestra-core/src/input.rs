@@ -27,6 +27,9 @@ pub(crate) struct EditorState {
     pub seen: u64,
     /// Multiline mode: wraps, accepts newlines, moves by line.
     pub multiline: bool,
+    /// Read-only mode: selection and copy stay live, every mutation is a
+    /// no-op (HTML `<input readonly>`).
+    pub read_only: bool,
     /// Undo/redo history (QUndoStack semantics: coalesced runs,
     /// boundaries on caret moves, redo cleared by new edits).
     pub undo: UndoStack,
@@ -99,6 +102,7 @@ impl EditorState {
             last_activity: now,
             seen: 0,
             multiline,
+            read_only: false,
             undo: UndoStack::default(),
         }
     }
@@ -245,6 +249,11 @@ fn handle_key_inner(
                 MOVED
             }
             'x' => {
+                // Read-only: cut/paste/undo/typing are all no-ops; only
+                // selection and copy stay live (HTML `readonly`).
+                if state.read_only {
+                    return IGNORED;
+                }
                 if let Some(text) = drv.editor.selected_text() {
                     clipboard.set(text.to_owned());
                     // Cut is its own undo unit, never coalesced.
@@ -259,6 +268,9 @@ fn handle_key_inner(
                 MOVED
             }
             'v' => {
+                if state.read_only {
+                    return IGNORED;
+                }
                 if let Some(text) = clipboard.get() {
                     // Paste is its own undo unit, never coalesced.
                     state.undo.break_run();
@@ -272,6 +284,9 @@ fn handle_key_inner(
                 MOVED
             }
             'z' => {
+                if state.read_only {
+                    return IGNORED;
+                }
                 let applied = if key.shift {
                     redo(state, fonts)
                 } else {
@@ -280,6 +295,9 @@ fn handle_key_inner(
                 if applied { HANDLED } else { MOVED }
             }
             'y' if key.ctrl => {
+                if state.read_only {
+                    return IGNORED;
+                }
                 if redo(state, fonts) {
                     HANDLED
                 } else {
@@ -292,6 +310,9 @@ fn handle_key_inner(
         // become text, matching the text-commit and paste path filters.
         Key::Char(c) if c.is_control() => IGNORED,
         Key::Char(c) if !key.ctrl && !key.meta => {
+            if state.read_only {
+                return IGNORED;
+            }
             state.undo.begin(&state.editor, EditRun::Insert);
             let (font_cx, layout_cx) = fonts.editor_contexts();
             let mut drv = state.editor.driver(font_cx, layout_cx);
@@ -337,6 +358,9 @@ fn handle_key_inner(
             MOVED
         }
         Key::Enter if multiline => {
+            if state.read_only {
+                return IGNORED;
+            }
             state.undo.begin(&state.editor, EditRun::Insert);
             let (font_cx, layout_cx) = fonts.editor_contexts();
             let mut drv = state.editor.driver(font_cx, layout_cx);
@@ -360,6 +384,9 @@ fn handle_key_inner(
             MOVED
         }
         Key::Backspace => {
+            if state.read_only {
+                return IGNORED;
+            }
             state.undo.begin(&state.editor, EditRun::Delete);
             let (font_cx, layout_cx) = fonts.editor_contexts();
             let mut drv = state.editor.driver(font_cx, layout_cx);
@@ -371,6 +398,9 @@ fn handle_key_inner(
             HANDLED
         }
         Key::Delete => {
+            if state.read_only {
+                return IGNORED;
+            }
             state.undo.begin(&state.editor, EditRun::Delete);
             let (font_cx, layout_cx) = fonts.editor_contexts();
             let mut drv = state.editor.driver(font_cx, layout_cx);
@@ -430,6 +460,9 @@ fn apply_snapshot(state: &mut EditorState, fonts: &mut Fonts, snap: &Snapshot) {
 }
 
 pub(crate) fn handle_text(state: &mut EditorState, fonts: &mut Fonts, text: &str) -> EditOutcome {
+    if state.read_only {
+        return IGNORED;
+    }
     state.undo.begin(&state.editor, EditRun::Insert);
     let sanitized = sanitize(text, state.multiline);
     if sanitized.is_empty() {
@@ -448,6 +481,9 @@ pub(crate) fn handle_preedit(
     text: &str,
     cursor: Option<(usize, usize)>,
 ) {
+    if state.read_only {
+        return;
+    }
     let (font_cx, layout_cx) = fonts.editor_contexts();
     let mut drv = state.editor.driver(font_cx, layout_cx);
     if text.is_empty() {

@@ -16,7 +16,11 @@
 //! ]);
 //! ```
 
-use fenestra_core::{Color, Cursor, Element, Semantics, Theme, Transition, Weight, row, text};
+use fenestra_core::{
+    Color, Cursor, Element, Semantics, ShadowToken, Theme, Transition, Weight, row, text,
+};
+
+use super::display::spinner;
 
 use super::{ControlSize, Density};
 
@@ -103,6 +107,7 @@ pub struct Button<Msg> {
     size: ControlSize,
     density: Density,
     disabled: bool,
+    loading: bool,
     on_click: Option<Msg>,
     key: Option<String>,
 }
@@ -115,6 +120,7 @@ pub fn button<Msg>(label: impl Into<String>) -> Button<Msg> {
         size: ControlSize::default(),
         density: Density::default(),
         disabled: false,
+        loading: false,
         on_click: None,
         key: None,
     }
@@ -148,6 +154,15 @@ impl<Msg> Button<Msg> {
         self
     }
 
+    /// Puts the button in a loading state: a spinner joins the label, the
+    /// button disables itself, and the accessibility tree marks it
+    /// `aria-busy`. Width is preserved (the spinner sits beside the label),
+    /// so a row of buttons does not reflow.
+    pub fn loading(mut self, loading: bool) -> Self {
+        self.loading = loading;
+        self
+    }
+
     /// Emits this message on click (or Enter/Space while focused).
     pub fn on_click(mut self, msg: Msg) -> Self {
         self.on_click = Some(msg);
@@ -165,6 +180,7 @@ impl<Msg> From<Button<Msg>> for Element<Msg> {
     fn from(b: Button<Msg>) -> Self {
         let variant = b.variant;
         let disabled = b.disabled;
+        let loading = b.loading;
         let m = b.size.metrics_at(b.density);
         let label_text = b.label.clone();
         let label = text(b.label)
@@ -180,12 +196,36 @@ impl<Msg> From<Button<Msg>> for Element<Msg> {
             .gap(m.gap)
             .themed(|t: &Theme, s| s.rounded(t.radius.md))
             .shrink0()
-            .children([label])
+            .children({
+                let mut kids: Vec<Element<Msg>> = Vec::new();
+                if loading {
+                    kids.push(
+                        spinner()
+                            .w(m.icon)
+                            .h(m.icon)
+                            .themed(move |t: &Theme, s| {
+                                s.color(
+                                    if matches!(
+                                        variant,
+                                        ButtonVariant::Primary | ButtonVariant::Danger
+                                    ) {
+                                        t.on_accent
+                                    } else {
+                                        t.accent
+                                    },
+                                )
+                            }),
+                    );
+                }
+                kids.push(label);
+                kids
+            })
             .transition(Transition::colors())
             .press_scale()
             .focusable(true)
             .cursor(Cursor::Pointer)
-            .disabled(b.disabled)
+            .disabled(b.disabled || b.loading)
+            .busy(b.loading)
             .semantics(Semantics::Button)
             .label(label_text);
 
@@ -198,7 +238,7 @@ impl<Msg> From<Button<Msg>> for Element<Msg> {
         if let Some(key) = &b.key {
             el = el.id(key);
         }
-        if let Some(msg) = b.on_click {
+        if let Some(msg) = b.on_click.filter(|_| !loading) {
             el = el.on_click(msg);
         }
         el
@@ -315,6 +355,103 @@ impl<Msg> From<IconButton<Msg>> for Element<Msg> {
             el = el.id(key);
         }
         if let Some(msg) = b.on_click {
+            el = el.on_click(msg);
+        }
+        el
+    }
+}
+
+/// A Floating Action Button (M3): a 56px accent-filled square holding an
+/// icon, a medium shadow, and the press scale — the one promoted action of
+/// a screen. Give it a `.label`; icon-only controls have no accessible
+/// name otherwise.
+pub struct Fab<Msg> {
+    icon: Element<Msg>,
+    label: Option<String>,
+    disabled: bool,
+    on_click: Option<Msg>,
+    key: Option<String>,
+}
+
+/// A floating action button holding `icon`.
+pub fn fab<Msg>(icon: impl Into<Element<Msg>>) -> Fab<Msg> {
+    Fab {
+        icon: icon.into(),
+        label: None,
+        disabled: false,
+        on_click: None,
+        key: None,
+    }
+}
+
+impl<Msg> Fab<Msg> {
+    /// The accessible name (required in spirit: icon-only control).
+    #[must_use]
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// Disables the FAB.
+    #[must_use]
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// Emits this message on click.
+    #[must_use]
+    pub fn on_click(mut self, msg: Msg) -> Self {
+        self.on_click = Some(msg);
+        self
+    }
+
+    /// Stable identity key.
+    #[must_use]
+    pub fn id(mut self, key: &str) -> Self {
+        self.key = Some(key.to_owned());
+        self
+    }
+}
+
+impl<Msg> From<Fab<Msg>> for Element<Msg> {
+    fn from(f: Fab<Msg>) -> Self {
+        let disabled = f.disabled;
+        let icon = f
+            .icon
+            .w(24.0)
+            .h(24.0)
+            .themed(move |t: &Theme, s| s.color(t.on_accent));
+        let mut el = row()
+            .items_center()
+            .justify_center()
+            .w(56.0)
+            .h(56.0)
+            .themed(|t: &Theme, s| {
+                s.rounded(t.radius.lg)
+                    .bg(t.accent)
+                    .shadow(ShadowToken::Md)
+            })
+            .hover_themed(|t: &Theme, s| s.bg(t.accent_hover))
+            .active_themed(|t: &Theme, s| s.bg(t.accent_active))
+            .shrink0()
+            .children([icon])
+            .transition(Transition::colors())
+            .press_scale()
+            .focusable(true)
+            .cursor(Cursor::Pointer)
+            .disabled(disabled)
+            .semantics(Semantics::Button);
+        if let Some(label) = f.label {
+            el = el.label(label);
+        }
+        if disabled {
+            el = el.opacity(0.5);
+        }
+        if let Some(key) = &f.key {
+            el = el.id(key);
+        }
+        if let Some(msg) = f.on_click {
             el = el.on_click(msg);
         }
         el

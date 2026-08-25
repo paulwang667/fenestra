@@ -123,6 +123,9 @@ struct NodeMeta {
     /// Whether the control is disabled. Kept (not folded into `focusable`)
     /// so the accessibility projection can still announce `aria-disabled`.
     disabled: bool,
+    /// Whether an input drops edits but keeps focus/selection/copy.
+    read_only: bool,
+    busy: bool,
 }
 
 /// Scroll geometry of one scrollable container, resolved for this frame.
@@ -243,6 +246,11 @@ pub struct AccessNode {
     pub invalid: bool,
     /// The stable key assigned via `.id("...")`, when one was set.
     pub key: Option<String>,
+    /// Whether an input is read-only (ARIA/HTML `readonly`): focus,
+    /// selection, and copy stay live; edits do not.
+    pub read_only: bool,
+    /// Whether the control is busy (ARIA `aria-busy`).
+    pub busy: bool,
     /// Live region: content changes are announced politely.
     pub live: bool,
     /// Text inputs: the selected byte range in the value (collapsed =
@@ -353,6 +361,9 @@ struct BuiltNode {
     invalid: bool,
     /// Whether the control is expanded (ARIA `aria-expanded`).
     expanded: bool,
+    /// Whether the input drops edits but keeps focus/selection/copy.
+    read_only: bool,
+    busy: bool,
     spin: Option<f32>,
     /// Scroll containers: pin to the bottom while content grows.
     stick_bottom: bool,
@@ -867,6 +878,7 @@ fn build<Msg>(
                 .or_insert_with(|| EditorState::new(&resolved, now, data.multiline));
             editor.sync(&data.value, &resolved);
             editor.multiline = data.multiline;
+            editor.read_only = el.read_only;
             editor.seen = frame_no;
             let focused = state.focused() == Some(id);
             if focused && !state.reduced_motion {
@@ -939,17 +951,27 @@ fn build<Msg>(
         _ => None,
     });
 
+    // A combobox trigger's `aria-expanded` follows its overlay: the open
+    // state lives in FrameState (the overlay system owns it), so the
+    // anchor reads it here instead of waiting for the app to mirror it.
+    let overlay_open = el.semantics == Some(Semantics::ComboBox)
+        && child_slice.iter().enumerate().any(|(i, c)| {
+            c.overlay.is_some() && state.overlay_open(id.child(i, c.key.as_deref()))
+        });
+
     BuiltNode {
         taffy,
         id,
         kind,
         style,
         focusable: el.focusable,
-        expanded: el.expanded,
+        expanded: el.expanded || overlay_open,
         disabled: el.disabled,
         invalid: el.invalid,
-        spin: el.spin,
+        read_only: el.read_only,
+        busy: el.busy,
         stick_bottom: el.stick_bottom,
+        spin: el.spin,
         access: (semantics, label, value, el.key.clone()),
         live: el.live,
         drag_region: el.drag_region,
@@ -1314,6 +1336,8 @@ impl Realize<'_> {
             invalid: node.invalid,
             expanded: node.expanded,
             disabled: node.disabled,
+            read_only: node.read_only,
+            busy: node.busy,
         };
         let frame_node = FrameNode {
             id: node.id,
@@ -2464,6 +2488,8 @@ impl Frame {
                 invalid: node.meta.invalid,
                 key,
                 live: node.live,
+                read_only: node.meta.read_only,
+                busy: node.meta.busy,
                 selection: node.selection,
                 children: node.children.iter().map(|c| project(c, this)).collect(),
             }

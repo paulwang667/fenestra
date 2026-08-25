@@ -208,6 +208,9 @@ pub(crate) fn role_name(semantics: &Semantics) -> &'static str {
         Semantics::Dialog => "dialog",
         Semantics::Tab { .. } => "tab",
         Semantics::ListItem { .. } => "listitem",
+        Semantics::Grid => "grid",
+        Semantics::Row { .. } => "row",
+        Semantics::Link => "link",
         Semantics::Alert => "alert",
         Semantics::Label => "text",
         Semantics::Image => "image",
@@ -317,7 +320,8 @@ impl Frame {
                 Some(Semantics::Switch { on: true }) => out.push_str(" [on]"),
                 Some(Semantics::Radio { selected: true })
                 | Some(Semantics::Tab { selected: true })
-                | Some(Semantics::ListItem { selected: true }) => out.push_str(" [selected]"),
+                | Some(Semantics::ListItem { selected: true })
+                | Some(Semantics::Row { selected: true }) => out.push_str(" [selected]"),
                 Some(Semantics::Slider { value, min, max })
                 | Some(Semantics::Spinbutton { value, min, max })
                 | Some(Semantics::Meter { value, min, max }) => {
@@ -346,6 +350,12 @@ impl Frame {
             }
             if node.invalid {
                 out.push_str(" [invalid]");
+            }
+            if node.read_only {
+                out.push_str(" [readonly]");
+            }
+            if node.busy {
+                out.push_str(" [busy]");
             }
             out
         }

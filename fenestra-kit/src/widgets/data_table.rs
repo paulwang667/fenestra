@@ -1,6 +1,9 @@
 //! Data table: sortable headers, multi-select, row virtualization, a sticky
 //! header, column resize / reorder / pin (freeze), and a filter row — over the
-//! plain [`crate::table`] look.
+//! plain [`crate::table`] look. Wired with
+//! [`on_navigate`](DataTable::on_navigate) it is a focusable ARIA `grid`:
+//! one tab stop, ↑/↓ step the app-owned cursor row, Home/End jump, Enter
+//! activates a row, Space toggles its checkbox.
 //!
 //! Elm-pure: the table renders from app-owned state and only *emits*. The app
 //! sorts, filters, reorders, resizes, and selects in `update`; the widget never
@@ -43,8 +46,8 @@
 use std::rc::Rc;
 
 use fenestra_core::{
-    Cursor, Element, SP2, SP3, Semantics, TextSize, Theme, Track, Transition, Weight, col, div,
-    raw_input, row, text,
+    Cursor, Element, Key, SP2, SP3, Semantics, TextSize, Theme, Track, Transition, Weight, col,
+    div, raw_input, row, text,
 };
 
 use crate::checkbox;
@@ -87,6 +90,8 @@ pub struct DataTable<Msg> {
     on_resize_end: Option<Msg>,
     on_reorder: Option<Rc<dyn Fn(usize, usize) -> Msg>>,
     on_filter: Option<Rc<dyn Fn(usize, String) -> Msg>>,
+    cursor: Option<usize>,
+    on_nav: Option<Rc<dyn Fn(usize) -> Msg>>,
 }
 
 /// A table whose headers sort and whose rows select. Pass rows in the order you
@@ -118,6 +123,8 @@ pub fn data_table<Msg>(
         on_resize_end: None,
         on_reorder: None,
         on_filter: None,
+        cursor: None,
+        on_nav: None,
     }
 }
 
@@ -289,6 +296,26 @@ impl<Msg> DataTable<Msg> {
         self.on_filter = Some(Rc::new(f));
         self
     }
+
+    /// The keyboard-cursor row (the row arrows move). App-owned like every
+    /// other table fact: [`on_navigate`](Self::on_navigate) emits the next
+    /// index, `update` stores it, and the view echoes it back here. The
+    /// cursor row renders with the selection tint.
+    #[must_use]
+    pub fn cursor_row(mut self, row: usize) -> Self {
+        self.cursor = Some(row);
+        self
+    }
+
+    /// Maps an arrow/Home/End keyboard navigation to the target row. Wiring
+    /// this makes the table a focusable ARIA `grid`: one tab stop, ↑/↓ step
+    /// a row, Home/End jump, Enter activates (like a row click), Space
+    /// toggles the row checkbox in multi-select mode.
+    #[must_use]
+    pub fn on_navigate(mut self, f: impl Fn(usize) -> Msg + 'static) -> Self {
+        self.on_nav = Some(Rc::new(f));
+        self
+    }
 }
 
 /// Shared, owned context handed to each (possibly virtualized) body row.
@@ -299,6 +326,7 @@ struct BodyCtx<Msg> {
     tracks: Vec<Track>,
     width: Option<f32>,
     selected: Option<usize>,
+    cursor: Option<usize>,
     select: bool,
     pinned_left: usize,
     pinned_right: usize,
@@ -388,9 +416,12 @@ impl<Msg: Clone + 'static> BodyCtx<Msg> {
         if let Some(w) = self.width {
             r = r.w(w);
         }
-        if self.selected == Some(i) || checked {
+        if self.selected == Some(i) || checked || self.cursor == Some(i) {
             r = r.themed(|th: &Theme, s| s.bg(th.accent_bg));
         }
+        r = r.semantics(Semantics::Row {
+            selected: checked || self.selected == Some(i),
+        });
         if let Some(f) = &self.on_select {
             r = r
                 .on_click(f(i))
@@ -494,6 +525,7 @@ impl<Msg: Clone + 'static> From<DataTable<Msg>> for Element<Msg> {
             tracks,
             width: total_w,
             selected: t.selected,
+            cursor: t.cursor,
             select,
             pinned_left: pl,
             pinned_right: pr,
@@ -510,6 +542,49 @@ impl<Msg: Clone + 'static> From<DataTable<Msg>> for Element<Msg> {
                 .themed(|th: &Theme, s| s.border(1.0, th.border_subtle))
         };
 
+        // ARIA grid keyboard: one tab stop on the table; arrows step the
+        // app-owned cursor row, Home/End jump, Enter activates (a row
+        // click), Space toggles the row checkbox in multi-select mode.
+        let with_grid = |el: Element<Msg>| -> Element<Msg> {
+            let Some(nav) = t.on_nav.clone() else {
+                return el;
+            };
+            if n_rows == 0 {
+                return el;
+            }
+            let cursor = t.cursor;
+            let activate = t.on_select.clone();
+            let toggle = t.on_select_row.clone();
+            let checkable = select;
+            el.semantics(Semantics::Grid)
+                .focusable(true)
+                .on_key(move |k| {
+                    let target = match k.key {
+                        Key::ArrowDown => Some(match cursor {
+                            Some(c) => (c + 1).min(n_rows - 1),
+                            None => 0,
+                        }),
+                        Key::ArrowUp => Some(match cursor {
+                            Some(c) => c.saturating_sub(1),
+                            None => n_rows - 1,
+                        }),
+                        Key::Home => Some(0),
+                        Key::End => Some(n_rows - 1),
+                        _ => None,
+                    };
+                    if let Some(i) = target {
+                        return Some(nav(i));
+                    }
+                    match k.key {
+                        Key::Enter => cursor.and_then(|i| activate.as_ref().map(|f| f(i))),
+                        Key::Space if checkable => {
+                            cursor.and_then(|i| toggle.as_ref().map(|f| f(i)))
+                        }
+                        _ => None,
+                    }
+                })
+        };
+
         if !scrolled {
             // Inline: header + (filter) + rows as direct children. Each row keeps
             // a content-stable identity and animates its layout, so re-sorting
@@ -524,7 +599,14 @@ impl<Msg: Clone + 'static> From<DataTable<Msg>> for Element<Msg> {
                 let key = ctx.rows[i].join("\u{1f}");
                 ctx.row(i).id(&key).animate_layout()
             }));
-            return frame().w_full().children(kids);
+            // The user key lands on the focusable grid frame, so keyboard
+            // focus survives view rebuilds (the scrolled body keeps its
+            // own derived scroll id).
+            let el = with_grid(frame().w_full().children(kids));
+            return match &t.id {
+                Some(key) => el.id(key),
+                None => el,
+            };
         }
 
         // Scrolled: the header (and filter) stay outside the body, so they
@@ -544,7 +626,11 @@ impl<Msg: Clone + 'static> From<DataTable<Msg>> for Element<Msg> {
         kids.push(header);
         kids.extend(filter_row);
         kids.push(body);
-        frame().w_full().h_full().children(kids)
+        let el = with_grid(frame().w_full().h_full().children(kids));
+        match &t.id {
+            Some(key) => el.id(key),
+            None => el,
+        }
     }
 }
 

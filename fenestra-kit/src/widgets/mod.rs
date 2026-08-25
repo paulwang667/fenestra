@@ -4,6 +4,7 @@
 
 mod button;
 mod checkbox;
+mod chip;
 mod color_picker;
 mod combobox;
 mod data_table;
@@ -15,39 +16,43 @@ mod glass;
 mod kbd;
 mod menu;
 mod multi_select;
+mod nav_list;
 mod navigation;
 mod overlay_widgets;
 mod palette;
 mod panes;
 mod radio;
+mod rating;
 mod segmented;
 mod select;
 mod skeleton;
 mod slider;
 mod spin_button;
+mod swiper;
 mod switch;
 mod tag_input;
 mod text_area;
 mod text_input;
+mod time_picker;
 mod toast;
 mod toolbar;
 mod tree;
 pub mod validation;
 mod virtual_list;
-
-pub use button::{Button, ButtonVariant, IconButton, button, icon_button};
+pub use button::{Button, ButtonVariant, Fab, IconButton, button, fab, icon_button};
+pub use chip::{Chip, chip};
 pub use checkbox::{Checkbox, checkbox};
+pub use combobox::{Combobox, combobox};
 pub use color_picker::{
     ColorPicker, MAX_CHROMA, color_picker, format_color_text, parse_color_text,
 };
-pub use combobox::{Combobox, combobox};
 pub use data_table::{DataTable, data_table};
 pub use date_picker::{Date, DatePicker, date_picker, date_range_picker};
 pub use disclosure::{Accordion, AccordionItem, accordion, accordion_item};
 pub use display::{
-    Meter, StatCard, Status, StatusIndicator, WavyProgress, avatar, badge, badge_dot, callout,
-    card, meter, progress, progress_indeterminate, reading_column, responsive_grid, spinner,
-    stat_card, status, table, tabs, wavy_progress,
+    Hyperlink, Meter, StatCard, Status, StatusIndicator, WavyProgress, avatar, badge, badge_dot,
+    callout, card, hyperlink, meter, progress, progress_indeterminate, reading_column,
+    responsive_grid, spinner, stat_card, status, table, tabs, wavy_progress,
 };
 pub use field::{Field, field};
 pub use glass::{glass_panel, glass_surface};
@@ -57,14 +62,18 @@ pub use menu::{
     menu_separator, menubar, popover,
 };
 pub use multi_select::{MultiSelect, multi_select};
+pub use nav_list::{NavList, nav_item, nav_list};
 pub use navigation::{
-    Breadcrumbs, Crumb, Pagination, Stepper, breadcrumbs, crumb, pagination, stepper,
+    Breadcrumbs, Crumb, Pagination, Stepper, breadcrumbs, crumb, page_control, pagination,
+    stepper,
 };
 pub use overlay_widgets::{Drawer, Modal, drawer, modal, tooltip};
 pub use palette::{CommandPalette, command_palette};
 pub use panes::{SplitPane, split_pane};
 pub use radio::{Radio, radio, radio_group};
 pub use segmented::{Segmented, segmented};
+pub use swiper::{Swiper, swiper};
+pub use rating::{Rating, rating};
 pub use select::{Select, select};
 pub use skeleton::{skeleton, skeleton_circle, skeleton_text};
 pub use slider::{RangeSlider, Slider, range_slider, slider};
@@ -73,6 +82,7 @@ pub use switch::{Switch, switch};
 pub use tag_input::{TagInput, tag_input};
 pub use text_area::{TextArea, text_area};
 pub use text_input::{TextInput, text_input};
+pub use time_picker::{TimePicker, time_picker};
 pub use toast::{ToastStack, toast_stack};
 pub use toolbar::{Toolbar, toolbar};
 pub use tree::{TreeNode, TreeView, tree_view};

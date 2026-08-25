@@ -4,8 +4,10 @@
 //! real `dispatch` pipeline (pointer events in, messages out).
 
 use fenestra_core::{
-    Element, Fonts, Frame, FrameState, InputEvent, Theme, build_frame, by, col, dispatch,
+    App, Element, Fonts, Frame, FrameState, InputEvent, Key, KeyInput, Theme, build_frame, by,
+    col, dispatch,
 };
+use fenestra_shell::Harness;
 use fenestra_kit::data_table;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -240,4 +242,83 @@ fn pinned_column_stays_frozen_during_horizontal_scroll() {
         (loose1 - (loose0 - 120.0)).abs() < 1.5,
         "the unpinned column scrolls left by 120 (was {loose0}, now {loose1})"
     );
+}
+
+// ---------------------------------------------------------- grid keyboard
+
+struct Grid {
+    cursor: Option<usize>,
+    checked: Vec<bool>,
+    activated: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum GridMsg {
+    Nav(usize),
+    Tog(usize),
+    Act(usize),
+}
+
+impl App for Grid {
+    type Msg = GridMsg;
+
+    fn update(&mut self, msg: GridMsg) {
+        match msg {
+            GridMsg::Nav(i) => self.cursor = Some(i),
+            GridMsg::Tog(i) => self.checked[i] = !self.checked[i],
+            GridMsg::Act(i) => self.activated = Some(i),
+        }
+    }
+
+    fn view(&self) -> Element<GridMsg> {
+        let mut t = data_table(
+            ["Name", "Role"],
+            vec![
+                vec!["Ripley".into(), "Officer".into()],
+                vec!["Dallas".into(), "Captain".into()],
+            ],
+        )
+        .id("g")
+        .selection(self.checked.iter().copied())
+        .on_navigate(GridMsg::Nav)
+        .on_select_row(GridMsg::Tog)
+        .on_select(GridMsg::Act);
+        if let Some(c) = self.cursor {
+            t = t.cursor_row(c);
+        }
+        col().w(600.0).h(200.0).child(t)
+    }
+}
+/// The wired table is an ARIA grid: one tab stop on the frame, arrows step
+/// the app-owned cursor (clamped at the ends), Home/End jump, Space toggles
+/// the row checkbox, Enter activates the row, and rows project as `row`
+/// roles with `aria-selected`.
+#[test]
+fn grid_keyboard_steps_toggles_and_activates() {
+    let mut h = Harness::new(
+        Grid {
+            cursor: None,
+            checked: vec![false, false],
+            activated: None,
+        },
+        Theme::light(),
+        (640, 240),
+    );
+    h.focus(&by::id("g"));
+    h.key(KeyInput::plain(Key::ArrowDown));
+    assert_eq!(h.app().cursor, Some(0));
+    h.key(KeyInput::plain(Key::ArrowDown));
+    assert_eq!(h.app().cursor, Some(1));
+    h.key(KeyInput::plain(Key::ArrowDown)); // clamped at the last row
+    assert_eq!(h.app().cursor, Some(1));
+    h.key(KeyInput::plain(Key::Home));
+    assert_eq!(h.app().cursor, Some(0));
+    h.key(KeyInput::plain(Key::Space));
+    assert_eq!(h.app().checked, vec![true, false]);
+    h.key(KeyInput::plain(Key::Enter));
+    assert_eq!(h.app().activated, Some(0));
+    let yaml = h.frame().access_yaml();
+    assert!(yaml.contains("grid"), "{yaml}");
+    assert!(yaml.contains("row"), "{yaml}");
+    assert!(yaml.contains("[selected]"), "{yaml}");
 }

@@ -2,7 +2,8 @@
 //! Callout, Tabs, and Table.
 
 use fenestra_core::{
-    CubicBezier, Element, GridTemplate, Key, Keyframes, Length, MEASURE_CH, MotionDuration, R_FULL,
+    CubicBezier, Cursor, Element, GridTemplate, Key, Keyframes, Length, MEASURE_CH,
+    MotionDuration, R_FULL,
     SP1, SP2, SP3, SP4, SP6, Semantics, StatusColors, Surface, TextSize, Theme, Track, Transition,
     Weight, col, div, path, row, stack, text,
 };
@@ -768,4 +769,72 @@ pub fn table<Msg>(
                         .map(|c| text(c).size(TextSize::Sm).truncate().tabular()),
                 )
         }))
+}
+
+/// A styled text link: accent-colored text carrying the ARIA `link` role —
+/// for navigation affordances, as opposed to [`button`](crate::button)
+/// (an action). Focusable and keyboard-activatable like any button.
+///
+/// ```
+/// use fenestra_kit::hyperlink;
+///
+/// #[derive(Clone)]
+/// enum Msg {
+///     OpenDocs,
+/// }
+///
+/// let el: fenestra_core::Element<Msg> =
+///     hyperlink("Read the docs").on_click(Msg::OpenDocs).into();
+/// ```
+pub struct Hyperlink<Msg> {
+    label: String,
+    on_click: Option<Msg>,
+    key: Option<String>,
+}
+
+/// A text link with `label`.
+pub fn hyperlink<Msg>(label: impl Into<String>) -> Hyperlink<Msg> {
+    Hyperlink {
+        label: label.into(),
+        on_click: None,
+        key: None,
+    }
+}
+
+impl<Msg> Hyperlink<Msg> {
+    /// Emits this message on click (or Enter/Space while focused).
+    #[must_use]
+    pub fn on_click(mut self, msg: Msg) -> Self {
+        self.on_click = Some(msg);
+        self
+    }
+
+    /// Stable identity key.
+    #[must_use]
+    pub fn id(mut self, key: &str) -> Self {
+        self.key = Some(key.to_owned());
+        self
+    }
+}
+
+impl<Msg> From<Hyperlink<Msg>> for Element<Msg> {
+    fn from(h: Hyperlink<Msg>) -> Self {
+        let label = h.label.clone();
+        let mut el = text(h.label)
+            .size(TextSize::Sm)
+            .weight(Weight::Medium)
+            .themed(|t: &Theme, s| s.color(t.accent_text))
+            .hover_themed(|t: &Theme, s| s.color(t.accent))
+            .focusable(true)
+            .cursor(Cursor::Pointer)
+            .semantics(Semantics::Link)
+            .label(label);
+        if let Some(key) = &h.key {
+            el = el.id(key);
+        }
+        if let Some(msg) = h.on_click {
+            el = el.on_click(msg);
+        }
+        el
+    }
 }

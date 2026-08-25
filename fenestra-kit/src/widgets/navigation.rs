@@ -601,3 +601,33 @@ impl<Msg> From<Stepper<Msg>> for Element<Msg> {
         row().items_center().gap(SP3).w_full().children(band)
     }
 }
+
+/// The HIG page control: one dot per page — the current page an elongated
+/// accent pill, the rest muted circles. An indicator for paged content
+/// (a carousel, onboarding, an image viewer); the pager itself (swipe
+/// gestures, arrows) owns navigation and echoes the current index here.
+///
+/// ```
+/// use fenestra_kit::page_control;
+///
+/// let el: fenestra_core::Element<()> = page_control(5, 1);
+/// ```
+pub fn page_control<Msg>(pages: usize, current: usize) -> Element<Msg> {
+    let current = current.min(pages.saturating_sub(1));
+    row()
+        .items_center()
+        .gap(6.0)
+        .shrink0()
+        .children((0..pages).map(move |i| {
+            let active = i == current;
+            row()
+                .w(if active { 16.0 } else { 6.0 })
+                .h(6.0)
+                .rounded_full()
+                .shrink0()
+                .transition(Transition::colors())
+                .themed(move |t: &Theme, s| {
+                    s.bg(if active { t.accent } else { t.element_hover })
+                })
+        }))
+}

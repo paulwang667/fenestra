@@ -104,15 +104,18 @@ fn toast_row<Msg: 'static>(
     if let Some(f) = on_dismiss {
         // Flick the toast away in any direction to dismiss it...
         let swipe = std::rc::Rc::clone(&f);
-        el = el.on_swipe(move |_dir| swipe(index));
+        el = el.on_swipe(move |_dir| Some(swipe(index)));
         // ...or tap the explicit close button.
         el = el.child(
             div()
                 .p(2.0)
                 .rounded(R_SM)
                 .shrink0()
+                .focusable(true)
                 .cursor(Cursor::Pointer)
                 .on_click(f(index))
+                .semantics(Semantics::Button)
+                .label("Dismiss")
                 .transition(Transition::colors())
                 .state_layer(|t| t.text)
                 .child(icons::x().themed(|t: &Theme, s| s.color(t.text_muted))),

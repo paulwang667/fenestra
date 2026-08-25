@@ -190,7 +190,12 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
                     enter: true,
                 })
                 .children(filtered.iter().enumerate().map(|(i, option)| {
-                    option_row(option, cursor == Some(i), pick(option.clone()))
+                    option_row(
+                        option,
+                        cursor == Some(i),
+                        option.eq_ignore_ascii_case(&c.value),
+                        pick(option.clone()),
+                    )
                 }));
             if let Some(close) = c.on_close.clone() {
                 listbox = listbox.on_close(close);
@@ -208,7 +213,12 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
 /// message, tinted with the accent veil when it is the keyboard cursor. Like
 /// the listbox it is not a tab stop — the input owns focus — so it opts out of
 /// the focus ring after `on_click`.
-fn option_row<Msg: Clone + 'static>(label: &str, active: bool, on_click: Msg) -> Element<Msg> {
+fn option_row<Msg: Clone + 'static>(
+    label: &str,
+    active: bool,
+    selected: bool,
+    on_click: Msg,
+) -> Element<Msg> {
     let mut text_el = text(label.to_owned()).size(TextSize::Sm);
     if active {
         text_el = text_el.themed(|t: &Theme, s| s.color(t.accent_text));
@@ -220,7 +230,7 @@ fn option_row<Msg: Clone + 'static>(label: &str, active: bool, on_click: Msg) ->
         .themed(|t: &Theme, s| s.rounded((t.radius.lg - SP1).max(0.0)))
         .shrink0()
         .cursor(Cursor::Pointer)
-        .semantics(Semantics::ListItem { selected: false })
+        .semantics(Semantics::ListItem { selected })
         .label(label.to_owned())
         .transition(Transition::colors())
         .state_layer(|t| t.text)

@@ -45,6 +45,7 @@ pub struct TagInput<Msg> {
     width: f32,
     on_remove: Option<Rc<dyn Fn(usize) -> Msg>>,
     on_add: Option<Rc<dyn Fn(String) -> Msg>>,
+    disabled: bool,
     key: Option<String>,
 }
 
@@ -59,6 +60,7 @@ pub fn tag_input<Msg>(tags: impl IntoIterator<Item = impl Into<String>>) -> TagI
         width: 280.0,
         on_remove: None,
         on_add: None,
+        disabled: false,
         key: None,
     }
 }
@@ -91,8 +93,15 @@ impl<Msg> TagInput<Msg> {
         self
     }
 
-    /// Stable identity key for the inline field (recommended: editor state —
-    /// caret, selection, IME — is kept per id).
+    /// Disables the field: chips lose their remove buttons and the inline
+    /// editor stops accepting edits.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// Stable identity key (recommended: the editor's caret, selection,
+    /// IME — is kept per id).
     pub fn id(mut self, key: &str) -> Self {
         self.key = Some(key.to_owned());
         self
@@ -104,6 +113,7 @@ impl<Msg> TagInput<Msg> {
 fn chip<Msg: 'static>(
     i: usize,
     tag: String,
+    disabled: bool,
     on_remove: Option<Rc<dyn Fn(usize) -> Msg>>,
 ) -> Element<Msg> {
     let remove_label = format!("Remove {tag}");
@@ -122,7 +132,8 @@ fn chip<Msg: 'static>(
         .h(16.0)
         .rounded_full()
         .shrink0()
-        .cursor(Cursor::Pointer)
+        .cursor(if disabled { Cursor::Default } else { Cursor::Pointer })
+        .disabled(disabled)
         .transition(Transition::colors())
         .state_layer(|t| t.text)
         .press_scale()
@@ -133,7 +144,7 @@ fn chip<Msg: 'static>(
             .h(10.0)
             .themed(|t: &Theme, s| s.color(t.text_muted))]);
     // `on_click` auto-focuses the button, so the `×` is keyboard-reachable.
-    if let Some(f) = on_remove {
+    if let Some(f) = on_remove.filter(|_| !disabled) {
         remove = remove.on_click(f(i));
     }
 
@@ -152,15 +163,15 @@ fn chip<Msg: 'static>(
         .children([label])
         .children([remove])
 }
-
 impl<Msg: 'static> From<TagInput<Msg>> for Element<Msg> {
     fn from(t: TagInput<Msg>) -> Self {
         let on_remove = t.on_remove;
+        let disabled = t.disabled;
         let chips = t
             .tags
             .into_iter()
             .enumerate()
-            .map(move |(i, tag)| chip(i, tag, on_remove.clone()));
+            .map(move |(i, tag)| chip(i, tag, disabled, on_remove.clone()));
 
         // The inline field is a bare `raw_input` (no border/bg of its own — the
         // container carries those) that grows to fill the rest of its line.
@@ -169,6 +180,7 @@ impl<Msg: 'static> From<TagInput<Msg>> for Element<Msg> {
             .h(24.0)
             .min_w(72.0)
             .grow()
+            .disabled(disabled)
             .themed(|theme: &Theme, s| s.color(theme.text));
         if !t.placeholder.is_empty() {
             field = field.label(t.placeholder);
@@ -199,5 +211,6 @@ impl<Msg: 'static> From<TagInput<Msg>> for Element<Msg> {
             .hover_themed(|theme: &Theme, s| s.border(1.0, theme.border_strong))
             .children(chips)
             .children([field])
+            .opacity(if disabled { 0.5 } else { 1.0 })
     }
 }

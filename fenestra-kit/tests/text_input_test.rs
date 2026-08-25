@@ -4,9 +4,12 @@
 
 use std::path::PathBuf;
 
-use fenestra_core::{App, Element, Key, KeyInput, SP3, SP4, Theme, col};
+use fenestra_core::{
+    App, Element, Fonts, FrameState, Key, KeyInput, Semantics, SP3, SP4, Theme, build_frame, col,
+    by,
+};
 use fenestra_kit::text_input;
-use fenestra_shell::{SyntheticEvent, render_app, testing::assert_png_snapshot};
+use fenestra_shell::{Harness, SyntheticEvent, render_app, testing::assert_png_snapshot};
 
 fn snapshot_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots")
@@ -19,6 +22,29 @@ struct Form {
 #[derive(Clone)]
 enum Msg {
     Edit(String),
+}
+
+/// A read-only field: the app owns the value; nothing can edit it.
+#[derive(Default)]
+struct Locked {
+    value: String,
+}
+
+impl App for Locked {
+    type Msg = Msg;
+
+    fn update(&mut self, msg: Msg) {
+        match msg {
+            Msg::Edit(v) => self.value = v,
+        }
+    }
+
+    fn view(&self) -> Element<Msg> {
+        col()
+            .p(SP4)
+            .items_start()
+            .children([text_input(&self.value).read_only(true)])
+    }
 }
 
 impl App for Form {
@@ -160,9 +186,10 @@ fn input_states_golden() {
         text_input("").placeholder("Placeholder…").id("empty"),
         text_input("Filled value").id("filled"),
         text_input("Invalid value").invalid(true).id("invalid"),
+        text_input("Read-only").read_only(true).id("readonly"),
         text_input("Disabled").disabled(true).id("disabled"),
     ]);
-    let image = fenestra_shell::render_element(states, &theme, (270, 200));
+    let image = fenestra_shell::render_element(states, &theme, (270, 244));
     assert_png_snapshot(snapshot_dir(), "input_states_light", &image);
 }
 
@@ -173,9 +200,10 @@ fn input_states_dark_golden() {
         text_input("").placeholder("Placeholder…").id("empty"),
         text_input("Filled value").id("filled"),
         text_input("Invalid value").invalid(true).id("invalid"),
+        text_input("Read-only").read_only(true).id("readonly"),
         text_input("Disabled").disabled(true).id("disabled"),
     ]);
-    let image = fenestra_shell::render_element(states, &theme, (270, 200));
+    let image = fenestra_shell::render_element(states, &theme, (270, 244));
     assert_png_snapshot(snapshot_dir(), "input_states_dark", &image);
 }
 
@@ -213,4 +241,66 @@ fn input_focus_selection_golden() {
     );
     assert_eq!(app.value, "selected text");
     assert_png_snapshot(snapshot_dir(), "input_focus_selection", &image);
+}
+
+// ---------------------------------------------------------------- read-only
+
+/// A read-only field stays focusable and selectable, but no edit path —
+/// typed text, Backspace, and paste all leave the app-owned value alone.
+#[test]
+fn read_only_keeps_selection_blocks_edits() {
+    let mut h = Harness::new(
+        Locked {
+            value: "locked".into(),
+        },
+        Theme::light(),
+        (300, 80),
+    );
+    h.click(&by::role(Semantics::TextInput {
+        multiline: false,
+    }));
+    // Select all: the selection must survive on a read-only field.
+    h.key(KeyInput {
+        key: Key::Char('a'),
+        shift: false,
+        ctrl: false,
+        alt: false,
+        meta: true,
+    });
+    fn sel(h: &Harness<Locked>) -> Option<(usize, usize)> {
+        h.frame()
+            .get(&by::role(Semantics::TextInput {
+                multiline: false,
+            }))
+            .selection
+    }
+    assert_eq!(sel(&h), Some((0, 6)), "select-all should span the value");
+    h.type_text("X");
+    h.key(KeyInput::plain(Key::Backspace));
+    assert_eq!(h.app().value, "locked");
+    assert_eq!(sel(&h), Some((0, 6)), "edits must not move the selection");
+}
+
+/// The read-only and invalid states reach the accessibility tree as
+/// `[readonly]` / `[invalid]` attributes (ARIA `aria-readonly` / the
+/// `aria-invalid` ring state).
+#[test]
+fn read_only_and_invalid_project_to_access_tree() {
+    let view: Element<()> = col().children([
+        text_input("v").read_only(true).id("ro"),
+        text_input("w").invalid(true).id("bad"),
+    ]);
+    let mut fonts = Fonts::embedded();
+    let mut state = FrameState::new();
+    let frame = build_frame(
+        &view,
+        &Theme::light(),
+        &mut fonts,
+        &mut state,
+        (240.0, 100.0),
+        1.0,
+    );
+    let yaml = frame.access_yaml();
+    assert!(yaml.contains("[readonly]"), "{yaml}");
+    assert!(yaml.contains("[invalid]"), "{yaml}");
 }

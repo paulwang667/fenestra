@@ -37,6 +37,16 @@ pub fn names() -> impl Iterator<Item = &'static str> {
     data::ALL.iter().map(|(name, _)| *name)
 }
 
+/// A vendored path's raw SVG data by lucide name, for widgets that need
+/// stroke/fill control beyond the stock stroked rendering (the rating's
+/// filled star). `None` when the name is not vendored.
+pub(crate) fn raw_path(name: &str) -> Option<&'static str> {
+    data::ALL
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, d)| *d)
+}
+
 macro_rules! lucide_icons {
     ($($fn_name:ident => $const_name:ident, $lucide:literal;)*) => {
         $(
