@@ -554,6 +554,9 @@ pub enum Cursor {
     Text,
     /// Action not available.
     NotAllowed,
+    /// Crosshair: picking a point or dragging out a region, where the pointer
+    /// *is* the measurement and an arrow's hotspot is a guess.
+    Crosshair,
 }
 
 /// The arrow axes a [`Element::roving`] scope responds to.

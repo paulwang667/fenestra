@@ -1921,6 +1921,7 @@ pub(crate) fn map_cursor(cursor: fenestra_core::Cursor) -> winit::window::Cursor
         fenestra_core::Cursor::Pointer => winit::window::CursorIcon::Pointer,
         fenestra_core::Cursor::Text => winit::window::CursorIcon::Text,
         fenestra_core::Cursor::NotAllowed => winit::window::CursorIcon::NotAllowed,
+        fenestra_core::Cursor::Crosshair => winit::window::CursorIcon::Crosshair,
     }
 }
 
