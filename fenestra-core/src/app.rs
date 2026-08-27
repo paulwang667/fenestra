@@ -21,6 +21,30 @@ pub struct WindowDesc<Msg> {
     pub size: (f64, f64),
     /// Emitted when the user closes the window via the OS.
     pub on_close: Msg,
+    /// Top-left in logical desktop coordinates, applied at open. `None`
+    /// lets the platform place the window.
+    ///
+    /// Desktop coordinates, not the primary monitor's: a negative or
+    /// large value is how a window is put on a second display, which is
+    /// the only way to cover one.
+    pub position: Option<(f64, f64)>,
+    /// Remove the OS title bar and resize frame.
+    pub borderless: bool,
+    /// Open borderless-fullscreen on the monitor the window lands on.
+    pub fullscreen: bool,
+    /// Let what is behind the window show through wherever the view does
+    /// not paint.
+    ///
+    /// The clear becomes transparent and the surface composites with
+    /// alpha; a view that paints an opaque background over the whole
+    /// window looks the same as an opaque one. Ignored where the platform
+    /// or the adapter cannot composite with alpha — see
+    /// [`WindowOptions::transparent`](crate::WindowOptions) — so a
+    /// transparent window is a request, and a view that depends on it
+    /// should still be legible without it.
+    pub transparent: bool,
+    /// Keep the window above ordinary ones.
+    pub always_on_top: bool,
 }
 
 impl<Msg> WindowDesc<Msg> {
@@ -36,7 +60,48 @@ impl<Msg> WindowDesc<Msg> {
             title: title.into(),
             size,
             on_close,
+            position: None,
+            borderless: false,
+            fullscreen: false,
+            transparent: false,
+            always_on_top: false,
         }
+    }
+
+    /// Places the window's top-left at `(x, y)` in logical desktop
+    /// coordinates.
+    #[must_use]
+    pub const fn at(mut self, x: f64, y: f64) -> Self {
+        self.position = Some((x, y));
+        self
+    }
+
+    /// Removes the OS title bar and resize frame.
+    #[must_use]
+    pub const fn borderless(mut self) -> Self {
+        self.borderless = true;
+        self
+    }
+
+    /// Opens borderless-fullscreen on the monitor the window lands on.
+    #[must_use]
+    pub const fn fullscreen(mut self) -> Self {
+        self.fullscreen = true;
+        self
+    }
+
+    /// Asks for a window that composites with what is behind it.
+    #[must_use]
+    pub const fn transparent(mut self) -> Self {
+        self.transparent = true;
+        self
+    }
+
+    /// Keeps the window above ordinary ones.
+    #[must_use]
+    pub const fn always_on_top(mut self) -> Self {
+        self.always_on_top = true;
+        self
     }
 }
 

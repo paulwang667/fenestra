@@ -24,7 +24,7 @@ use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu::{self, CurrentSurfaceTexture};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{MouseScrollDelta, StartCause, TouchPhase, WindowEvent};
 #[cfg(not(target_arch = "wasm32"))]
 use winit::event_loop::EventLoopProxy;
@@ -69,6 +69,32 @@ pub(crate) fn wheel_deltas(delta: MouseScrollDelta, scale: f64) -> (f64, f64) {
     }
 }
 
+/// The window a [`WindowDesc`] asks for.
+///
+/// **Everything the descriptor says, not just its title and size.** This was
+/// `titled(..).with_size(..)` inline at the one call site, with the rest left
+/// to the defaults — so a secondary window could not be borderless, let alone
+/// transparent, placed on a chosen display, or kept on top, while the main
+/// window could already be three of those. A screen-selection overlay is all
+/// four at once and none of them were reachable.
+///
+/// A function rather than four more lines at the call site, because the call
+/// site needs an event loop and a GPU and this needs neither: `windows_carry_
+/// every_option_they_declare` is the whole of the mapping, tested without
+/// opening anything.
+pub(crate) fn options_for<Msg>(desc: &fenestra_core::WindowDesc<Msg>) -> WindowOptions {
+    let options = WindowOptions::titled(desc.title.clone())
+        .with_size(desc.size.0, desc.size.1)
+        .with_borderless(desc.borderless)
+        .with_fullscreen(desc.fullscreen)
+        .with_transparent(desc.transparent)
+        .with_always_on_top(desc.always_on_top);
+    match desc.position {
+        Some((x, y)) => options.with_position(x, y),
+        None => options,
+    }
+}
+
 /// A raw paint callback: `(scene, logical_w, logical_h, background)`.
 #[cfg(not(target_arch = "wasm32"))]
 type PaintFn = Box<dyn FnMut(&mut Scene, f64, f64, Color)>;
@@ -95,6 +121,27 @@ pub struct WindowOptions {
     /// elements in the view (a custom title bar) so the window can still
     /// be moved; resizing follows `resizable`.
     pub borderless: bool,
+    /// Top-left in logical desktop coordinates. `None` lets the platform
+    /// place the window.
+    ///
+    /// Desktop coordinates, not the primary monitor's: a negative or large
+    /// value is how a window is put on a second display, which is the only
+    /// way to cover one.
+    pub position: Option<(f64, f64)>,
+    /// Let what is behind the window show through wherever the view does not
+    /// paint: the clear becomes transparent and the surface composites with
+    /// alpha.
+    ///
+    /// **A request, not a guarantee.** winit is asked for a transparent
+    /// window and the swapchain for a non-opaque `CompositeAlphaMode`, and
+    /// neither is available everywhere — a platform that refuses either gives
+    /// an opaque window with a transparent clear, which paints the window
+    /// black rather than see-through. So the surface only switches when the
+    /// adapter reports a mode it can honour, and a view that wants to be
+    /// legible either way should say so with its own background.
+    pub transparent: bool,
+    /// Keep the window above ordinary ones.
+    pub always_on_top: bool,
     /// Window icon as straight-alpha RGBA8 `(width, height, pixels)`.
     pub icon: Option<(u32, u32, Vec<u8>)>,
     /// Custom faces registered on the runner's fonts before the first
@@ -117,6 +164,9 @@ impl WindowOptions {
             maximized: false,
             fullscreen: false,
             borderless: false,
+            position: None,
+            transparent: false,
+            always_on_top: false,
             icon: None,
             fonts: Vec::new(),
             #[cfg(target_os = "android")]
@@ -137,6 +187,43 @@ impl WindowOptions {
     }
 
     /// Allows or forbids resizing (allowed by default).
+    /// Places the window's top-left at `(x, y)` in logical desktop
+    /// coordinates.
+    #[must_use]
+    pub const fn with_position(mut self, x: f64, y: f64) -> Self {
+        self.position = Some((x, y));
+        self
+    }
+
+    /// Asks for a window that composites with what is behind it. See
+    /// [`WindowOptions::transparent`].
+    #[must_use]
+    pub const fn with_transparent(mut self, transparent: bool) -> Self {
+        self.transparent = transparent;
+        self
+    }
+
+    /// Removes the OS title bar and resize frame.
+    #[must_use]
+    pub const fn with_borderless(mut self, borderless: bool) -> Self {
+        self.borderless = borderless;
+        self
+    }
+
+    /// Opens borderless-fullscreen on the monitor the window lands on.
+    #[must_use]
+    pub const fn with_fullscreen(mut self, fullscreen: bool) -> Self {
+        self.fullscreen = fullscreen;
+        self
+    }
+
+    /// Keeps the window above ordinary ones.
+    #[must_use]
+    pub const fn with_always_on_top(mut self, on_top: bool) -> Self {
+        self.always_on_top = on_top;
+        self
+    }
+
     pub fn with_resizable(mut self, resizable: bool) -> Self {
         self.resizable = resizable;
         self
@@ -205,6 +292,10 @@ struct WindowShell {
     scene: Scene,
     options: WindowOptions,
     background: Color,
+    /// Whether this window composites with what is behind it. Kept beside the
+    /// background because the two are one decision: a transparent window
+    /// clears to nothing and lets the view paint what it wants seen.
+    transparent: bool,
     /// The first unrecoverable failure (GPU/surface/renderer). Recorded by
     /// [`Self::fail`], which also stops the event loop; the runner entry
     /// function returns it once `run_app` unwinds. Runners with secondary
@@ -225,6 +316,7 @@ type WasmReady = std::rc::Rc<
 
 impl WindowShell {
     fn new(options: WindowOptions, background: Color) -> Self {
+        let transparent = options.transparent;
         Self {
             context: RenderContext::new(),
             renderers: Vec::new(),
@@ -232,6 +324,7 @@ impl WindowShell {
             scene: Scene::new(),
             options,
             background,
+            transparent,
             fatal: None,
             #[cfg(target_arch = "wasm32")]
             ready: WasmReady::default(),
@@ -292,6 +385,20 @@ impl WindowShell {
                 } else {
                     attrs
                 };
+                // Position before fullscreen would be ignored; after it, the
+                // window is placed and *then* filled, which is how a
+                // fullscreen window lands on a chosen monitor. Winit has no
+                // "fullscreen on the monitor at this point" — placing it there
+                // first is the portable way to say it.
+                let attrs = match self.options.position {
+                    Some((x, y)) => attrs.with_position(LogicalPosition::new(x, y)),
+                    None => attrs,
+                };
+                let attrs = attrs.with_transparent(self.options.transparent);
+                let attrs = attrs.with_window_level(match self.options.always_on_top {
+                    true => winit::window::WindowLevel::AlwaysOnTop,
+                    false => winit::window::WindowLevel::Normal,
+                });
                 #[cfg(not(target_arch = "wasm32"))]
                 let attrs = match self.options.icon.clone() {
                     Some((w, h, rgba)) => match winit::window::Icon::from_rgba(rgba, w, h) {
@@ -331,18 +438,55 @@ impl WindowShell {
         Ok(())
     }
 
+    /// Switches a transparent window's swapchain to a compositing alpha mode.
+    ///
+    /// **A transparent clear over an opaque swapchain is a black window, not a
+    /// see-through one**, which is the whole failure this exists to avoid.
+    /// vello's `create_surface` configures `CompositeAlphaMode::Auto`, and
+    /// `Auto` means "whatever the platform prefers" — which is opaque wherever
+    /// opaque is cheaper, i.e. almost everywhere.
+    ///
+    /// Asked of the adapter rather than assumed: `PreMultiplied` first because
+    /// that is what vello's output already is, then `PostMultiplied`, and if
+    /// the surface reports neither the window stays opaque. Nothing is
+    /// reconfigured in that case — a swapchain configured with a mode it did
+    /// not advertise is a validation error, and an opaque window is a worse
+    /// picture but still a picture.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn composite_with_alpha(&self, surface: &mut RenderSurface<'static>) {
+        if !self.options.transparent {
+            return;
+        }
+        let device = &self.context.devices[surface.dev_id];
+        let modes = surface
+            .surface
+            .get_capabilities(device.adapter())
+            .alpha_modes;
+        let Some(mode) = [
+            wgpu::CompositeAlphaMode::PreMultiplied,
+            wgpu::CompositeAlphaMode::PostMultiplied,
+        ]
+        .into_iter()
+        .find(|m| modes.contains(m)) else {
+            return;
+        };
+        surface.config.alpha_mode = mode;
+        surface.surface.configure(&device.device, &surface.config);
+    }
+
     /// Builds (or rebuilds, after a lost surface) the swapchain for `window`
     /// and enters the active state.
     #[cfg(not(target_arch = "wasm32"))]
     fn activate(&mut self, window: Arc<Window>) -> Result<(), ShellError> {
         let size = window.inner_size();
-        let surface = pollster::block_on(self.context.create_surface(
+        let mut surface = pollster::block_on(self.context.create_surface(
             window.clone(),
             size.width.max(1),
             size.height.max(1),
             wgpu::PresentMode::AutoVsync,
         ))
         .map_err(ShellError::Surface)?;
+        self.composite_with_alpha(&mut surface);
 
         self.renderers
             .resize_with(self.context.devices.len(), || None);
@@ -518,7 +662,14 @@ impl WindowShell {
                 &self.scene,
                 &surface.target_view,
                 &RenderParams {
-                    base_color: self.background,
+                    // A transparent window clears to nothing regardless of
+                    // the theme: `background` is refreshed from `theme.bg`
+                    // whenever the theme changes, and an opaque clear would
+                    // paint over the very thing the window was made to show.
+                    base_color: match self.transparent {
+                        true => Color::TRANSPARENT,
+                        false => self.background,
+                    },
                     width,
                     height,
                     antialiasing_method: AaConfig::Area,
@@ -1478,11 +1629,7 @@ impl<A: App> AppRunner<A> {
                     }
                 }
                 None => {
-                    let mut shell = WindowShell::new(
-                        WindowOptions::titled(desc.title.clone())
-                            .with_size(desc.size.0, desc.size.1),
-                        self.shell.background,
-                    );
+                    let mut shell = WindowShell::new(options_for(&desc), self.shell.background);
                     let proxy = self.proxy.clone();
                     let mut adapter = None;
                     if let Err(e) = shell.resumed_with(event_loop, |el, window| {
@@ -2218,9 +2365,52 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::dispatch_effect_unit;
-    use fenestra_core::{CmdUnit, Proxy};
+    use super::{dispatch_effect_unit, options_for};
+    use fenestra_core::{CmdUnit, Proxy, WindowDesc};
     use std::sync::{Arc, Mutex};
+
+    /// A declared window opens as the window that was declared.
+    ///
+    /// The runner built `WindowOptions::titled(..).with_size(..)` from a
+    /// `WindowDesc` and let everything else fall to the defaults, so a
+    /// secondary window could not be borderless — let alone transparent,
+    /// placed on a chosen display, or kept above other windows — while the
+    /// main window could already be three of those. Anything asked for in the
+    /// descriptor was silently dropped, which is the worst way to refuse.
+    ///
+    /// Every field, because the failure was per-field: a mapping that carries
+    /// four of five is the same bug one column narrower.
+    #[test]
+    fn windows_carry_every_option_they_declare() {
+        let plain = options_for(&WindowDesc::new("k", "Plain", (300.0, 200.0), ()));
+        assert_eq!(plain.title, "Plain");
+        assert_eq!(plain.inner_size, (300.0, 200.0));
+        assert!(!plain.borderless, "a plain window opened without a frame");
+        assert!(!plain.fullscreen);
+        assert!(!plain.transparent);
+        assert!(!plain.always_on_top);
+        assert_eq!(plain.position, None);
+
+        // What a screen-selection overlay asks for: all of it at once, and on
+        // a display that is not the primary one.
+        let overlay = options_for(
+            &WindowDesc::new("pick", "Select", (1920.0, 1080.0), ())
+                .borderless()
+                .fullscreen()
+                .transparent()
+                .always_on_top()
+                .at(-1920.0, 0.0),
+        );
+        assert!(overlay.borderless, "the overlay opened with a title bar");
+        assert!(overlay.fullscreen);
+        assert!(overlay.transparent, "the overlay opened opaque");
+        assert!(overlay.always_on_top, "the overlay opened behind the app");
+        assert_eq!(
+            overlay.position,
+            Some((-1920.0, 0.0)),
+            "the overlay could not be put on the display it is covering"
+        );
+    }
 
     /// A worker thread that cannot be spawned used to mean a dropped
     /// message: the app waited forever for a reply that was never coming.
