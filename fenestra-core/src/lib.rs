@@ -42,7 +42,7 @@ pub use app::{App, MAIN_WINDOW, WindowDesc};
 pub use breakpoints::{Breakpoint, Breakpoints};
 pub use children::{FromIter, FromTuple, IntoChildren};
 pub use chrome::{ChromeElevation, ChromeText};
-pub use clipboard::{Clipboard, MemoryClipboard};
+pub use clipboard::{ClipImage, Clipboard, MemoryClipboard};
 pub use cmd::{Cmd, CmdFuture, CmdUnit, Sub, apply_cmd};
 pub use element::{
     Cursor, DrawerSide, Element, ExitAnim, ImageData, InputData, Kind, MAX_TREE_DEPTH,
