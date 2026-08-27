@@ -87,6 +87,7 @@ muda = "0.19.3"
 # in test failures) and drop what does not; the same run is ~16 GiB. Anyone
 # who wants a debugger can override this locally.
 debug = "line-tables-only"
+opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 2

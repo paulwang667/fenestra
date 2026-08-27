@@ -451,6 +451,19 @@ fn update_hover<Msg: Clone>(
             out.msgs.push(msg.clone());
         }
     }
+    // Where the pointer is, for anything that follows it rather than just
+    // knowing it is underneath. Deepest last, so an inner element's answer is
+    // the one that arrives after its parent's.
+    for id in &chain {
+        if let Some(el) = handlers.get(*id)
+            && !el.disabled
+            && let Some(f) = &el.on_pointer_move
+            && let Some((x, y)) = local_px(frame, *id, point)
+            && let Some(msg) = f(x, y)
+        {
+            out.msgs.push(msg);
+        }
+    }
     let changed = hovered.len() != state.hovered.len()
         || hovered.keys().any(|id| !state.hovered.contains_key(id));
     if changed {

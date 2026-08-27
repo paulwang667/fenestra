@@ -18,6 +18,8 @@ pub(crate) type DragFn<Msg> = Box<dyn Fn(f32, f32) -> Option<Msg>>;
 pub(crate) type WheelFn<Msg> = Box<dyn Fn(WheelEvent) -> Option<Msg>>;
 /// Maps a press or captured drag, with position and modifiers, to a message.
 pub(crate) type DragEventFn<Msg> = Box<dyn Fn(DragEvent) -> Option<Msg>>;
+/// See [`Element::on_pointer_move`].
+pub(crate) type PointerMoveFn<Msg> = Box<dyn Fn(f32, f32) -> Option<Msg>>;
 /// Maps a trackpad magnification gesture to an optional message.
 pub(crate) type PinchFn<Msg> = Box<dyn Fn(PinchEvent) -> Option<Msg>>;
 /// Maps a recognized [`SwipeDir`] to a message.
@@ -703,6 +705,8 @@ pub struct Element<Msg> {
     pub(crate) on_wheel: Option<WheelFn<Msg>>,
     /// Presses and captured drags, with unclamped position and modifiers.
     pub(crate) on_drag_event: Option<DragEventFn<Msg>>,
+    /// The pointer moving over this element with no button held.
+    pub(crate) on_pointer_move: Option<PointerMoveFn<Msg>>,
     /// Trackpad magnification over this element.
     pub(crate) on_pinch: Option<PinchFn<Msg>>,
     /// Fired when a press-drag-release on this element is recognized as a swipe
@@ -811,6 +815,7 @@ impl<Msg> Element<Msg> {
             on_drag_end: None,
             on_wheel: None,
             on_drag_event: None,
+            on_pointer_move: None,
             on_pinch: None,
             on_swipe: None,
             on_input: None,
@@ -1124,6 +1129,22 @@ impl<Msg> Element<Msg> {
     /// `on_drag`.
     pub fn on_drag_event(mut self, f: impl Fn(DragEvent) -> Option<Msg> + 'static) -> Self {
         self.on_drag_event = Some(Box::new(f));
+        self
+    }
+
+    /// Maps the pointer *moving* over this element to messages, in logical px
+    /// from the element's top-left.
+    ///
+    /// [`Self::on_hover`] says the pointer is somewhere over the element and
+    /// [`Self::on_drag_event`] needs a button held, so neither can follow a
+    /// pointer that is only passing through — which is what anything that
+    /// highlights what is under the cursor has to do.
+    ///
+    /// Fires for every element under the pointer, deepest last, on every move.
+    /// Return `None` for the moves this element does not care about; a message
+    /// per frame of pointer travel is a lot of updates.
+    pub fn on_pointer_move(mut self, f: impl Fn(f32, f32) -> Option<Msg> + 'static) -> Self {
+        self.on_pointer_move = Some(Box::new(f));
         self
     }
 
@@ -2459,6 +2480,10 @@ impl<Msg: 'static> Element<Msg> {
             on_double_click: self.on_double_click.map(&f),
             on_right_click: self.on_right_click.map(&f),
             on_hover: self.on_hover.map(&f),
+            on_pointer_move: self.on_pointer_move.map(|g| {
+                let f = f.clone();
+                Box::new(move |x, y| g(x, y).map(&f)) as PointerMoveFn<B>
+            }),
             on_key: self.on_key.map(|k| {
                 let f = f.clone();
                 Box::new(move |key: &KeyInput| k(key).map(&f)) as KeyFn<B>
