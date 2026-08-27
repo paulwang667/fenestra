@@ -234,6 +234,22 @@ pub trait App {
         Vec::new()
     }
 
+    /// Whether the main window is on screen, reconciled after every update
+    /// the same way [`Self::windows`] is.
+    ///
+    /// For the app that has to get out of its own way: a screen capture, a
+    /// picker, anything where this window is in front of the thing being
+    /// worked on. Secondary windows are unaffected, which is the point — an
+    /// overlay declared by [`Self::windows`] stays up while the window that
+    /// opened it goes away.
+    ///
+    /// **Hidden, not closed.** Its size, position and per-window state are all
+    /// still there when it comes back, and on macOS the application does not
+    /// leave the foreground.
+    fn main_visible(&self) -> bool {
+        true
+    }
+
     /// The view for one window: `view_for("main")` is the main window,
     /// other keys come from [`Self::windows`]. Defaults to [`Self::view`]
     /// everywhere, so single-window apps only implement `view`.
@@ -298,6 +314,10 @@ impl<A: App> App for &mut A {
 
     fn theme(&self) -> Theme {
         (**self).theme()
+    }
+
+    fn main_visible(&self) -> bool {
+        (**self).main_visible()
     }
 
     fn windows(&self) -> Vec<WindowDesc<Self::Msg>> {

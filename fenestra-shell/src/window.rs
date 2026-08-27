@@ -1614,6 +1614,16 @@ impl<A: App> AppRunner<A> {
     /// declared list.
     #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_windows(&mut self, event_loop: &ActiveEventLoop) {
+        // The main window's own visibility, declared the same way its
+        // secondaries are. Only when it changes: `set_visible` with the value
+        // it already has is a no-op everywhere, but asking a window about
+        // itself every update is not free either.
+        if let RenderState::Active { window, .. } = &self.shell.state {
+            let want = self.app.main_visible();
+            if window.is_visible() != Some(want) {
+                window.set_visible(want);
+            }
+        }
         let desired = self.app.windows();
         self.secondary
             .retain(|key, _| desired.iter().any(|d| &d.key == key));
