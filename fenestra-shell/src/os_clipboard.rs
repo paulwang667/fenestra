@@ -55,6 +55,15 @@ impl Clipboard for OsClipboard {
         }
     }
 
+    fn get_image(&mut self) -> Option<ClipImage> {
+        let got = self.ensure()?.get_image().ok()?;
+        Some(ClipImage {
+            width: got.width,
+            height: got.height,
+            rgba: got.bytes.into_owned(),
+        })
+    }
+
     fn set_image(&mut self, image: &ClipImage) -> bool {
         // Borrowed, not copied: arboard takes a `Cow` and the caller already
         // owns these bytes, which for a screen grab is megabytes of them.

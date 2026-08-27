@@ -18,6 +18,14 @@ pub trait Clipboard {
     /// Replaces the clipboard text.
     fn set(&mut self, text: String);
 
+    /// The picture on the clipboard, if there is one.
+    ///
+    /// The counterpart of [`Clipboard::set_image`], and `None` by default for
+    /// the same reason: not every clipboard carries pictures.
+    fn get_image(&mut self) -> Option<ClipImage> {
+        None
+    }
+
     /// Puts a picture on the clipboard. Returns whether it got there.
     ///
     /// **Answered rather than assumed.** Not every clipboard carries pictures
@@ -56,6 +64,10 @@ impl Clipboard for MemoryClipboard {
 
     fn set(&mut self, text: String) {
         self.text = Some(text);
+    }
+
+    fn get_image(&mut self) -> Option<ClipImage> {
+        self.image.clone()
     }
 
     fn set_image(&mut self, image: &ClipImage) -> bool {

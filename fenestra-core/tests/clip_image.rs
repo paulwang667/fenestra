@@ -59,4 +59,9 @@ fn a_clipboard_that_does_not_take_pictures_declines() {
         !board.set_image(&swatch()),
         "a text-only clipboard claimed it took a picture"
     );
+    assert_eq!(
+        board.get_image(),
+        None,
+        "a text-only clipboard produced a picture from somewhere"
+    );
 }
