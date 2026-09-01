@@ -20,6 +20,8 @@ pub struct CommandPalette<Msg> {
     key: Option<String>,
     placeholder: String,
     hint: Option<String>,
+    prefiltered: bool,
+    empty: String,
 }
 
 /// A modal launcher: typing filters `commands` (case-insensitive
@@ -45,6 +47,8 @@ pub fn command_palette<Msg>(
         key: None,
         placeholder: "Type a command…".to_owned(),
         hint: None,
+        prefiltered: false,
+        empty: "No matching commands".to_owned(),
     }
 }
 
@@ -98,6 +102,29 @@ impl<Msg> CommandPalette<Msg> {
         self
     }
 
+    /// Takes the list as final: the query still shows in the field and still
+    /// drives `on_input`, but the rows are drawn exactly as handed over.
+    ///
+    /// For callers that already filter. Filtering twice is usually harmless
+    /// duplication, but it is not always: a caller that ranks rows by meaning
+    /// rather than by spelling produces rows the query does not appear in, and
+    /// the filter here drops every one of them — a search that answers "no
+    /// matching commands" while holding the answers.
+    #[must_use]
+    pub fn prefiltered(mut self) -> Self {
+        self.prefiltered = true;
+        self
+    }
+
+    /// What to say when nothing matches. Defaults to English, for the same
+    /// reason [`CommandPalette::placeholder`] does and with the same problem:
+    /// a localized app had no way to reach this string at all.
+    #[must_use]
+    pub fn empty(mut self, empty: impl Into<String>) -> Self {
+        self.empty = empty.into();
+        self
+    }
+
     /// Stable identity key (recommended).
     pub fn id(mut self, key: &str) -> Self {
         self.key = Some(key.to_owned());
@@ -114,7 +141,9 @@ impl<Msg: Clone + 'static> From<CommandPalette<Msg>> for Element<Msg> {
         let filtered: Vec<(String, Msg)> = p
             .commands
             .iter()
-            .filter(|(label, _)| needle.is_empty() || label.to_lowercase().contains(&needle))
+            .filter(|(label, _)| {
+                p.prefiltered || needle.is_empty() || label.to_lowercase().contains(&needle)
+            })
             .cloned()
             .collect();
 
@@ -170,7 +199,7 @@ impl<Msg: Clone + 'static> From<CommandPalette<Msg>> for Element<Msg> {
             .child(input);
         if filtered.is_empty() {
             panel = panel.child(
-                text("No matching commands")
+                text(p.empty.clone())
                     .size(TextSize::Sm)
                     .themed(|t: &Theme, s| s.color(t.text_muted)),
             );
