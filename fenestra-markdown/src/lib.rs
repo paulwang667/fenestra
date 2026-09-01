@@ -165,7 +165,16 @@ enum TokenRole {
 fn role_color(role: TokenRole, t: &Theme) -> Color {
     match role {
         TokenRole::Plain => t.text,
-        TokenRole::Keyword => t.accent,
+        // `accent_text` (A11) and not `accent` (A9). The doc comments say
+        // which is which — "Accent solid (A9): primary buttons, focus,
+        // selection" against "Accent-colored text (A11)" — and a keyword is
+        // text. It was the only one of the five roles here reaching for a fill
+        // colour: `Str` and `Number` already take `.text` from theirs.
+        //
+        // Measured against a downstream WCAG check: keywords came out at 3.94
+        // on light `surface`, under the 4.5 an AA body needs, and eighteen
+        // strings in one code block were flagged illegible.
+        TokenRole::Keyword => t.accent_text,
         TokenRole::Str => t.success.text,
         TokenRole::Comment => t.text_muted,
         TokenRole::Number => t.warning.text,
