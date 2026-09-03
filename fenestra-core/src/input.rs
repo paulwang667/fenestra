@@ -386,21 +386,43 @@ fn handle_key_inner(
             drv.insert_or_replace_selection("\n");
             HANDLED
         }
+        // **A caret that could not move was not handled.** `move_up` on the
+        // first line and `move_down` on the last do nothing, and reporting
+        // MOVED for them tells the app the key was consumed — so an app that
+        // wants Up for something else at the edges (a composer recalling what
+        // it sent last, the way a shell does) can never see it. Reporting
+        // what actually happened costs nothing and hands that case over.
+        //
+        // Shift keeps the old answer: extending a selection to the edge is a
+        // selection change even when the caret stays, and the app has no
+        // business in a drag.
         Key::ArrowUp if multiline => {
             if key.shift {
                 drv.select_up();
-            } else {
-                drv.move_up();
+                return MOVED;
             }
-            MOVED
+            let before = state.editor.raw_selection().text_range();
+            let (font_cx, layout_cx) = fonts.editor_contexts();
+            state.editor.driver(font_cx, layout_cx).move_up();
+            if state.editor.raw_selection().text_range() == before {
+                IGNORED
+            } else {
+                MOVED
+            }
         }
         Key::ArrowDown if multiline => {
             if key.shift {
                 drv.select_down();
-            } else {
-                drv.move_down();
+                return MOVED;
             }
-            MOVED
+            let before = state.editor.raw_selection().text_range();
+            let (font_cx, layout_cx) = fonts.editor_contexts();
+            state.editor.driver(font_cx, layout_cx).move_down();
+            if state.editor.raw_selection().text_range() == before {
+                IGNORED
+            } else {
+                MOVED
+            }
         }
         Key::Backspace => {
             if state.read_only {
