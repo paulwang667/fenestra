@@ -27,6 +27,9 @@ pub(crate) struct EditorState {
     pub seen: u64,
     /// Multiline mode: wraps, accepts newlines, moves by line.
     pub multiline: bool,
+    /// Leave a plain Enter to the app; Shift+Enter is the newline. Set from
+    /// the element every frame, beside `multiline`.
+    pub submit_on_enter: bool,
     /// Read-only mode: selection and copy stay live, every mutation is a
     /// no-op (HTML `<input readonly>`).
     pub read_only: bool,
@@ -105,6 +108,7 @@ impl EditorState {
             last_activity: now,
             seen: 0,
             multiline,
+            submit_on_enter: false,
             read_only: false,
             max_chars: None,
             undo: UndoStack::default(),
@@ -235,6 +239,7 @@ fn handle_key_inner(
     key: &KeyInput,
 ) -> EditOutcome {
     let multiline = state.multiline;
+    let submit_on_enter = state.submit_on_enter;
     let (font_cx, layout_cx) = fonts.editor_contexts();
     let mut drv = state.editor.driver(font_cx, layout_cx);
     let shortcut = key.meta || key.ctrl;
@@ -365,6 +370,12 @@ fn handle_key_inner(
             }
             MOVED
         }
+        // **Shift decides, when the caller asked it to.** A composer sends on
+        // Enter and breaks a line on Shift+Enter; a form textarea makes a
+        // paragraph either way. Without the first branch the editor handles
+        // every Enter and an `on_key` on the element never fires, so the
+        // composer's rule could be written and could not work.
+        Key::Enter if multiline && submit_on_enter && !key.shift => IGNORED,
         Key::Enter if multiline => {
             if state.read_only {
                 return IGNORED;

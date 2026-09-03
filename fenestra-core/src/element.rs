@@ -117,6 +117,15 @@ pub struct InputData {
     /// Cap on the value's character count (an OTP digit box caps at 1).
     /// Edits beyond the cap are ignored; paste truncates.
     pub max_chars: Option<usize>,
+    /// Leave a plain Enter to the app, and insert a newline only on
+    /// Shift+Enter.
+    ///
+    /// **For a message composer, where Enter is send.** A multiline editor
+    /// swallows Enter to make a paragraph, which is right for a form field and
+    /// wrong for a chat box: the app can put `on_key` on the element, but the
+    /// editor has already handled the key and nothing arrives. Opt-in, so a
+    /// textarea in a form keeps making paragraphs.
+    pub submit_on_enter: bool,
 }
 
 /// Optical corrections for a [`Kind::Path`] (see [`crate::optical`]): geometric
@@ -1039,6 +1048,19 @@ impl<Msg> Element<Msg> {
     pub fn max_chars(mut self, max: Option<usize>) -> Self {
         if let Kind::Input(data) = &mut self.kind {
             data.max_chars = max;
+        }
+        self
+    }
+
+    /// Leaves a plain Enter to the app and makes Shift+Enter the newline.
+    ///
+    /// **For a message composer.** A multiline editor handles Enter itself, so
+    /// an `on_key` on the element never sees it and "Enter sends, Shift+Enter
+    /// makes a line" cannot be built. Opt-in: a textarea in a form keeps
+    /// making paragraphs on Enter.
+    pub fn submit_on_enter(mut self, submit: bool) -> Self {
+        if let Kind::Input(data) = &mut self.kind {
+            data.submit_on_enter = submit;
         }
         self
     }
@@ -2328,6 +2350,7 @@ pub fn raw_input<Msg>(value: impl Into<String>, placeholder: impl Into<String>) 
         placeholder: placeholder.into(),
         multiline: false,
         max_chars: None,
+        submit_on_enter: false,
     }))
     .focusable(true)
     .cursor(Cursor::Text)
@@ -2348,6 +2371,7 @@ pub fn raw_text_area<Msg>(
         placeholder: placeholder.into(),
         multiline: true,
         max_chars: None,
+        submit_on_enter: false,
     }))
     .focusable(true)
     .cursor(Cursor::Text)

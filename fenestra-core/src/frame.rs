@@ -900,6 +900,7 @@ fn build<Msg>(
                 .or_insert_with(|| EditorState::new(&resolved, now, data.multiline));
             editor.sync(&data.value, &resolved);
             editor.multiline = data.multiline;
+            editor.submit_on_enter = data.submit_on_enter;
             editor.read_only = el.read_only;
             editor.max_chars = data.max_chars;
             editor.seen = frame_no;
