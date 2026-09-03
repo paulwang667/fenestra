@@ -89,5 +89,24 @@ muda = "0.19.3"
 debug = "line-tables-only"
 opt-level = 1
 
+# **Nothing in a dependency's backtrace is worth reading.** The note above
+# keeps line tables because they are what a panic backtrace and a test
+# failure's file:line are made of, and that is true of this workspace's own
+# crates. It is not true of `zerocopy` or `read-fonts`: a frame in there is
+# noise, and their tables ride in every rlib and every object file that links
+# one. `read-fonts` alone is 21 MiB of rlib before its codegen output.
 [profile.dev.package."*"]
 opt-level = 2
+debug = 0
+
+# **Incremental buys a test run almost nothing, and costs the most disk of
+# anything here.** A `cargo test --workspace` builds 163 integration binaries
+# and their cost is dominated by linking, which incremental does not
+# accelerate — while each one writes a dependency graph and pre-LTO bitcode.
+# Measured: `target/debug/incremental` at 10 GiB against 15 GiB of target, and
+# two runs on a 228 GiB disk died mid-link on "No space left on device".
+#
+# Only the test profile. `cargo run` recompiles one crate at a time and is
+# exactly the case incremental is for, so it keeps it.
+[profile.test]
+incremental = false

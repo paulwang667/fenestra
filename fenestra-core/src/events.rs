@@ -22,6 +22,15 @@ pub enum Key {
     Space,
     /// Escape.
     Escape,
+    /// Tab, when the focused element asked for it.
+    ///
+    /// **Never delivered unless somebody wants it.** Tab is focus movement,
+    /// and an element that swallowed it would strand a keyboard user inside
+    /// itself. The dispatcher offers it to the focused element's `on_key`
+    /// first and moves focus when that handler returns `None` — so an
+    /// inline suggestion can take Tab while it is showing and give it back
+    /// the moment it is not.
+    Tab,
     /// Left arrow.
     ArrowLeft,
     /// Right arrow.
@@ -1021,6 +1030,28 @@ pub fn dispatch<Msg: Clone>(
             }
         }
         InputEvent::Tab | InputEvent::ShiftTab => {
+            // **Offered to the focused element first, and only offered.** An
+            // element that wants Tab — an inline suggestion waiting to be
+            // accepted — answers with a message and keeps it; anything else
+            // returns `None` and focus moves as it always did. Declining is
+            // the default, so no element strands a keyboard user by
+            // forgetting to hand Tab back.
+            if let Some(focus) = state.focus
+                && let Some(el) = handlers.get(focus)
+                && !el.disabled
+                && let Some(f) = &el.on_key
+                && let Some(msg) = f(&KeyInput {
+                    key: Key::Tab,
+                    shift: matches!(event, InputEvent::ShiftTab),
+                    ctrl: false,
+                    alt: false,
+                    meta: false,
+                })
+            {
+                out.msgs.push(msg);
+                out.redraw = true;
+                return out;
+            }
             let order = frame.focusables();
             if !order.is_empty() {
                 let next = match state
