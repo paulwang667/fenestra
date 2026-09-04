@@ -898,8 +898,9 @@ fn build<Msg>(
                 .editors
                 .entry(id)
                 .or_insert_with(|| EditorState::new(&resolved, now, data.multiline));
-            editor.sync(&data.value, &resolved);
+            // Before the sync, which asks it where to leave the caret.
             editor.multiline = data.multiline;
+            editor.sync(&data.value, &resolved, fonts);
             editor.submit_on_enter = data.submit_on_enter;
             editor.read_only = el.read_only;
             editor.max_chars = data.max_chars;

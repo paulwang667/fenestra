@@ -117,7 +117,21 @@ impl EditorState {
 
     /// Syncs the editor with the app-provided value and text style. The app
     /// is the source of truth: external changes reset the buffer.
-    pub(crate) fn sync(&mut self, value: &str, style: &ResolvedText) {
+    /// **In a multiline editor the caret lands after the text, not before
+    /// it.** `set_text` leaves it at position 0, which is wrong for the
+    /// reasons an app sets a value: filling a field is for the person to
+    /// carry on from, and recalling a message is for editing the end of it.
+    /// It also made the value unreachable from below — Down from the start of
+    /// a one-line value *moves*, so the editor reported MOVED and kept a key
+    /// the app was waiting for, and a composer that recalled what it sent
+    /// could go up but never come back.
+    ///
+    /// Single-line editors keep the old landing, because something already
+    /// depends on it: an OTP box overwrites in place by having the committed
+    /// character inserted at the front and letting the widget keep the first
+    /// one (`tests/otp.rs`). Moving that caret is a separate change that owes
+    /// that widget a new answer.
+    pub(crate) fn sync(&mut self, value: &str, style: &ResolvedText, fonts: &mut Fonts) {
         if self.editor.raw_text() != value {
             let fresh = self.editor.raw_text().is_empty()
                 && self.undo.undos.is_empty()
@@ -126,6 +140,7 @@ impl EditorState {
                 // First fill of a brand-new editor: nothing to undo.
                 self.editor.set_text(value);
                 apply_style(&mut self.editor, style);
+                self.caret_to_end(fonts);
                 return;
             }
             // External (programmatic) change: its own undo unit, so
@@ -137,8 +152,22 @@ impl EditorState {
             self.undo.redos.clear();
             self.undo.break_run();
             self.editor.set_text(value);
+            apply_style(&mut self.editor, style);
+            self.caret_to_end(fonts);
+            return;
         }
         apply_style(&mut self.editor, style);
+    }
+
+    /// Puts the caret after the last character. Styles have to be applied
+    /// first: the driver lays the text out to find the position, and laying
+    /// it out with the wrong size would put the caret somewhere else.
+    fn caret_to_end(&mut self, fonts: &mut Fonts) {
+        if !self.multiline {
+            return;
+        }
+        let (font_cx, layout_cx) = fonts.editor_contexts();
+        self.editor.driver(font_cx, layout_cx).move_to_text_end();
     }
 }
 
