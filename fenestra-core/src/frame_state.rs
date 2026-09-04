@@ -214,6 +214,21 @@ impl FrameState {
         self.focus
     }
 
+    /// Whether an input method is composing in this widget's editor.
+    ///
+    /// **The keyboard belongs to the input method while this is true.** Every
+    /// key a CJK, Korean or Vietnamese writer presses to reach a character —
+    /// Enter to accept a candidate, the arrows to choose one, Tab to page —
+    /// is a key an app may also have bound, and the app cannot tell: `on_key`
+    /// closures are built with the view, a frame before the composition they
+    /// would have to know about.
+    #[must_use]
+    pub fn composing_in(&self, id: WidgetId) -> bool {
+        self.editors
+            .get(&id)
+            .is_some_and(|e| e.editor.is_composing())
+    }
+
     /// Moves focus programmatically (marks it keyboard-visible).
     pub fn set_focus(&mut self, id: Option<WidgetId>) {
         self.focus = id;

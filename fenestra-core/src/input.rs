@@ -132,6 +132,17 @@ impl EditorState {
     /// one (`tests/otp.rs`). Moving that caret is a separate change that owes
     /// that widget a new answer.
     pub(crate) fn sync(&mut self, value: &str, style: &ResolvedText, fonts: &mut Fonts) {
+        // **A composing editor is left alone.** Its text carries the preedit
+        // and the app's value does not — a preedit raises no `on_input`, on
+        // purpose, because half-typed pinyin is not the field's value. So the
+        // two can never match while composing, and the comparison below would
+        // call `set_text` on every frame and drop the composition. Measured:
+        // it did not survive one rebuild, which is one redraw, which is what
+        // every runner does after the preedit that started it.
+        if self.editor.is_composing() {
+            apply_style(&mut self.editor, style);
+            return;
+        }
         if self.editor.raw_text() != value {
             let fresh = self.editor.raw_text().is_empty()
                 && self.undo.undos.is_empty()

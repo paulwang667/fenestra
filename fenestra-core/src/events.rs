@@ -1039,6 +1039,9 @@ pub fn dispatch<Msg: Clone>(
             if let Some(focus) = state.focus
                 && let Some(el) = handlers.get(focus)
                 && !el.disabled
+                // Not while an input method is composing: Tab pages the
+                // candidate list in several of them.
+                && !state.composing_in(focus)
                 && let Some(f) = &el.on_key
                 && let Some(msg) = f(&KeyInput {
                     key: Key::Tab,
@@ -1105,7 +1108,13 @@ pub fn dispatch<Msg: Clone>(
                         }
                     }
                 }
-                if let Some(f) = &el.on_key
+                // **Not while an input method is composing.** The editor
+                // above has had its turn; what is left is the app's bindings,
+                // and during a composition those keys are the input method's.
+                // A composer that sends on Enter would send on the Enter that
+                // accepts a candidate, taking the half-composed word with it.
+                if !state.composing_in(focus)
+                    && let Some(f) = &el.on_key
                     && let Some(msg) = f(&key)
                 {
                     out.msgs.push(msg);
