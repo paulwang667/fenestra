@@ -341,6 +341,49 @@ where
         (c.x as f32, c.y as f32)
     }
 
+    /// Where a press on this node lands — checked to actually land on it.
+    ///
+    /// **A press that misses is worse than one that fails.** The centre comes
+    /// from the node's *layout* rect, which is not clamped to the window and
+    /// not clipped by whatever is between the node and the pointer. So a
+    /// control scrolled below the fold, covered by an overlay, or clipped out
+    /// of its scroll container took the press somewhere else entirely, the
+    /// handler never ran, and the test read "the button does nothing" — a
+    /// placebo that goes green the day somebody deletes the button.
+    ///
+    /// The frame's own hit test is the check, so all three of those are one
+    /// question: would a pointer here reach this widget?
+    ///
+    /// # Panics
+    /// If the query matches zero or several nodes, or if a press at the
+    /// node's centre would not reach it. Scroll it into view first, or close
+    /// what is over it.
+    fn press_point(&self, q: &Query) -> (f32, f32) {
+        let slot = self.slot();
+        let node = slot.frame.get(q);
+        let c = node.rect.center();
+        assert!(
+            slot.frame.hit_chain(c).contains(&node.id),
+            "a press at {c:?} does not reach {:?} {:?} at {:?}: the window is \
+             {}x{}, so it is off-screen, clipped out of a scrolling parent, or \
+             something is over it. Scroll it into view or close what covers it \
+             — pressing it here would land somewhere else and report nothing.",
+            node.semantics,
+            node.label,
+            node.rect,
+            slot.logical.0,
+            slot.logical.1,
+        );
+        #[expect(clippy::cast_possible_truncation, reason = "logical px fit in f32")]
+        (c.x as f32, c.y as f32)
+    }
+
+    /// Moves the pointer onto a node a press is about to land on.
+    fn hover_to_press(&mut self, q: &Query) {
+        let (x, y) = self.press_point(q);
+        self.input(InputEvent::PointerMove { x, y });
+    }
+
     /// Moves the pointer to the center of the matched node.
     ///
     /// # Panics
@@ -355,7 +398,7 @@ where
     /// # Panics
     /// If the query matches zero or several nodes.
     pub fn click(&mut self, q: &Query) {
-        self.hover(q);
+        self.hover_to_press(q);
         self.input(InputEvent::PointerDown);
         self.input(InputEvent::PointerUp);
     }
@@ -365,7 +408,7 @@ where
     /// # Panics
     /// If the query matches zero or several nodes.
     pub fn right_click(&mut self, q: &Query) {
-        self.hover(q);
+        self.hover_to_press(q);
         self.input(InputEvent::RightDown);
         self.input(InputEvent::RightUp);
     }
@@ -452,8 +495,12 @@ where
     /// # Panics
     /// If either query matches zero or several nodes.
     pub fn drag(&mut self, from: &Query, to: &Query) {
-        self.hover(from);
+        self.hover_to_press(from);
         self.input(InputEvent::PointerDown);
+        // The destination is a move, not a press, and is deliberately not
+        // checked for reachability: a gesture may legitimately end over
+        // nothing, and what is under the pointer mid-drag is not what this
+        // frame says it is.
         let (x, y) = self.center(to);
         self.input(InputEvent::PointerMove { x, y });
         self.input(InputEvent::PointerUp);
@@ -464,7 +511,7 @@ where
     /// # Panics
     /// If the query matches zero or several nodes.
     pub fn drop_file(&mut self, q: &Query, path: impl Into<std::path::PathBuf>) {
-        self.hover(q);
+        self.hover_to_press(q);
         self.input(InputEvent::FileDrop(path.into()));
     }
 
