@@ -10,8 +10,9 @@
 //! The surrounding UI — title, stats overlay, controls — is pure fenestra 2D.
 //! The 3D image participates in flexbox layout like any other element.
 //!
-//! `cargo run --example scene3d`               windowed
+//! `cargo run --example scene3d`               windowed (Cmd::task async + Sub::every)
 //! `cargo run --example scene3d -- --shot`     headless PNG → gallery/scene3d.png
+//! `cargo run --example scene3d -- --shot-wide` wider layout, 3D fills via responsive()
 
 use std::time::Duration;
 
@@ -22,9 +23,6 @@ use fenestra::shell::{WindowOptions, render_element};
 
 type Vec3 = [f32; 3];
 
-fn v3(x: f32, y: f32, z: f32) -> Vec3 {
-    [x, y, z]
-}
 
 fn sub(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -280,6 +278,10 @@ struct Scene3d {
     /// Cached render: identity-compared (Arc blob) across view rebuilds,
     /// so vello skips texture re-upload when this hasn't changed.
     cached: Option<ImageData>,
+    /// Tier 2: when true, the canvas fills its container via `responsive()`
+    /// instead of a fixed size. The closure receives the container's
+    /// measured size from the previous frame (one-frame deferred).
+    responsive: bool,
 }
 
 impl App for Scene3d {
@@ -312,15 +314,37 @@ impl App for Scene3d {
     }
 
     fn view(&self) -> Element<Msg> {
-        let canvas: Element<Msg> = match &self.cached {
-            Some(data) => image_from_data(data.clone())
-                .rounded(8.0)
-                .border(1.0, Color::from_rgba8(60, 60, 70, 255)),
-            None => div().w(RW as f32).h(RH as f32).bg(Color::from_rgba8(20, 22, 28, 255)),
-        };
-
+        let border = Color::from_rgba8(60, 60, 70, 255);
+        let placeholder = Color::from_rgba8(20, 22, 28, 255);
         let angle_deg = self.angle_y.to_degrees() % 360.0;
 
+        // Tier 1: fixed-size canvas. Tier 2: `responsive()` wrapper that
+        // receives the container's measured size from the previous frame
+        // and stretches the 3D image to fill it (one-frame deferred: first
+        // frame uses the hint, then converges to the real size).
+        let canvas: Element<Msg> = if self.responsive {
+            let cached = self.cached.clone();
+            responsive_hinted(
+                (RW as f32, RH as f32),
+                move |(w, h)| match &cached {
+                    Some(data) => image_from_data(data.clone())
+                        .w(w)
+                        .h(h)
+                        .rounded(8.0)
+                        .border(1.0, border),
+                    None => div().w(w).h(h).bg(placeholder).rounded(8.0),
+                },
+            )
+        } else {
+            match &self.cached {
+                Some(data) => image_from_data(data.clone())
+                    .rounded(8.0)
+                    .border(1.0, border),
+                None => div().w(RW as f32).h(RH as f32).bg(placeholder),
+            }
+        };
+
+        let mode_label = if self.responsive { "responsive" } else { "fixed" };
         col()
             .p(SP6)
             .gap(SP4)
@@ -330,25 +354,84 @@ impl App for Scene3d {
                     .size(TextSize::Xl)
                     .weight(Weight::Semibold),
                 canvas,
-                text(format!("yaw: {angle_deg:.0}°  ·  CPU rasterizer · Cmd::task → image_rgba8"))
-                    .size(TextSize::Sm)
-                    .color(Color::from_rgba8(140, 140, 150, 255)),
+                text(format!(
+                    "yaw: {angle_deg:.0}°  ·  {mode_label}  ·  CPU rasterizer → image_rgba8"
+                ))
+                .size(TextSize::Sm)
+                .color(Color::from_rgba8(140, 140, 150, 255)),
             ))
     }
 }
 
-// ───────────────────────── main ────────────────────────────────────────────
+/// Counts cube-face pixels and reports the bounding box, for shot verification.
+fn report_pixels(img: &image::RgbaImage, label: &str) {
+    let (w, h) = img.dimensions();
+    let opaque = img.chunks_exact(4).filter(|p| p[3] > 0).count();
+    let (mut blue, mut green, mut red) = (0u32, 0u32, 0u32);
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (w, 0u32, h, 0u32);
+    for y in 0..h {
+        for x in 0..w {
+            let p = img.get_pixel(x, y);
+            let (r, g, b) = (p[0], p[1], p[2]);
+            let hit = if b > r + 10 && b > g + 10 {
+                blue += 1; true
+            } else if g > r + 10 && g > b + 10 {
+                green += 1; true
+            } else if r > g + 15 && r > b + 15 && r > 50 {
+                red += 1; true
+            } else {
+                false
+            };
+            if hit {
+                min_x = min_x.min(x); max_x = max_x.max(x);
+                min_y = min_y.min(y); max_y = max_y.max(y);
+            }
+        }
+    }
+    let total = blue + green + red;
+    println!("{label}: {w}x{h}, {opaque} opaque, cube={total} (b={blue} g={green} r={red})");
+    if total > 0 {
+        println!("  bbox: ({min_x},{min_y})-({max_x},{max_y}) {}x{}",
+            max_x - min_x + 1, max_y - min_y + 1);
+    }
+    let cx = w / 2;
+    let cy = h / 2;
+    let p = img.get_pixel(cx, cy);
+    println!("  center ({cx},{cy}): RGBA({},{},{},{})", p[0], p[1], p[2], p[3]);
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--shot") {
-        // Headless: build the view with a fixed angle and render to PNG.
+
+    if args.iter().any(|a| a == "--shot-wide") {
+        // Tier 2 headless: wider window, 3D fills via responsive().
+        // Render at higher resolution to match the wider canvas.
+        let rw = 640u32;
+        let rh = 300u32;
         let mut app = Scene3d {
             angle_x: 0.4,
             angle_y: 0.7,
             cached: None,
+            responsive: true,
         };
-        // Synchronous render (no runner here).
+        let pixels = render_cube(app.angle_x, app.angle_y, rw, rh);
+        app.cached = Some(image_payload(rw, rh, pixels));
+
+        let view = app.view();
+        let theme = Theme::dark();
+        // Wider window: the responsive() canvas stretches to fill it.
+        let img = render_element(view, &theme, (720, 420));
+        let path = std::path::Path::new("gallery/scene3d_wide.png");
+        println!("saved {} (responsive, 720x420)", path.display());
+        report_pixels(&img, "responsive 720x420");
+    } else if args.iter().any(|a| a == "--shot") {
+        // Tier 1 headless: fixed-size 3D element.
+        let mut app = Scene3d {
+            angle_x: 0.4,
+            angle_y: 0.7,
+            cached: None,
+            responsive: false,
+        };
         let pixels = render_cube(app.angle_x, app.angle_y, RW, RH);
         app.cached = Some(image_payload(RW, RH, pixels));
 
@@ -356,14 +439,15 @@ fn main() {
         let theme = Theme::dark();
         let img = render_element(view, &theme, (480, 420));
         let path = std::path::Path::new("gallery/scene3d.png");
-        img.save(path).expect("save PNG");
-        println!("saved {}", path.display());
+        println!("saved {} (fixed, 480x420)", path.display());
+        report_pixels(&img, "fixed 480x420");
     } else {
         fenestra::run(
             Scene3d {
                 angle_x: 0.4,
                 angle_y: 0.7,
                 cached: None,
+                responsive: false,
             },
             WindowOptions::titled("fenestra 3D").with_size(480.0, 420.0),
         );

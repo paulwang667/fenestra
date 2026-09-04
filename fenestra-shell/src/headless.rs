@@ -214,7 +214,12 @@ impl Headless {
             return self.render(&backdrop_scene, width, height, base_color);
         }
         let backdrop = self.render(&backdrop_scene, width, height, base_color)?;
-        let injected = crate::multi_pass::process_specs(&backdrop, &specs, scale);
+        let injected = crate::multi_pass::process_specs(
+            &backdrop,
+            &specs,
+            scale,
+            &|_, _, _| None, // no custom renderers registered in the headless path
+        );
         let final_scene = Self::at_scale(frame.paint_final(fonts, state, &injected), scale);
         self.render(&final_scene, width, height, base_color)
     }

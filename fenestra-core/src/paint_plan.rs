@@ -55,6 +55,22 @@ pub enum PassKind {
     /// A foreground filter on the element's own content. Any blur radius it
     /// carries is in logical px (the shell scales it to physical).
     ElementFilter(ElementFilter),
+    /// A custom GPU-rendered region (Tier 3 of the 3D feasibility work).
+    /// The shell looks up `render_key` in its custom-render registry and
+    /// calls the associated function with the wgpu device/queue and the
+    /// element's physical pixel dimensions. The returned `ImageData` is
+    /// injected into the final paint pass, replacing the element's subtree
+    /// — the same compositing path as `BackdropBlur` and `ElementFilter`.
+    /// `cache_key` controls re-rendering: if it matches the previous frame's
+    /// key, the shell reuses the cached image instead of calling the render
+    /// function again.
+    Custom {
+        /// Registry key identifying which render function to call.
+        render_key: u64,
+        /// Changes when the render output should change (camera moved, mesh
+        /// updated). Unchanged → the shell skips re-rendering.
+        cache_key: u64,
+    },
 }
 
 /// How [`Frame::paint_with`](crate::Frame) threads the multi-pass plan through

@@ -17,11 +17,29 @@ use crate::blur::{apply_element_filter, box_blur_rgba8, box_radius_for_std_dev, 
 /// spec's logical rect — and a foreground blur's logical radius — onto the
 /// physical backdrop. Regions that clamp to nothing (off-screen or zero-size)
 /// are skipped, so a missing entry simply means "paint normally".
+/// A render function the shell calls for `PassKind::Custom` specs. It receives
+/// the render key (so the shell can look up the right function) and the
+/// physical pixel dimensions of the element's layout rect. Returns `None` when
+/// no render function is registered for the key (the element paints normally).
+pub type CustomRender = dyn Fn(u64, u32, u32) -> Option<peniko::ImageData>;
+
+/// Filters each spec's region of the read-back `backdrop`, returning the image
+/// the final pass draws for that element (keyed by [`WidgetId`]). `scale` maps a
+/// spec's logical rect — and a foreground blur's logical radius — onto the
+/// physical backdrop. Regions that clamp to nothing (off-screen or zero-size)
+/// are skipped, so a missing entry simply means "paint normally".
+///
+/// `custom` is called for `PassKind::Custom` specs — the closure receives the
+/// render key and physical pixel dimensions, and returns the rendered image.
+/// Pass `&|_, _, _| None` when no custom rendering is needed (the element paints
+/// normally instead). This keeps `process_specs` wgpu-free: the shell supplies
+/// the device/queue-backed closure, core stays pure.
 #[must_use]
 pub fn process_specs(
     backdrop: &RgbaImage,
     specs: &[MultiPassSpec],
     scale: f64,
+    custom: &CustomRender,
 ) -> HashMap<WidgetId, peniko::ImageData> {
     let mut out = HashMap::with_capacity(specs.len());
     let (iw, ih) = (backdrop.width(), backdrop.height());
@@ -29,15 +47,16 @@ pub fn process_specs(
         let Some((x, y, w, h)) = physical_rect(spec.rect, scale, iw, ih) else {
             continue;
         };
-        let sub = image::imageops::crop_imm(backdrop, x, y, w, h).to_image();
-        let filtered = match spec.kind {
+        let image: peniko::ImageData = match spec.kind {
             PassKind::BackdropBlur { std_dev, radius } => {
+                let sub = image::imageops::crop_imm(backdrop, x, y, w, h).to_image();
                 let blurred = box_blur_rgba8(&sub, box_radius_for_std_dev(std_dev));
-                // Bend the blurred backdrop at the rounded rim (the lensing pass) —
-                // but only when the crop spans the whole pane. A canvas-clamped
-                // (off-screen) crop is a truncated slice, and refraction would lens
-                // its straight cut edge as a fake rim; fall back to the blur there.
-                if fully_inside(spec.rect, scale, iw, ih) {
+                // Bend the blurred backdrop at the rounded rim (the lensing
+                // pass) — but only when the crop spans the whole pane. A
+                // canvas-clamped (off-screen) crop is a truncated slice, and
+                // refraction would lens its straight cut edge as a fake rim;
+                // fall back to the blur there.
+                let result = if fully_inside(spec.rect, scale, iw, ih) {
                     #[expect(
                         clippy::cast_possible_truncation,
                         reason = "physical corner radius fits in f32"
@@ -46,13 +65,22 @@ pub fn process_specs(
                     refract_edges(&blurred, radius_px)
                 } else {
                     blurred
-                }
+                };
+                to_image_data(&result)
             }
             PassKind::ElementFilter(filter) => {
-                apply_element_filter(&sub, scale_filter(filter, scale))
+                let sub = image::imageops::crop_imm(backdrop, x, y, w, h).to_image();
+                let filtered = apply_element_filter(&sub, scale_filter(filter, scale));
+                to_image_data(&filtered)
+            }
+            PassKind::Custom { render_key, .. } => {
+                match custom(render_key, w, h) {
+                    Some(img) => img,
+                    None => continue, // no renderer → paint normally
+                }
             }
         };
-        out.insert(spec.id, to_image_data(&filtered));
+        out.insert(spec.id, image);
     }
     out
 }
@@ -165,5 +193,45 @@ mod tests {
             200,
             150
         ));
+    }
+
+
+    /// A `PassKind::Custom` spec with a registered render function produces
+    /// an injected image; one with no registered function is skipped (paints
+    /// normally). This proves the multi-pass pipeline can carry custom GPU
+    /// render specs end-to-end.
+    #[test]
+    fn custom_pass_produces_image_when_registered() {
+        let backdrop = RgbaImage::new(200, 150);
+        let id = WidgetId(42);
+        let specs = [MultiPassSpec {
+            id,
+            rect: Rect::new(10.0, 10.0, 110.0, 90.0),
+            kind: PassKind::Custom {
+                render_key: 42,
+                cache_key: 1,
+            },
+        }];
+
+        // Registered renderer: returns a solid red 100×80 image.
+        let result = process_specs(&backdrop, &specs, 1.0, &|_key, w, h| {
+            Some(peniko::ImageData {
+                data: vec![255u8, 0, 0, 255]
+                    .repeat((w as usize) * (h as usize))
+                    .into(),
+                format: peniko::ImageFormat::Rgba8,
+                alpha_type: peniko::ImageAlphaType::Alpha,
+                width: w,
+                height: h,
+            })
+        });
+        let img = result.get(&id).expect("custom render produced an image");
+        assert_eq!(img.width, 100);
+        assert_eq!(img.height, 80);
+        assert_eq!(img.data.as_ref()[0], 255); // red
+
+        // Unregistered key: the element is skipped (no entry → paints normally).
+        let result = process_specs(&backdrop, &specs, 1.0, &|_, _, _| None);
+        assert!(result.get(&id).is_none());
     }
 }
