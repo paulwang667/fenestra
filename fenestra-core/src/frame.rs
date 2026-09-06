@@ -2348,11 +2348,27 @@ impl Frame {
                     kind: PassKind::ElementFilter(filter),
                 });
             }
+            // Custom GPU render: record it and skip painting the subtree
+            // (the shell's render function will produce the image). The
+            // element's id doubles as the cache key so each element gets
+            // its own cache entry; apps that need cache invalidation
+            // across frames can use a different `render_key` per version.
+            if let Some(render_key) = node.style.custom_render {
+                specs.push(MultiPassSpec {
+                    id: node.id,
+                    rect: node.rect,
+                    kind: PassKind::Custom {
+                        render_key,
+                        cache_key: node.id.0 as u64,
+                    },
+                });
+                return;
+            }
         }
-        // Final pass: a foreground-filtered element draws its filtered image in
-        // place of its whole content (its box, content, and children are baked
-        // into the image already).
-        if node.style.element_filter.is_some()
+        // Final pass: a foreground-filtered or custom-render element draws
+        // its processed image in place of its whole content (the element's
+        // box, content, and children are baked into the image already).
+        if (node.style.element_filter.is_some() || node.style.custom_render.is_some())
             && let Some(image) = mode.injected(node.id)
         {
             painter::draw_image(

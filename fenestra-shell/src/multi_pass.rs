@@ -40,6 +40,7 @@ pub fn process_specs(
     specs: &[MultiPassSpec],
     scale: f64,
     custom: &CustomRender,
+    cache: &mut HashMap<(u64, u64), peniko::ImageData>,
 ) -> HashMap<WidgetId, peniko::ImageData> {
     let mut out = HashMap::with_capacity(specs.len());
     let (iw, ih) = (backdrop.width(), backdrop.height());
@@ -73,10 +74,17 @@ pub fn process_specs(
                 let filtered = apply_element_filter(&sub, scale_filter(filter, scale));
                 to_image_data(&filtered)
             }
-            PassKind::Custom { render_key, .. } => {
-                match custom(render_key, w, h) {
-                    Some(img) => img,
-                    None => continue, // no renderer → paint normally
+            PassKind::Custom { render_key, cache_key } => {
+                if let Some(cached) = cache.get(&(render_key, cache_key)) {
+                    cached.clone()
+                } else {
+                    match custom(render_key, w, h) {
+                        Some(image) => {
+                            cache.insert((render_key, cache_key), image.clone());
+                            image
+                        }
+                        None => continue, // no renderer → paint normally
+                    }
                 }
             }
         };
@@ -218,20 +226,140 @@ mod tests {
             Some(peniko::ImageData {
                 data: vec![255u8, 0, 0, 255]
                     .repeat((w as usize) * (h as usize))
-                    .into(),
+                .into(),
                 format: peniko::ImageFormat::Rgba8,
                 alpha_type: peniko::ImageAlphaType::Alpha,
                 width: w,
                 height: h,
             })
-        });
+        }, &mut HashMap::new());
         let img = result.get(&id).expect("custom render produced an image");
         assert_eq!(img.width, 100);
         assert_eq!(img.height, 80);
         assert_eq!(img.data.as_ref()[0], 255); // red
 
-        // Unregistered key: the element is skipped (no entry → paints normally).
-        let result = process_specs(&backdrop, &specs, 1.0, &|_, _, _| None);
+        let result = process_specs(&backdrop, &specs, 1.0, &|_, _, _| None, &mut HashMap::new());
         assert!(result.get(&id).is_none());
+    }
+
+    /// Cache hit: same `(render_key, cache_key)` reuses the cached image
+    /// without calling the render function. Cache miss (different `cache_key`)
+    /// re-invokes the renderer. This proves the cache key controls re-rendering.
+    #[test]
+    fn custom_pass_cache_hit_skips_render() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let backdrop = RgbaImage::new(200, 150);
+        let id = WidgetId(7);
+        let rect = Rect::new(10.0, 10.0, 110.0, 90.0);
+        let mut cache = HashMap::new();
+
+        // Closure that returns a solid color wrapped in Some, via a `Cell`
+        // (no &mut borrow, so it satisfies the `dyn Fn` `+ 'static` bound).
+        let calls = Rc::new(Cell::new(0u32));
+        let mk_counted = |r: u8, g: u8, b: u8| {
+            let calls = Rc::clone(&calls);
+            Rc::new(move |_key: u64, w: u32, h: u32| {
+                calls.set(calls.get() + 1);
+                Some(peniko::ImageData {
+                    data: vec![r, g, b, 255].repeat((w as usize) * (h as usize)).into(),
+                    format: peniko::ImageFormat::Rgba8,
+                    alpha_type: peniko::ImageAlphaType::Alpha,
+                    width: w,
+                    height: h,
+                })
+            }) as Rc<dyn Fn(u64, u32, u32) -> Option<peniko::ImageData>>
+        };
+
+        // First call with cache_key=1: renderer returns red.
+        let specs = [MultiPassSpec {
+            id,
+            rect,
+            kind: PassKind::Custom { render_key: 1, cache_key: 1 },
+        }];
+        let renderer = mk_counted(255, 0, 0);
+        let result = process_specs(&backdrop, &specs, 1.0, &*renderer, &mut cache);
+        let img = result.get(&id).expect("first render produced an image");
+        assert_eq!(img.data.as_ref()[0], 255); // red
+        assert_eq!(calls.get(), 1, "renderer called once on cache miss");
+        assert_eq!(cache.len(), 1, "one image cached");
+
+        // Second call with same cache_key=1: cache hit, renderer NOT called.
+        // Use a different color (blue) — if the cache were missed, we'd see blue.
+        let renderer = mk_counted(0, 0, 255);
+        let result = process_specs(&backdrop, &specs, 1.0, &*renderer, &mut cache);
+        let img = result.get(&id).expect("cache hit produced an image");
+        assert_eq!(img.data.as_ref()[0], 255, "cached red reused, not re-rendered blue");
+        assert_eq!(calls.get(), 1, "renderer NOT called on cache hit");
+        assert_eq!(cache.len(), 1, "cache unchanged after hit");
+
+        // Third call with cache_key=2: cache miss, renderer called again.
+        let specs2 = [MultiPassSpec {
+            id,
+            rect,
+            kind: PassKind::Custom { render_key: 1, cache_key: 2 },
+        }];
+        let renderer = mk_counted(0, 255, 0);
+        let result = process_specs(&backdrop, &specs2, 1.0, &*renderer, &mut cache);
+        let img = result.get(&id).expect("cache miss produced an image");
+        assert_eq!(img.data.as_ref()[0], 0, "re-rendered green, not cached red");
+        assert_eq!(calls.get(), 2, "renderer called again on cache miss (different key)");
+        assert_eq!(cache.len(), 2, "two images cached");
+    }
+
+    /// A non-trivial custom render: a horizontal RGB gradient (red→green→blue
+    /// across columns). Proves the custom render closure receives the correct
+    /// physical dimensions and the output pixels flow through the pipeline
+    /// unchanged — not just a solid color that could be matched by a no-op.
+    #[test]
+    fn custom_pass_gradient_preserves_pixels() {
+        let backdrop = RgbaImage::new(200, 150);
+        let id = WidgetId(9);
+        let specs = [MultiPassSpec {
+            id,
+            rect: Rect::new(10.0, 10.0, 110.0, 30.0),
+            kind: PassKind::Custom {
+                render_key: 1,
+                cache_key: 1,
+            },
+        }];
+        // Gradient: column x maps to (r=x, g=255-x, b=128).
+        let renderer = |_key: u64, w: u32, h: u32| {
+            let mut data = Vec::with_capacity((w * h * 4) as usize);
+            for _y in 0..h {
+                for x in 0..w {
+                    data.push(x as u8);        // r
+                    data.push(255 - x as u8); // g
+                    data.push(128);            // b
+                    data.push(255);            // a
+                }
+            }
+            Some(peniko::ImageData {
+                data: data.into(),
+                format: peniko::ImageFormat::Rgba8,
+                alpha_type: peniko::ImageAlphaType::Alpha,
+                width: w,
+                height: h,
+            })
+        };
+        let result = process_specs(&backdrop, &specs, 1.0, &renderer, &mut HashMap::new());
+        let img = result.get(&id).expect("gradient render produced an image");
+        assert_eq!(img.width, 100);
+        assert_eq!(img.height, 20);
+        let pixels = img.data.as_ref();
+        // Left edge: r=0, g=255, b=128.
+        assert_eq!(pixels[0], 0, "left edge red");
+        assert_eq!(pixels[1], 255, "left edge green");
+        assert_eq!(pixels[2], 128, "left edge blue");
+        // Right edge: r=99, g=156, b=128.
+        let last_col = (img.width - 1) as usize * 4;
+        assert_eq!(pixels[last_col], 99, "right edge red");
+        assert_eq!(pixels[last_col + 1], 156, "right edge green");
+        assert_eq!(pixels[last_col + 2], 128, "right edge blue");
+        // Middle row starts after the first row's pixels.
+        let mid_row = (img.height / 2) as usize * img.width as usize * 4;
+        let mid_col = (img.width / 2) as usize * 4;
+        assert_eq!(pixels[mid_row + mid_col], 50, "middle red");
+        assert_eq!(pixels[mid_row + mid_col + 1], 205, "middle green");
     }
 }

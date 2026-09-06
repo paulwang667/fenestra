@@ -400,12 +400,119 @@ fn report_pixels(img: &image::RgbaImage, label: &str) {
     println!("  center ({cx},{cy}): RGBA({},{},{},{})", p[0], p[1], p[2], p[3]);
 }
 
+// ───────────────────────── Tier 3: PassKind::Custom (windowed) ────────────
+//
+// Same rotating cube, but instead of rendering on a worker thread and
+// pushing an `ImageData` through `Cmd::task` (Tier 2), the app registers
+// a custom-render closure via `App::custom_render`. The shell calls it
+// during the two-pass render path when it encounters an element styled
+// with `.custom_render(key)`. The returned `ImageData` replaces the
+// element's subtree in the final compositing pass.
+
+/// Render key for the cube. The shell looks this up in the custom-render
+/// registry; any element styled with `.custom_render(CUBE_KEY)` is
+/// replaced by the cube render.
+const CUBE_KEY: u64 = 1;
+
+struct Scene3dCustom {
+    /// Shared between the app and the `'static` custom-render closure
+    /// (which can't borrow `self`). The closure reads the current angles
+    /// from here every frame.
+    angles: std::sync::Arc<std::sync::Mutex<(f32, f32)>>,
+}
+
+#[derive(Clone)]
+enum MsgCustom {
+    Tick,
+}
+
+impl App for Scene3dCustom {
+    type Msg = MsgCustom;
+
+    fn update(&mut self, _: MsgCustom) {}
+
+    fn update_with(&mut self, msg: MsgCustom) -> Cmd<MsgCustom> {
+        match msg {
+            MsgCustom::Tick => {
+                let angles = std::sync::Arc::clone(&self.angles);
+                let mut guard = angles.lock().expect("angles mutex");
+                guard.0 += 0.011;
+                guard.1 += 0.03;
+                Cmd::none()
+            }
+        }
+    }
+
+    fn subscriptions(&self) -> Vec<Sub<MsgCustom>> {
+        vec![Sub::every("spin-custom", Duration::from_millis(16), || MsgCustom::Tick)]
+    }
+
+    /// Registers the cube renderer. The shell calls this closure (on a
+    /// worker thread, during the two-pass render) for every element
+    /// styled with `.custom_render(CUBE_KEY)`. We render the rotating
+    /// cube synchronously to a fresh `ImageData`.
+    fn custom_render(
+        &self,
+    ) -> Option<std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<ImageData> + Send + Sync>>
+    {
+        let angles = std::sync::Arc::clone(&self.angles);
+        Some(std::sync::Arc::new(move |_key, w, h| {
+            let (ax, ay) = *angles.lock().expect("angles mutex");
+            let pixels = render_cube(ax, ay, w, h);
+            Some(image_payload(w, h, pixels))
+        }))
+    }
+
+    fn view(&self) -> Element<MsgCustom> {
+        let border = Color::from_rgba8(60, 60, 70, 255);
+        let placeholder = Color::from_rgba8(20, 22, 28, 255);
+        let (_ax, ay) = *self.angles.lock().expect("angles mutex");
+        let angle_deg = ay.to_degrees() % 360.0;
+
+        // The element styled with `.custom_render(CUBE_KEY)` is replaced
+        // by the cube's GPU-rendered image in the final pass. The
+        // placeholder div provides the layout box.
+        let cube = div()
+            .w(RW as f32)
+            .h(RH as f32)
+            .bg(placeholder)
+            .rounded(8.0)
+            .border(1.0, border)
+            .custom_render(CUBE_KEY);
+
+        col()
+            .p(SP6)
+            .gap(SP4)
+            .items_center()
+            .children((
+                text("3D in fenestra (Tier 3: PassKind::Custom)")
+                    .size(TextSize::Xl)
+                    .weight(Weight::Semibold),
+                cube,
+                text(format!(
+                    "yaw: {angle_deg:.0}°  ·  PassKind::Custom  ·  shell calls App::custom_render"
+                ))
+                .size(TextSize::Sm)
+                .color(Color::from_rgba8(140, 140, 150, 255)),
+            ))
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    if args.iter().any(|a| a == "--shot-wide") {
+    if args.iter().any(|a| a == "--custom") {
+        // Tier 3: PassKind::Custom in windowed mode. The shell calls
+        // `App::custom_render` during the two-pass render path; the
+        // returned image replaces the cube element's subtree.
+        fenestra::run(
+            Scene3dCustom {
+                angles: std::sync::Arc::new(std::sync::Mutex::new((0.4, 0.7))),
+            },
+            WindowOptions::titled("fenestra 3D — Custom pass").with_size(480.0, 420.0),
+        );
+    } else if args.iter().any(|a| a == "--shot-wide") {
         // Tier 2 headless: wider window, 3D fills via responsive().
-        // Render at higher resolution to match the wider canvas.
         let rw = 640u32;
         let rh = 300u32;
         let mut app = Scene3d {
@@ -416,10 +523,8 @@ fn main() {
         };
         let pixels = render_cube(app.angle_x, app.angle_y, rw, rh);
         app.cached = Some(image_payload(rw, rh, pixels));
-
         let view = app.view();
         let theme = Theme::dark();
-        // Wider window: the responsive() canvas stretches to fill it.
         let img = render_element(view, &theme, (720, 420));
         let path = std::path::Path::new("gallery/scene3d_wide.png");
         println!("saved {} (responsive, 720x420)", path.display());
@@ -434,7 +539,6 @@ fn main() {
         };
         let pixels = render_cube(app.angle_x, app.angle_y, RW, RH);
         app.cached = Some(image_payload(RW, RH, pixels));
-
         let view = app.view();
         let theme = Theme::dark();
         let img = render_element(view, &theme, (480, 420));
@@ -442,6 +546,7 @@ fn main() {
         println!("saved {} (fixed, 480x420)", path.display());
         report_pixels(&img, "fixed 480x420");
     } else {
+        // Tier 2 windowed (default): Cmd::task + image_rgba8.
         fenestra::run(
             Scene3d {
                 angle_x: 0.4,
