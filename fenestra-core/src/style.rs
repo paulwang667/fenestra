@@ -1049,6 +1049,13 @@ pub struct Style {
     /// saturate). `None` (the default) paints the content unfiltered. Realized
     /// by the shell's two-pass renderer alongside [`backdrop_blur`](Self::backdrop_blur).
     pub element_filter: Option<ElementFilter>,
+    /// Custom GPU render key (Tier 3 of the 3D feasibility work). When
+    /// `Some(key)`, the shell looks up `key` in the app's custom-render
+    /// registry and calls the registered function during the two-pass
+    /// render path. The returned `ImageData` replaces the element's
+    /// subtree in the final compositing pass. `None` (the default)
+    /// paints the element normally with no shell-side intervention.
+    pub custom_render: Option<u64>,
 
     // -- text --
     /// Text properties (used by text elements; inherited defaults elsewhere).
@@ -1117,6 +1124,7 @@ impl Default for Style {
             path_trim: 1.0,
             backdrop_blur: None,
             element_filter: None,
+            custom_render: None,
             text: TextStyle::default(),
         }
     }
@@ -1940,6 +1948,16 @@ impl Style {
     /// [`Style::element_filter`].
     pub fn element_filter(mut self, filter: ElementFilter) -> Self {
         self.element_filter = Some(filter);
+        self
+    }
+
+    /// Marks this element as a custom-render region. The shell looks up
+    /// `key` in the app's custom-render registry (via [`App::custom_render`])
+    /// during the two-pass render path; the returned `ImageData` replaces
+    /// the element's subtree in the final compositing pass. See
+    /// [`Style::custom_render`].
+    pub fn custom_render(mut self, key: u64) -> Self {
+        self.custom_render = Some(key);
         self
     }
 

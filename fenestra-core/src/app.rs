@@ -1,11 +1,10 @@
 //! The Elm-shaped application contract.
 
 use crate::cmd::{Cmd, Sub};
-use crate::element::Element;
+use crate::element::{Element, ImageData};
 use crate::menu::MenuSpec;
 use crate::proxy::Proxy;
 use crate::theme::Theme;
-
 /// A secondary window the app wants open: presence in
 /// [`App::windows`]'s list opens it, removal closes it (exactly like
 /// modal state). The OS close button emits `on_close` — remove the desc
@@ -277,6 +276,21 @@ pub trait App {
         let _ = key;
         self.theme()
     }
+
+    /// Custom render registry: maps `render_key` (from
+    /// [`fenestra_core::PassKind::Custom`]) to a function that produces the
+    /// rendered image. Called by the shell during the two-pass render path
+    /// when a `Custom` spec is encountered. The closure receives the render
+    /// key and physical pixel dimensions; returns `None` when no renderer is
+    /// registered for the key (the element paints normally). The default
+    /// returns `None` — apps that don't use custom renders ignore this.
+    fn custom_render(
+        &self,
+    ) -> Option<
+        std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<ImageData> + Send + Sync>,
+    > {
+        None
+    }
 }
 
 /// A mutable borrow of an app is itself an app: harnesses can drive an
@@ -334,6 +348,14 @@ impl<A: App> App for &mut A {
 
     fn theme_for(&self, key: &str) -> Theme {
         (**self).theme_for(key)
+    }
+
+    fn custom_render(
+        &self,
+    ) -> Option<
+        std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<ImageData> + Send + Sync>,
+    > {
+        (**self).custom_render()
     }
 }
 

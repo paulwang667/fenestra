@@ -2063,6 +2063,16 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Marks this element as a custom-render region: the shell looks up
+    /// `key` in the app's custom-render registry during the two-pass
+    /// render path and the returned `ImageData` replaces this element's
+    /// subtree in the final compositing pass. See
+    /// [`Style::custom_render`](crate::Style::custom_render).
+    pub fn custom_render(mut self, key: u64) -> Self {
+        self.style = self.style.custom_render(key);
+        self
+    }
+
     /// A luminous specular edge rim — the Liquid Glass perimeter light — on this
     /// element. [`Surface::Glass`](crate::Surface::Glass) sets it for you; reach
     /// for this builder to put the rim on a custom translucent pane. See

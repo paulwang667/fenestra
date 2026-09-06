@@ -18,10 +18,14 @@ use fenestra_core::{
     App, Element, Fonts, FrameState, GesturePhase, InputEvent, Key, KeyInput, build_frame,
     dispatch, refresh_hover,
 };
+use image::RgbaImage;
 use kurbo::Point;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
-use vello::wgpu::{self, CurrentSurfaceTexture};
+use vello::wgpu::{
+    self, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, CurrentSurfaceTexture,
+    Extent3d, TexelCopyBufferLayout, TextureDescriptor, TextureFormat, TextureUsages,
+};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
@@ -724,6 +728,206 @@ impl WindowShell {
             .map_err(ShellError::Poll)?;
         Ok(())
     }
+
+    /// Renders `scene` at the given pixel size to an off-screen texture and
+    /// reads it back as an [`RgbaImage`]. Used by the two-pass render path:
+    /// paint the backdrop scene (every glass subtree skipped), read it back,
+    /// then [`crate::multi_pass::process_specs`] each region on the CPU before
+    /// the final pass composites the result. Returns `None` when no surface is
+    /// active (window not yet resumed or already suspended).
+    fn render_to_image(
+        &mut self,
+        scene: &Scene,
+        width: u32,
+        height: u32,
+        base_color: Color,
+    ) -> Option<Result<RgbaImage, ShellError>> {
+        let RenderState::Active { surface, .. } = &self.state else {
+            return None;
+        };
+        let handle = &self.context.devices[surface.dev_id];
+        let renderer = self.renderers[surface.dev_id].as_mut()?;
+        let (device, queue) = (&handle.device, &handle.queue);
+
+        let size = Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let target = device.create_texture(&TextureDescriptor {
+            label: Some("fenestra windowed readback target"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        if let Err(e) = renderer.render_to_texture(
+            device,
+            queue,
+            scene,
+            &view,
+            &RenderParams {
+                base_color,
+                width,
+                height,
+                antialiasing_method: AaConfig::Area,
+            },
+        ) {
+            return Some(Err(ShellError::Vello(e)));
+        }
+
+        // wgpu requires copy rows padded to 256 bytes.
+        let padded_byte_width = (width * 4).next_multiple_of(256);
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("fenestra windowed readback"),
+            size: u64::from(padded_byte_width) * u64::from(height),
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("fenestra windowed readback copy"),
+        });
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_byte_width),
+                    rows_per_image: None,
+                },
+            },
+            size,
+        );
+        queue.submit([encoder.finish()]);
+
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        if let Err(e) = device.poll(wgpu::PollType::wait_indefinitely()) {
+            return Some(Err(ShellError::Poll(e)));
+        }
+        let map_result = match rx.recv() {
+            Ok(r) => r,
+            Err(_) => return Some(Err(ShellError::Readback)),
+        };
+        if map_result.is_err() {
+            return Some(Err(ShellError::Readback));
+        }
+        let data = slice.get_mapped_range();
+        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+        for row in 0..height {
+            let start = (row * padded_byte_width) as usize;
+            pixels.extend_from_slice(&data[start..start + (width * 4) as usize]);
+        }
+        drop(data);
+        buffer.unmap();
+
+        Some(Ok(RgbaImage::from_raw(width, height, pixels)
+            .expect("readback buffer matches image dimensions")))
+    }
+
+    /// Presents a scene already in physical-pixel coordinates (no logical→physical
+    /// scale transform applied). Used by the two-pass render path: `paint_backdrop`
+    /// and `paint_final` return logical-space scenes that the two-pass caller
+    /// pre-scales via [`Self::at_scale`] before passing here.
+    fn present_physical(&mut self, fragment: &Scene) -> Result<(), ShellError> {
+        let RenderState::Active {
+            surface,
+            valid_surface,
+            window,
+        } = &mut self.state
+        else {
+            return Ok(());
+        };
+        if !*valid_surface {
+            return Ok(());
+        }
+        let width = surface.config.width;
+        let height = surface.config.height;
+
+        self.scene.reset();
+        self.scene.append(fragment, None);
+
+        let handle = &self.context.devices[surface.dev_id];
+        self.renderers[surface.dev_id]
+            .as_mut()
+            .expect("renderer exists for surface device")
+            .render_to_texture(
+                &handle.device,
+                &handle.queue,
+                &self.scene,
+                &surface.target_view,
+                &RenderParams {
+                    base_color: match self.transparent {
+                        true => Color::TRANSPARENT,
+                        false => self.background,
+                    },
+                    width,
+                    height,
+                    antialiasing_method: AaConfig::Area,
+                },
+            )
+            .map_err(ShellError::Vello)?;
+
+        let surface_texture = match surface.surface.get_current_texture() {
+            CurrentSurfaceTexture::Success(texture) => texture,
+            CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Suboptimal(_) => {
+                self.context.configure_surface(surface);
+                window.request_redraw();
+                return Ok(());
+            }
+            CurrentSurfaceTexture::Occluded => return Ok(()),
+            CurrentSurfaceTexture::Timeout => {
+                window.request_redraw();
+                return Ok(());
+            }
+            CurrentSurfaceTexture::Lost => {
+                let window = window.clone();
+                window.request_redraw();
+                return self.activate(window);
+            }
+            CurrentSurfaceTexture::Validation => return Err(ShellError::SurfaceValidation),
+        };
+
+        let mut encoder = handle
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("fenestra surface blit (physical)"),
+            });
+        surface.blitter.copy(
+            &handle.device,
+            &mut encoder,
+            &surface.target_view,
+            &surface_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default()),
+        );
+        handle.queue.submit([encoder.finish()]);
+        surface_texture.present();
+        handle
+            .device
+            .poll(wgpu::PollType::Poll)
+            .map_err(ShellError::Poll)?;
+        Ok(())
+    }
+
+    /// Wraps a logical-space scene for a physical target. Returns the scene
+    /// untouched at scale 1.0 so reference goldens stay byte-identical.
+    fn at_scale(scene: Scene, scale: f64) -> Scene {
+        if (scale - 1.0).abs() < f64::EPSILON {
+            return scene;
+        }
+        let mut scaled = Scene::new();
+        scaled.append(&scene, Some(vello::kurbo::Affine::scale(scale)));
+        scaled
+    }
 }
 
 /// Builds the event loop for a windowed runner. On Android, winit requires
@@ -1051,6 +1255,7 @@ where
     // other apps stays in-app (see `WebClipboard`).
     #[cfg(target_arch = "wasm32")]
     state.set_clipboard(Box::new(crate::WebClipboard::default()));
+    let custom_render = app.custom_render();
     let runner = AppRunner {
         shell: WindowShell::new(options, background),
         msg_proxy,
@@ -1073,6 +1278,8 @@ where
         proxy: access_proxy,
         #[cfg(not(target_arch = "wasm32"))]
         secondary: std::collections::HashMap::new(),
+        custom_cache: std::collections::HashMap::new(),
+        custom_render,
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1082,7 +1289,6 @@ where
         let cmd = runner.app.init_cmd();
         runner.run_cmd(cmd);
         runner.reconcile_subs();
-        #[cfg(target_os = "macos")]
         {
             let menu_proxy = event_loop.create_proxy();
             muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
@@ -1147,6 +1353,16 @@ struct AppRunner<A: App> {
     /// stable key and reconciled after every update (native only).
     #[cfg(not(target_arch = "wasm32"))]
     secondary: std::collections::HashMap<String, SecondaryWindow<A>>,
+    /// Cache for `PassKind::Custom` render specs: keyed by
+    /// `(render_key, cache_key)`, reused across frames when the key
+    /// matches. Cleared on scene-key change so stale entries don't
+    /// leak across window reconfigurations.
+    custom_cache: std::collections::HashMap<(u64, u64), vello::peniko::ImageData>,
+    /// Custom render registry from [`App::custom_render`]. `None` when
+    /// the app doesn't register custom renderers (the default).
+    custom_render: Option<
+        std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<fenestra_core::ImageData> + Send + Sync>,
+    >,
 }
 
 /// One reconciled secondary window: its own surface, retained state, and
@@ -1460,7 +1676,7 @@ impl<A: App> AppRunner<A> {
             && let Some((scene, key)) = &self.cached_scene
             && *key == (lw, lh, scale)
         {
-            if let Err(e) = self.shell.present(scene) {
+            if let Err(e) = self.shell.present_physical(scene) {
                 self.shell.fail(event_loop, e);
             }
             return;
@@ -1479,10 +1695,55 @@ impl<A: App> AppRunner<A> {
             logical,
             scale,
         );
-        // Single-pass live window: glass is tint-only here (see the `run_app`
-        // redraw note); two-pass blur is the headless golden path.
-        let scene = frame.paint(&mut self.fonts, &mut self.state);
-        if let Err(e) = self.shell.present(&scene) {
+        // Two-pass render when the frame has filtered regions (glass blur,
+        // element filters, custom GPU renders): paint the backdrop scene
+        // (every filtered subtree skipped), read it back, run
+        // `process_specs` on the CPU, then paint the final scene with each
+        // region composited. A frame with no specs falls through to the
+        // single-pass fast path: the backdrop scene IS the final image,
+        // byte-identical to the old `frame.paint()` + `present()`.
+        let (backdrop_scene, specs) = frame.paint_backdrop(&mut self.fonts, &mut self.state);
+        let scene = if specs.is_empty() {
+            // Fast path: backdrop scene is the final image, just scale and present.
+            WindowShell::at_scale(backdrop_scene, scale)
+        } else {
+            // Clone the Arc so the closure is `'static` (it doesn't borrow
+            // `self`). The closure falls back to `None` when no custom
+            // render is registered — the element paints normally.
+            let custom_arc = self.custom_render.clone();
+            let custom_fn = move |key: u64, w: u32, h: u32| -> Option<vello::peniko::ImageData> {
+                custom_arc.as_ref().and_then(|f| f(key, w, h).map(|d| d.image))
+            };
+            // Two-pass: render backdrop to off-screen, readback, process, final.
+            let physical_backdrop = WindowShell::at_scale(backdrop_scene, scale);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "physical window size fits in u32"
+            )]
+            let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
+            match self.shell.render_to_image(&physical_backdrop, pw, ph, theme.bg) {
+                Some(Ok(backdrop_pixels)) => {
+                    let injected = crate::multi_pass::process_specs(
+                        &backdrop_pixels,
+                        &specs,
+                        scale,
+                        &custom_fn,
+                        &mut self.custom_cache,
+                    );
+                    WindowShell::at_scale(
+                        frame.paint_final(&mut self.fonts, &mut self.state, &injected),
+                        scale,
+                    )
+                }
+                Some(Err(e)) => {
+                    self.shell.fail(event_loop, e);
+                    return;
+                }
+                None => return, // no active surface; nothing to present
+            }
+        };
+        if let Err(e) = self.shell.present_physical(&scene) {
             self.shell.fail(event_loop, e);
             return;
         }
@@ -1704,10 +1965,48 @@ impl<A: App> AppRunner<A> {
             logical,
             scale,
         );
-        // Single-pass live window: glass is tint-only here (see the `run_app`
-        // redraw note); two-pass blur is the headless golden path.
-        let scene = frame.paint(&mut self.fonts, &mut bundle.state);
-        if let Err(e) = bundle.shell.present(&scene) {
+        // Two-pass render: same pipeline as the main window. Falls through
+        // to the single-pass fast path when the frame has no filtered
+        // regions (byte-identical to the old `frame.paint()` + `present()`).
+        let (backdrop_scene, specs) = frame.paint_backdrop(&mut self.fonts, &mut bundle.state);
+        let scene = if specs.is_empty() {
+            WindowShell::at_scale(backdrop_scene, scale)
+        } else {
+            // Same custom-render closure as the main window (see redraw).
+            let custom_arc = self.custom_render.clone();
+            let custom_fn = move |key: u64, w: u32, h: u32| -> Option<vello::peniko::ImageData> {
+                custom_arc.as_ref().and_then(|f| f(key, w, h).map(|d| d.image))
+            };
+            let physical_backdrop = WindowShell::at_scale(backdrop_scene, scale);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "physical window size fits in u32"
+            )]
+            let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
+            match bundle.shell.render_to_image(&physical_backdrop, pw, ph, theme.bg) {
+                Some(Ok(backdrop_pixels)) => WindowShell::at_scale(
+                    frame.paint_final(
+                        &mut self.fonts,
+                        &mut bundle.state,
+                        &crate::multi_pass::process_specs(
+                            &backdrop_pixels,
+                            &specs,
+                            scale,
+                            &custom_fn,
+                            &mut self.custom_cache,
+                        ),
+                    ),
+                    scale,
+                ),
+                Some(Err(e)) => {
+                    self.shell.fail(event_loop, e);
+                    return;
+                }
+                None => return,
+            }
+        };
+        if let Err(e) = bundle.shell.present_physical(&scene) {
             // Secondary failures stop the app through the main shell's
             // channel: device-level errors are app-fatal, not per-window.
             self.shell.fail(event_loop, e);
