@@ -68,7 +68,12 @@ pub fn process_specs(
                         reason = "physical corner radius fits in f32"
                     )]
                     let radius_px = (f64::from(radius) * scale) as f32;
-                    refract_edges(&blurred, radius_px)
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "physical edge thickness fits in f32"
+                    )]
+                    let band_px = (f64::from(crate::blur::EDGE) * scale) as f32;
+                    refract_edges(&blurred, radius_px, band_px)
                 } else {
                     blurred
                 };

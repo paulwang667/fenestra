@@ -95,6 +95,17 @@ pub(crate) fn settle(img: &RgbaImage) -> RgbaImage {
     out
 }
 
+/// How thick the glass is, in logical px: how far in from its outline a pane
+/// bends what is behind it.
+///
+/// **A thickness, which is what it was not.** The band used to be the corner
+/// radius, so a pill — radius half its height — was bevel all the way through
+/// and read as a slab, while a large rounded card got a narrow rim off the
+/// same code. A pane of glass has one edge measure however it is cut, and
+/// tying it to the outline made two surfaces in one design read as two
+/// materials.
+pub(crate) const EDGE: f32 = 7.0;
+
 /// How much further the blue end bends than the red, as multipliers on the
 /// displacement. Glass disperses — shorter wavelengths refract more — and the
 /// spread is what puts colour in a rim instead of a grey smear. Small on
@@ -102,7 +113,7 @@ pub(crate) fn settle(img: &RgbaImage) -> RgbaImage {
 /// pixel, and more reads as a rendering fault rather than as glass.
 const DISPERSION: (f32, f32) = (0.94, 1.06);
 
-pub(crate) fn refract_edges(img: &RgbaImage, radius_px: f32) -> RgbaImage {
+pub(crate) fn refract_edges(img: &RgbaImage, radius_px: f32, band_px: f32) -> RgbaImage {
     let (w, h) = (img.width(), img.height());
     if w < 4 || h < 4 {
         return img.clone();
@@ -110,10 +121,15 @@ pub(crate) fn refract_edges(img: &RgbaImage, radius_px: f32) -> RgbaImage {
     let (wf, hf) = (fl(w), fl(h));
     let (hw, hh) = (wf * 0.5, hf * 0.5);
     let r = radius_px.clamp(0.0, hw.min(hh));
-    // The bevel band: how far in from the edge the lens bends the backdrop, and
-    // the peak inward displacement. Tied to the radius (a thicker, rounder pane
-    // lenses more), with a floor so a near-square pane still bends.
-    let band = r.max(10.0).min(hw.min(hh));
+    // **The bevel band is a thickness, not a shape.** It was the corner radius
+    // — so a pill, whose radius is half its height, was bevel all the way
+    // through and every pixel of it was lensed, while a big rounded card got a
+    // narrow rim. Backwards: a 2mm pane has a 2mm edge whether it is cut round
+    // or square, and the two read as different materials when the edge follows
+    // the outline instead of the glass.
+    //
+    // Clamped to the pane's own half-extent, which is all the room there is.
+    let band = band_px.max(1.0).min(hw.min(hh));
     let max_disp = band * 0.55;
     let (ex, ey) = (hw - r, hh - r); // inner box half-extents
     let mut out = RgbaImage::new(w, h);
@@ -344,6 +360,56 @@ fn f32_to_u8(v: f32) -> u8 {
 #[cfg(test)]
 mod tests {
 
+    /// **Thickness is the glass, not the outline.**
+    ///
+    /// The band was the corner radius, so a pill — radius half its height —
+    /// was bevel all the way through while a big rounded card off the same
+    /// code got a narrow rim. Two surfaces in one design read as two
+    /// materials. Cut the same sheet two ways and the edge is the same edge:
+    /// what this measures is how far in from the outline the picture is still
+    /// being bent.
+    #[test]
+    fn one_thickness_bevels_a_pill_and_a_card_alike() {
+        // A grid, so a displacement in any direction lands somewhere different.
+        let field = |w: u32, h: u32| {
+            RgbaImage::from_fn(w, h, |x, y| {
+                if (x / 3 + y / 3) % 2 == 0 {
+                    Rgba([0, 0, 0, 255])
+                } else {
+                    Rgba([255, 255, 255, 255])
+                }
+            })
+        };
+        // How far in from the left edge, along the middle row, the output
+        // still differs from the input.
+        let reach = |img: &RgbaImage, radius: f32| {
+            let out = refract_edges(img, radius, EDGE * 2.0);
+            let y = img.height() / 2;
+            (0..img.width() / 2)
+                .filter(|x| out.get_pixel(*x, y) != img.get_pixel(*x, y))
+                .max()
+                .unwrap_or(0)
+        };
+
+        let card = field(240, 120);
+        let pill = field(240, 120);
+        // A card's radius, and a pill's — half the height, which is what
+        // `rounded_full` resolves to.
+        let card_reach = reach(&card, 14.0);
+        let pill_reach = reach(&pill, 60.0);
+
+        assert!(
+            card_reach.abs_diff(pill_reach) <= 4,
+            "the same glass bevelled differently by outline: card {card_reach}, pill {pill_reach}"
+        );
+        // And it is an edge, not the whole pane: a 120 tall pane has 60 to
+        // give and the bevel takes a fraction of it.
+        assert!(
+            pill_reach < 30,
+            "the bevel reaches {pill_reach}px into a pane with 60 to spare"
+        );
+    }
+
     /// **A pane settles what is behind it, in both directions.**
     ///
     /// The fault this fixes is a fixed tint over an unknown picture: the same
@@ -416,7 +482,7 @@ mod tests {
                 image::Rgba([255, 255, 255, 255])
             }
         });
-        let out = super::refract_edges(&img, 30.0);
+        let out = super::refract_edges(&img, 30.0, super::EDGE * 2.0);
 
         let split = out
             .enumerate_pixels()
@@ -432,7 +498,7 @@ mod tests {
     #[test]
     fn a_flat_backdrop_gains_no_fringe() {
         let img = image::RgbaImage::from_pixel(120, 120, image::Rgba([90, 90, 90, 255]));
-        let out = super::refract_edges(&img, 30.0);
+        let out = super::refract_edges(&img, 30.0, super::EDGE * 2.0);
         assert!(
             out.pixels().all(|p| p[0].abs_diff(p[2]) <= 1),
             "a fringe appeared over a backdrop with nothing to disperse"
@@ -469,7 +535,7 @@ mod tests {
             let t = Instant::now();
             for _ in 0..n {
                 let b = super::box_blur_rgba8(&img, super::box_radius_for_std_dev(26.0));
-                std::hint::black_box(super::refract_edges(&b, radius));
+                std::hint::black_box(super::refract_edges(&b, radius, super::EDGE * 2.0));
             }
             let per = t.elapsed().as_secs_f64() * 1000.0 / f64::from(n);
             println!("{label} ({w}x{h}): {per:.2} ms");
@@ -556,7 +622,7 @@ mod tests {
     #[test]
     fn refract_uniform_field_is_unchanged() {
         let img = RgbaImage::from_pixel(40, 30, Rgba([60, 120, 200, 210]));
-        let out = refract_edges(&img, 12.0);
+        let out = refract_edges(&img, 12.0, EDGE * 2.0);
         for px in out.pixels() {
             assert_eq!(px.0, [60, 120, 200, 210]);
         }
@@ -571,14 +637,14 @@ mod tests {
             let v = (i as u32 * 53 % 256) as u8;
             *px = Rgba([v, v.wrapping_mul(2), v.wrapping_add(7), 255]);
         }
-        assert_eq!(refract_edges(&img, 14.0), refract_edges(&img, 14.0));
+        assert_eq!(refract_edges(&img, 14.0, EDGE * 2.0), refract_edges(&img, 14.0, EDGE * 2.0));
     }
 
     /// A degenerate (tiny) image is returned unchanged.
     #[test]
     fn refract_tiny_image_is_identity() {
         let img = RgbaImage::from_pixel(3, 3, Rgba([1, 2, 3, 4]));
-        assert_eq!(refract_edges(&img, 5.0), img);
+        assert_eq!(refract_edges(&img, 5.0, EDGE * 2.0), img);
     }
 
     /// Refraction bends the rim but leaves the center (far from every edge)
@@ -594,7 +660,7 @@ mod tests {
                 img.put_pixel(x, y, Rgba([v, v, v, 255]));
             }
         }
-        let out = refract_edges(&img, 14.0);
+        let out = refract_edges(&img, 14.0, EDGE * 2.0);
         let cy = h / 2;
         // The center column is > band from every edge, so it copies through.
         assert_eq!(

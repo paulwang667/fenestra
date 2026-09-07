@@ -169,6 +169,18 @@ impl Material {
         Self::new(0.82, 18.0, 1.5)
     }
 
+    /// The material for a pane meant to read as glass.
+    ///
+    /// **Not the popover's, which it used to borrow.** A popover's job is to
+    /// carry text legibly over anything and 0.82 fill is how it does that — so
+    /// a glass pane inherited an opacity chosen to stop you seeing through it,
+    /// and came out milky. Glass has the opposite job: the blur and the
+    /// bevelled rim are what make it a material, and they only work if there
+    /// is something visible behind them.
+    pub const fn glass() -> Self {
+        Self::new(0.58, 26.0, 1.5)
+    }
+
     /// Resolves the translucent, vibrancy-tinted fill color for `base` (a solid
     /// surface-role color from the theme): keeps `base`'s OKLCH lightness and
     /// hue, multiplies its chroma by `saturation` (gamut-mapped via
@@ -253,8 +265,11 @@ impl Surface {
                 fill: SurfaceFill::Elevated(2),
                 border: SurfaceBorder::Subtle,
                 shadow: Some(ShadowToken::Lg),
-                highlight: Some(0.16),
-                material: Some(Material::popover()),
+                // **A sharper lip.** 0.16 spread across the pane's top read as
+                // a rounded-over edge — thickness, where a sheet of glass has
+                // a cut.
+                highlight: Some(0.24),
+                material: Some(Material::glass()),
             },
             // Exempt materials: a pill control handle and an inverted chip.
             Surface::Thumb => SurfaceBundle {
@@ -625,8 +640,17 @@ mod tests {
         assert_eq!(b.fill, SurfaceFill::Elevated(2));
         assert_eq!(b.shadow, Some(ShadowToken::Lg));
         assert_eq!(b.border, SurfaceBorder::Subtle);
-        assert_eq!(b.highlight, Some(0.16));
-        assert_eq!(b.material, Some(Material::popover()));
+        // **Its own material, and a sharper lip.** These were the popover's
+        // 0.82 fill and a 0.16 highlight, and together they read as a slab: a
+        // popover's opacity is chosen to carry text over anything, which is
+        // the opposite of letting you see through, and a soft wide highlight
+        // reads as a rounded-over edge rather than a cut one.
+        assert_eq!(b.highlight, Some(0.24));
+        assert_eq!(b.material, Some(Material::glass()));
+        assert!(
+            Material::glass().fill_alpha < Material::popover().fill_alpha,
+            "glass has to be the more transparent of the two, or it is not glass"
+        );
         assert_eq!(b.radius, SurfaceRadius::Uniform(R_LG));
     }
 
