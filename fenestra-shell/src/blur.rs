@@ -277,6 +277,43 @@ fn f32_to_u8(v: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+
+    /// What the lensing pass costs, at the sizes real surfaces use.
+    ///
+    /// **The number that decides where this can be used.** Measured in
+    /// release on an M-series laptop: a player control bar at 1426x112 costs
+    /// 13.55 ms, and a 60 Hz frame is 16.7. Over a static backdrop that is
+    /// paid once and never again; over playing video the backdrop changes
+    /// every frame and the whole pane has to be refiltered, so a screenful of
+    /// glass over moving content is not affordable on the CPU. That is the
+    /// reason the player's centre control is a flat scrim and not glass.
+    ///
+    /// ```text
+    /// cargo test --release -p fenestra-shell --lib -- --ignored --nocapture probe_glass_cost
+    /// ```
+    #[test]
+    #[ignore = "an instrument, not a gate"]
+    fn probe_glass_cost() {
+        use std::time::Instant;
+        for (label, w, h, radius) in [
+            ("player control bar", 1426u32, 112u32, 28.0f32),
+            ("title pill", 320, 76, 38.0),
+            ("play disc", 168, 168, 84.0),
+            ("a full window", 2480, 1640, 0.0),
+        ] {
+            let img = image::RgbaImage::from_fn(w, h, |x, y| {
+                image::Rgba([(x % 255) as u8, (y % 255) as u8, 128, 255])
+            });
+            let n = 10;
+            let t = Instant::now();
+            for _ in 0..n {
+                let b = super::box_blur_rgba8(&img, super::box_radius_for_std_dev(26.0));
+                std::hint::black_box(super::refract_edges(&b, radius));
+            }
+            let per = t.elapsed().as_secs_f64() * 1000.0 / f64::from(n);
+            println!("{label} ({w}x{h}): {per:.2} ms");
+        }
+    }
     use super::*;
     use image::Rgba;
 
