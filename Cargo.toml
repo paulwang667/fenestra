@@ -99,14 +99,20 @@ opt-level = 1
 opt-level = 2
 debug = 0
 
-# **Incremental buys a test run almost nothing, and costs the most disk of
-# anything here.** A `cargo test --workspace` builds 163 integration binaries
-# and their cost is dominated by linking, which incremental does not
-# accelerate — while each one writes a dependency graph and pre-LTO bitcode.
-# Measured: `target/debug/incremental` at 10 GiB against 15 GiB of target, and
-# two runs on a 228 GiB disk died mid-link on "No space left on device".
+# **Incremental is on for tests, and the disk is the price.** This profile set
+# `incremental = false`, and the reasoning it gave was right as far as it went:
+# a `cargo test --workspace` links 166 integration binaries, that is what
+# dominates, and incremental does not accelerate linking. What it left out is
+# the other half of a working day — changing one line of `fenestra-core` and
+# recompiling every crate downstream of it from scratch before any of that
+# linking starts.
 #
-# Only the test profile. `cargo run` recompiles one crate at a time and is
-# exactly the case incremental is for, so it keeps it.
-[profile.test]
-incremental = false
+# Measured either way: fully cached, `--workspace --no-run` is 0.83s, so
+# nothing here is the test run. It is the rebuild, and half of that half is
+# what incremental gets back.
+#
+# The disk cost is real and was not imagined: `target/debug/incremental` at
+# 10 GiB against 15 GiB of target, and two runs on a 228 GiB disk that died
+# mid-link on "No space left on device". If it bites again, the fix is
+# `target/debug/incremental` with an `rm -rf`, not this line — and the real fix
+# for both is fewer binaries. 166 of them is the number to attack.

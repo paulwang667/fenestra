@@ -265,10 +265,16 @@ impl Surface {
                 fill: SurfaceFill::Elevated(2),
                 border: SurfaceBorder::Subtle,
                 shadow: Some(ShadowToken::Lg),
-                // **A sharper lip.** 0.16 spread across the pane's top read as
-                // a rounded-over edge — thickness, where a sheet of glass has
-                // a cut.
-                highlight: Some(0.24),
+                // **Nearly nothing, and that was the correction.** I took this
+                // to 0.24 on the theory that a sharper, brighter lip reads as
+                // a cut edge rather than a rounded-over one. Held against the
+                // chrome this is measured by — a floating macOS toolbar — the
+                // premise was wrong: that surface has *no* visible lip at all,
+                // and is told from the content under it by a small step of
+                // fill and a hairline. Refinement here is subtraction. What is
+                // left keeps a translucent pane from vanishing into a dark
+                // backdrop entirely.
+                highlight: Some(0.08),
                 material: Some(Material::glass()),
             },
             // Exempt materials: a pill control handle and an inverted chip.
@@ -645,7 +651,7 @@ mod tests {
         // popover's opacity is chosen to carry text over anything, which is
         // the opposite of letting you see through, and a soft wide highlight
         // reads as a rounded-over edge rather than a cut one.
-        assert_eq!(b.highlight, Some(0.24));
+        assert_eq!(b.highlight, Some(0.08));
         assert_eq!(b.material, Some(Material::glass()));
         assert!(
             Material::glass().fill_alpha < Material::popover().fill_alpha,
