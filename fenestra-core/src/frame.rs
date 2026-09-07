@@ -2062,6 +2062,55 @@ fn node_transform(node: &FrameNode) -> Option<kurbo::Affine> {
     node.style.paint_affine(node.rect)
 }
 
+/// Shifts a pane's fill by how light or dark the backdrop under it turned out.
+///
+/// **The implementation `AdaptiveTint` never had.** Its doc describes exactly
+/// this — lightness moves by `gain * (pivot - backdrop_luminance)`, so a dark
+/// backdrop brightens the tint and a light one darkens it — and nothing read
+/// the field. What a caller gets from it is that one `Material` works over a
+/// night sky and over a sunset without the composite becoming a muddy average
+/// of the two.
+///
+/// Returns `None` when there is nothing to shift (no solid fill, or an empty
+/// image), so the caller keeps the style it had.
+fn adapt_fill(
+    style: &Style,
+    tint: crate::style::AdaptiveTint,
+    image: &peniko::ImageData,
+) -> Option<Style> {
+    let Some(Paint::Solid(fill)) = style.fill else {
+        return None;
+    };
+    // Rec. 709 luma over the image's own pixels, which are RGBA8 premultiplied
+    // or not depending on the format — either way the relative weighting is
+    // what this needs, not absolute light.
+    let bytes = image.data.as_ref();
+    if bytes.len() < 4 {
+        return None;
+    }
+    let mut sum = 0f64;
+    let mut n = 0u32;
+    // Every fourth pixel in each direction: a mean does not need all of them,
+    // and a pane can be a megapixel.
+    for px in bytes.chunks_exact(4).step_by(4) {
+        sum += 0.2126 * f64::from(px[0]) + 0.7152 * f64::from(px[1]) + 0.0722 * f64::from(px[2]);
+        n += 1;
+    }
+    if n == 0 {
+        return None;
+    }
+    #[expect(clippy::cast_possible_truncation, reason = "a luma mean is 0..255")]
+    let luma = (sum / (f64::from(n) * 255.0)) as f32;
+
+    let [l, c, h] = crate::oklch_of(fill);
+    let shifted = (l + tint.gain * (tint.pivot - luma)).clamp(0.0, 1.0);
+    let mut out = style.clone();
+    out.fill = Some(Paint::Solid(
+        crate::theme::oklch(shifted, c, h).with_alpha(fill.components[3]),
+    ));
+    Some(out)
+}
+
 impl Frame {
     /// Paints the frame into a fresh scene (logical coordinates). Needs the
     /// retained state for editor layouts and caret blink phase. This is the
@@ -2387,9 +2436,27 @@ impl Frame {
         } else {
             None
         };
+        // **The pane adapts to what is behind it, which is the design the
+        // library already had and never rendered.** `AdaptiveTint` was
+        // declared, set on `Surface::Glass`, documented as the calibrated
+        // recipe and serialisable from JSON — and referenced nowhere in the
+        // painter. Its whole point is that a tint is chosen once, without
+        // knowing the picture, and then has to work over a night sky and over
+        // a sunset.
+        //
+        // Here is the one moment both halves exist: the filtered backdrop and
+        // the fill about to go over it. Shifting the *tint* is the right model
+        // and compressing the backdrop was not — the picture stays honest and
+        // the pane moves, which is what keeps glass transparent.
+        let adapted = node
+            .style
+            .adaptive_tint
+            .zip(backdrop)
+            .and_then(|(tint, image)| adapt_fill(&node.style, tint, image));
+        let style = adapted.as_ref().unwrap_or(&node.style);
         let layers = painter::push_box(
             scene,
-            &node.style,
+            style,
             node.rect,
             self.canvas,
             self.scale,
@@ -3352,6 +3419,71 @@ impl NodeDump {
 
 #[cfg(test)]
 mod tests {
+
+    /// **One tint, over a night and over a sunset.**
+    ///
+    /// `AdaptiveTint` described this and nothing rendered it: lightness moves
+    /// by `gain * (pivot - backdrop_luminance)`, so the same `Material` works
+    /// over both instead of the composite becoming a muddy average of the
+    /// tint and whatever happens to be behind it.
+    #[test]
+    fn a_pane_adapts_its_tint_to_the_backdrop_under_it() {
+        use crate::style::AdaptiveTint;
+
+        let image = |v: u8| peniko::ImageData {
+            data: peniko::Blob::from(vec![v, v, v, 255].repeat(64)),
+            format: peniko::ImageFormat::Rgba8,
+            width: 8,
+            height: 8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+        };
+        let mut style = Style::default();
+        style.fill = Some(Paint::Solid(crate::theme::oklch(0.30, 0.01, 258.0)));
+        let tint = AdaptiveTint::glass();
+
+        let lightness = |img: &peniko::ImageData| {
+            let out = super::adapt_fill(&style, tint, img).expect("adapted");
+            let Some(Paint::Solid(c)) = out.fill else {
+                panic!("a solid fill goes in and a solid fill comes out")
+            };
+            crate::oklch_of(c)[0]
+        };
+
+        let over_night = lightness(&image(8));
+        let over_sunset = lightness(&image(230));
+        let unadapted = 0.30;
+
+        assert!(
+            over_night > unadapted,
+            "a dark backdrop did not brighten the tint: {over_night}"
+        );
+        assert!(
+            over_sunset < unadapted,
+            "a light backdrop did not darken it: {over_sunset}"
+        );
+        // And the alpha is untouched: adapting a tint is not making it opaque.
+        let out = super::adapt_fill(&style, tint, &image(230)).expect("adapted");
+        let Some(Paint::Solid(c)) = out.fill else {
+            panic!("solid")
+        };
+        assert!((c.components[3] - 1.0).abs() < f32::EPSILON || c.components[3] < 1.0);
+    }
+
+    /// A pane with no adaptive tint keeps the style it had, so every opaque
+    /// role stays byte-identical.
+    #[test]
+    fn a_style_with_no_solid_fill_is_left_alone() {
+        use crate::style::AdaptiveTint;
+        let image = peniko::ImageData {
+            data: peniko::Blob::from(vec![40u8, 40, 40, 255].repeat(16)),
+            format: peniko::ImageFormat::Rgba8,
+            width: 4,
+            height: 4,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+        };
+        let style = Style::default(); // no fill
+        assert!(super::adapt_fill(&style, AdaptiveTint::glass(), &image).is_none());
+    }
     use super::*;
     use crate::tokens::STATE_LAYER;
 

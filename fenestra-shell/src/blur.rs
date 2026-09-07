@@ -51,50 +51,6 @@ pub fn box_blur_rgba8(img: &RgbaImage, radius: u32) -> RgbaImage {
 /// with edge-clamped bilinear sampling, bit-stable across rasterizers. A
 /// degenerate (tiny) image is returned unchanged.
 #[must_use]
-/// How far a pane settles what is behind it toward one predictable value.
-///
-/// **The tint is chosen without knowing the picture.** An app writes
-/// `Material::new(0.5, ..).tint(dark_chrome)` once, and then that pane has to
-/// work over a night sky and over a sunset. Over the sunset the composite came
-/// out brown — not the tint and not the picture, but a muddy average of the
-/// two that reads as a smudge rather than a control.
-///
-/// `SETTLE` is how far each pixel moves toward the pane's own mean, and
-/// `TOWARD_MID` how far that mean itself moves to the middle. Together they
-/// narrow what a fixed tint has to cover: an extreme backdrop stops being
-/// extreme, and the composite stops depending on the frame. Modest, because
-/// this is frosting a pane and not erasing what is behind it — the point of
-/// glass is that you can still see through.
-const SETTLE: f32 = 0.35;
-const TOWARD_MID: f32 = 0.22;
-
-/// Settles a filtered backdrop toward one predictable value. See [`SETTLE`].
-pub(crate) fn settle(img: &RgbaImage) -> RgbaImage {
-    let n = f64::from(img.width() * img.height()).max(1.0);
-    let mut sum = [0f64; 3];
-    for p in img.pixels() {
-        for c in 0..3 {
-            sum[c] += f64::from(p[c]);
-        }
-    }
-    #[expect(clippy::cast_possible_truncation, reason = "a channel mean is 0..255")]
-    let mean: [f32; 3] = std::array::from_fn(|c| (sum[c] / n) as f32);
-    // The mean, itself pulled toward the middle: a pane over a sunset settles
-    // somewhat darker than the sunset, one over a night somewhat lighter.
-    let target: [f32; 3] = std::array::from_fn(|c| mean[c] + (127.5 - mean[c]) * TOWARD_MID);
-
-    let mut out = img.clone();
-    for p in out.pixels_mut() {
-        for c in 0..3 {
-            let v = f32::from(p[c]);
-            #[expect(clippy::cast_possible_truncation, reason = "clamped to 0..255")]
-            let settled = (v + (target[c] - v) * SETTLE).clamp(0.0, 255.0) as u8;
-            p[c] = settled;
-        }
-    }
-    out
-}
-
 /// How thick the glass is, in logical px: how far in from its outline a pane
 /// bends what is behind it.
 ///
@@ -407,56 +363,6 @@ mod tests {
         assert!(
             pill_reach < 30,
             "the bevel reaches {pill_reach}px into a pane with 60 to spare"
-        );
-    }
-
-    /// **A pane settles what is behind it, in both directions.**
-    ///
-    /// The fault this fixes is a fixed tint over an unknown picture: the same
-    /// dark chrome that reads as glass over a night sky came out brown over a
-    /// sunset. Settling narrows what the tint has to cover, so a bright
-    /// backdrop is brought down and a dark one lifted.
-    #[test]
-    fn a_pane_settles_a_backdrop_toward_the_middle() {
-        let mean = |img: &RgbaImage| {
-            let n = f64::from(img.width() * img.height());
-            img.pixels().map(|p| f64::from(p[0])).sum::<f64>() / n
-        };
-        let bright = RgbaImage::from_pixel(40, 40, image::Rgba([230, 230, 230, 255]));
-        let dark = RgbaImage::from_pixel(40, 40, image::Rgba([16, 16, 16, 255]));
-
-        let settled_bright = mean(&super::settle(&bright));
-        let settled_dark = mean(&super::settle(&dark));
-        assert!(
-            settled_bright < mean(&bright),
-            "a bright backdrop was not brought down"
-        );
-        assert!(settled_dark > mean(&dark), "a dark backdrop was not lifted");
-        // Bounded: the point of glass is that you can still see through it,
-        // so neither goes anywhere near the middle.
-        assert!(
-            settled_bright > 190.0 && settled_dark < 60.0,
-            "flattened, not settled: {settled_bright:.0} / {settled_dark:.0}"
-        );
-    }
-
-    /// **And it narrows the range, which is the property.** The distance
-    /// between the brightest backdrop and the darkest is what a fixed tint
-    /// has to survive.
-    #[test]
-    fn settling_narrows_the_range_a_tint_has_to_cover() {
-        let mean = |img: &RgbaImage| {
-            let n = f64::from(img.width() * img.height());
-            img.pixels().map(|p| f64::from(p[0])).sum::<f64>() / n
-        };
-        let bright = RgbaImage::from_pixel(40, 40, image::Rgba([230, 230, 230, 255]));
-        let dark = RgbaImage::from_pixel(40, 40, image::Rgba([16, 16, 16, 255]));
-
-        let before = mean(&bright) - mean(&dark);
-        let after = mean(&super::settle(&bright)) - mean(&super::settle(&dark));
-        assert!(
-            after < before * 0.95,
-            "settling did not narrow anything: {before:.0} -> {after:.0}"
         );
     }
 
