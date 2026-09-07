@@ -178,7 +178,7 @@ impl Material {
     /// bevelled rim are what make it a material, and they only work if there
     /// is something visible behind them.
     pub const fn glass() -> Self {
-        Self::new(0.58, 26.0, 1.5)
+        Self::new(0.58, 12.0, 1.5)
     }
 
     /// Resolves the translucent, vibrancy-tinted fill color for `base` (a solid
