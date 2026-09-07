@@ -51,6 +51,57 @@ pub fn box_blur_rgba8(img: &RgbaImage, radius: u32) -> RgbaImage {
 /// with edge-clamped bilinear sampling, bit-stable across rasterizers. A
 /// degenerate (tiny) image is returned unchanged.
 #[must_use]
+/// How far a pane settles what is behind it toward one predictable value.
+///
+/// **The tint is chosen without knowing the picture.** An app writes
+/// `Material::new(0.5, ..).tint(dark_chrome)` once, and then that pane has to
+/// work over a night sky and over a sunset. Over the sunset the composite came
+/// out brown — not the tint and not the picture, but a muddy average of the
+/// two that reads as a smudge rather than a control.
+///
+/// `SETTLE` is how far each pixel moves toward the pane's own mean, and
+/// `TOWARD_MID` how far that mean itself moves to the middle. Together they
+/// narrow what a fixed tint has to cover: an extreme backdrop stops being
+/// extreme, and the composite stops depending on the frame. Modest, because
+/// this is frosting a pane and not erasing what is behind it — the point of
+/// glass is that you can still see through.
+const SETTLE: f32 = 0.35;
+const TOWARD_MID: f32 = 0.22;
+
+/// Settles a filtered backdrop toward one predictable value. See [`SETTLE`].
+pub(crate) fn settle(img: &RgbaImage) -> RgbaImage {
+    let n = f64::from(img.width() * img.height()).max(1.0);
+    let mut sum = [0f64; 3];
+    for p in img.pixels() {
+        for c in 0..3 {
+            sum[c] += f64::from(p[c]);
+        }
+    }
+    #[expect(clippy::cast_possible_truncation, reason = "a channel mean is 0..255")]
+    let mean: [f32; 3] = std::array::from_fn(|c| (sum[c] / n) as f32);
+    // The mean, itself pulled toward the middle: a pane over a sunset settles
+    // somewhat darker than the sunset, one over a night somewhat lighter.
+    let target: [f32; 3] = std::array::from_fn(|c| mean[c] + (127.5 - mean[c]) * TOWARD_MID);
+
+    let mut out = img.clone();
+    for p in out.pixels_mut() {
+        for c in 0..3 {
+            let v = f32::from(p[c]);
+            #[expect(clippy::cast_possible_truncation, reason = "clamped to 0..255")]
+            let settled = (v + (target[c] - v) * SETTLE).clamp(0.0, 255.0) as u8;
+            p[c] = settled;
+        }
+    }
+    out
+}
+
+/// How much further the blue end bends than the red, as multipliers on the
+/// displacement. Glass disperses — shorter wavelengths refract more — and the
+/// spread is what puts colour in a rim instead of a grey smear. Small on
+/// purpose: at a few px of displacement even this is a fringe of under a
+/// pixel, and more reads as a rendering fault rather than as glass.
+const DISPERSION: (f32, f32) = (0.94, 1.06);
+
 pub(crate) fn refract_edges(img: &RgbaImage, radius_px: f32) -> RgbaImage {
     let (w, h) = (img.width(), img.height());
     if w < 4 || h < 4 {
@@ -75,17 +126,32 @@ pub(crate) fn refract_edges(img: &RgbaImage, radius_px: f32) -> RgbaImage {
             let (ax, ay) = (qx.max(0.0), qy.max(0.0));
             let outside = (ax * ax + ay * ay).sqrt() + qx.max(qy).min(0.0) - r;
             let d = -outside; // inside-distance, positive inside the silhouette
-            let (sx, sy) = if d > 0.0 && d < band {
+            if d > 0.0 && d < band {
                 let (nx, ny) = sdf_normal(rx, ry, ex, ey);
                 // Strongest at the very edge, easing (quadratically) to zero at
                 // the band's inner boundary; sample `disp` px further inside.
                 let t = d / band;
                 let disp = max_disp * (1.0 - t) * (1.0 - t);
-                (px - nx * disp, py - ny * disp)
+                // **Three samples, because glass disperses.** A real pane
+                // bends short wavelengths further than long ones, which is why
+                // the rim of a thick edge fringes. One displacement for all
+                // three channels is a lens made of something that does not
+                // exist; the split is small — a few percent of a displacement
+                // that is itself only a few px — and what it buys is the
+                // colour at the rim rather than a grey smear.
+                //
+                // Paid only inside the band, which is a fraction of the pane.
+                let r_px = bilinear(img, px - nx * disp * DISPERSION.0, py - ny * disp * DISPERSION.0);
+                let g_px = bilinear(img, px - nx * disp, py - ny * disp);
+                let b_px = bilinear(img, px - nx * disp * DISPERSION.1, py - ny * disp * DISPERSION.1);
+                out.put_pixel(
+                    x,
+                    y,
+                    image::Rgba([r_px[0], g_px[1], b_px[2], g_px[3]]),
+                );
             } else {
-                (px, py)
-            };
-            out.put_pixel(x, y, bilinear(img, sx, sy));
+                out.put_pixel(x, y, bilinear(img, px, py));
+            }
         }
     }
     out
@@ -277,6 +343,101 @@ fn f32_to_u8(v: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A pane settles what is behind it, in both directions.**
+    ///
+    /// The fault this fixes is a fixed tint over an unknown picture: the same
+    /// dark chrome that reads as glass over a night sky came out brown over a
+    /// sunset. Settling narrows what the tint has to cover, so a bright
+    /// backdrop is brought down and a dark one lifted.
+    #[test]
+    fn a_pane_settles_a_backdrop_toward_the_middle() {
+        let mean = |img: &RgbaImage| {
+            let n = f64::from(img.width() * img.height());
+            img.pixels().map(|p| f64::from(p[0])).sum::<f64>() / n
+        };
+        let bright = RgbaImage::from_pixel(40, 40, image::Rgba([230, 230, 230, 255]));
+        let dark = RgbaImage::from_pixel(40, 40, image::Rgba([16, 16, 16, 255]));
+
+        let settled_bright = mean(&super::settle(&bright));
+        let settled_dark = mean(&super::settle(&dark));
+        assert!(
+            settled_bright < mean(&bright),
+            "a bright backdrop was not brought down"
+        );
+        assert!(settled_dark > mean(&dark), "a dark backdrop was not lifted");
+        // Bounded: the point of glass is that you can still see through it,
+        // so neither goes anywhere near the middle.
+        assert!(
+            settled_bright > 190.0 && settled_dark < 60.0,
+            "flattened, not settled: {settled_bright:.0} / {settled_dark:.0}"
+        );
+    }
+
+    /// **And it narrows the range, which is the property.** The distance
+    /// between the brightest backdrop and the darkest is what a fixed tint
+    /// has to survive.
+    #[test]
+    fn settling_narrows_the_range_a_tint_has_to_cover() {
+        let mean = |img: &RgbaImage| {
+            let n = f64::from(img.width() * img.height());
+            img.pixels().map(|p| f64::from(p[0])).sum::<f64>() / n
+        };
+        let bright = RgbaImage::from_pixel(40, 40, image::Rgba([230, 230, 230, 255]));
+        let dark = RgbaImage::from_pixel(40, 40, image::Rgba([16, 16, 16, 255]));
+
+        let before = mean(&bright) - mean(&dark);
+        let after = mean(&super::settle(&bright)) - mean(&super::settle(&dark));
+        assert!(
+            after < before * 0.95,
+            "settling did not narrow anything: {before:.0} -> {after:.0}"
+        );
+    }
+
+    /// **The rim splits colour, which is what a lens does.**
+    ///
+    /// Only where there is contrast behind it: over a flat backdrop every
+    /// channel samples the same value and dispersion is correctly invisible.
+    /// So the input is a hard black/white split, and the assertion is that
+    /// somewhere in the band the red and blue channels disagree — they cannot,
+    /// if all three are sampled at one displacement.
+    #[test]
+    fn the_rim_disperses_where_there_is_contrast_behind_it() {
+        let (w, h) = (120u32, 120u32);
+        // **A grid, not one split.** Displacement runs along the surface
+        // normal — vertical at the top and bottom edges, horizontal at the
+        // sides — so a single vertical split leaves the top band sampling
+        // down its own column and shows nothing. The first version of this
+        // test asserted the code was broken because of that.
+        let img = image::RgbaImage::from_fn(w, h, |x, y| {
+            if (x / 3 + y / 3) % 2 == 0 {
+                image::Rgba([0, 0, 0, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        });
+        let out = super::refract_edges(&img, 30.0);
+
+        let split = out
+            .enumerate_pixels()
+            .any(|(_, _, p)| p[0].abs_diff(p[2]) > 8);
+        assert!(
+            split,
+            "every channel landed on the same sample: the lens is achromatic"
+        );
+    }
+
+    /// And a flat backdrop stays flat: dispersion of nothing is nothing, and a
+    /// coloured fringe over plain colour would be a rendering fault.
+    #[test]
+    fn a_flat_backdrop_gains_no_fringe() {
+        let img = image::RgbaImage::from_pixel(120, 120, image::Rgba([90, 90, 90, 255]));
+        let out = super::refract_edges(&img, 30.0);
+        assert!(
+            out.pixels().all(|p| p[0].abs_diff(p[2]) <= 1),
+            "a fringe appeared over a backdrop with nothing to disperse"
+        );
+    }
 
     /// What the lensing pass costs, at the sizes real surfaces use.
     ///

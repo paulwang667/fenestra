@@ -10,7 +10,9 @@ use image::RgbaImage;
 use kurbo::Rect;
 use vello::peniko;
 
-use crate::blur::{apply_element_filter, box_blur_rgba8, box_radius_for_std_dev, refract_edges};
+use crate::blur::{
+    apply_element_filter, box_blur_rgba8, box_radius_for_std_dev, refract_edges, settle,
+};
 
 /// Filters each spec's region of the read-back `backdrop`, returning the image
 /// the final pass draws for that element (keyed by [`WidgetId`]). `scale` maps a
@@ -57,6 +59,9 @@ pub fn process_specs(
                 // canvas-clamped (off-screen) crop is a truncated slice, and
                 // refraction would lens its straight cut edge as a fake rim;
                 // fall back to the blur there.
+                // Settle it toward one predictable value before the pane's
+                // own tint goes over the top; see `blur::SETTLE`.
+                let blurred = settle(&blurred);
                 let result = if fully_inside(spec.rect, scale, iw, ih) {
                     #[expect(
                         clippy::cast_possible_truncation,
