@@ -171,3 +171,64 @@ fn color_retargets_crossfade() {
     assert_ne!(mid, before, "midway is no longer the old color");
     assert_ne!(mid, after, "…and not yet the new one (a real crossfade)");
 }
+
+// ------------------------------------------------- app-driven overlays
+
+/// A drawer the app keeps open, with a button inside it.
+struct Panel {
+    presses: u32,
+}
+
+#[derive(Clone)]
+struct Press;
+
+impl App for Panel {
+    type Msg = Press;
+
+    fn update(&mut self, Press: Press) {
+        self.presses += 1;
+    }
+
+    fn view(&self) -> Element<Press> {
+        col().w(600.0).h(400.0).child(
+            fenestra_kit::drawer(fenestra_core::DrawerSide::Right)
+                .title("Panel")
+                .size(240.0)
+                .id("panel")
+                .child(
+                    Element::from(fenestra_kit::button("Press me").on_click(Press)).id("inside"),
+                ),
+        )
+    }
+}
+
+/// **Pressing something inside an app-driven overlay must not restart it.**
+///
+/// Choosing an item in a menu closes the menu, and that is a `Toggle`
+/// overlay: it is open because `FrameState` says so. A drawer or a modal is
+/// open because the app is rendering it, so dropping its state entry closes
+/// nothing — it only forgets when the overlay appeared, and the next frame
+/// realizes a brand new one that replays its 200ms slide-in. A switch inside
+/// a settled drawer looked like the drawer slamming shut and coming back.
+#[test]
+fn a_press_inside_a_drawer_does_not_replay_its_slide() {
+    let mut h = Harness::new(Panel { presses: 0 }, Theme::light(), (600, 400));
+    h.set_reduced_motion(false);
+    // Let the slide-in finish; the panel is at rest.
+    for _ in 0..40 {
+        h.pump(16.0);
+    }
+    let settled = h.get(&by::id("panel")).rect;
+
+    h.click(&by::id("inside"));
+    for step in 0..4 {
+        h.pump(16.0);
+        let now = h.get(&by::id("panel")).rect;
+        assert!(
+            (now.x0 - settled.x0).abs() < 1.0,
+            "the drawer moved {}px on frame {step} after a press inside it",
+            now.x0 - settled.x0
+        );
+    }
+    assert_eq!(h.app().presses, 1, "the button did not do its own job");
+}

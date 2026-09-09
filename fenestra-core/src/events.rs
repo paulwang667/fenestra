@@ -908,7 +908,8 @@ pub fn dispatch<Msg: Clone>(
                     if let Some(msg) = &el.on_click {
                         out.msgs.push(msg.clone());
                         // Menus close when something inside them is chosen.
-                        if let Some(overlay_id) = frame.overlay_containing(active) {
+                        // Only menus: see `Frame::toggle_overlay_containing`.
+                        if let Some(overlay_id) = frame.toggle_overlay_containing(active) {
                             state.close_overlay(overlay_id);
                         }
                     }

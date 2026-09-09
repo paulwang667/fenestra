@@ -3171,6 +3171,27 @@ impl Frame {
             .map(|o| o.id)
     }
 
+    /// The **toggle** overlay containing this node, if any.
+    ///
+    /// Separate from [`Frame::overlay_containing`] because the two kinds of
+    /// overlay are open for different reasons. A toggle overlay — a menu, a
+    /// popover — is open because [`crate::FrameState`] says so, and choosing
+    /// something inside one closes it. An `Open` overlay — a modal, a drawer,
+    /// a context menu — is open because the app is rendering it, and dropping
+    /// its state entry closes nothing: it only forgets when the overlay
+    /// appeared, so the next frame realizes it as a brand new one and replays
+    /// its enter animation. A switch inside a drawer read as the drawer
+    /// slamming shut and sliding back in.
+    pub fn toggle_overlay_containing(&self, id: WidgetId) -> Option<WidgetId> {
+        fn contains(node: &FrameNode, id: WidgetId) -> bool {
+            node.id == id || node.children.iter().any(|c| contains(c, id))
+        }
+        self.overlays
+            .iter()
+            .find(|o| matches!(o.mode, OverlayMode::Toggle) && contains(&o.node, id))
+            .map(|o| o.id)
+    }
+
     /// Open overlays from top of the stack down: `(id, mode)`.
     pub fn open_overlays_top_down(&self) -> Vec<(WidgetId, OverlayMode)> {
         self.overlays.iter().rev().map(|o| (o.id, o.mode)).collect()
