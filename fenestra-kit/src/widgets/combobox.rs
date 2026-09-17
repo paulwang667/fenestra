@@ -33,6 +33,7 @@ pub struct Combobox<Msg> {
     open: bool,
     options: Vec<String>,
     width: f32,
+    fill: bool,
     placeholder: String,
     highlighted: Option<usize>,
     on_input: Option<std::rc::Rc<dyn Fn(String) -> Msg>>,
@@ -57,6 +58,7 @@ pub fn combobox<Msg>(
         open,
         options: options.into_iter().map(Into::into).collect(),
         width: 220.0,
+        fill: false,
         placeholder: String::new(),
         highlighted: None,
         on_input: None,
@@ -72,6 +74,14 @@ impl<Msg> Combobox<Msg> {
     /// Sets the trigger width in logical px (220 by default).
     pub fn width(mut self, width: f32) -> Self {
         self.width = width;
+        self
+    }
+
+    /// Makes the trigger fill its row instead of taking a fixed width. The
+    /// listbox follows the trigger's width, so a combobox in a label-left row
+    /// spans the space the row gives it.
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
         self
     }
 
@@ -155,13 +165,16 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
 
         let mut input = text_input(&c.value)
             .placeholder(c.placeholder.clone())
-            .width(c.width)
             .disabled(c.disabled);
+        input = if c.fill { input } else { input.width(c.width) };
         if let Some(f) = &c.on_input {
             let f = std::rc::Rc::clone(f);
             input = input.on_input(move |s| f(s));
         }
         let mut input = Element::from(input);
+        if c.fill {
+            input = input.w_full();
+        }
 
         // The focused input drives the open list: Up/Down step the cursor
         // (clamped, matching `select`), Enter picks the active option. Home/End
@@ -184,10 +197,10 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
         }
 
         let mut anchor = col()
-            .w(c.width)
             .semantics(Semantics::ComboBox)
             .expanded(show_list)
             .children([input]);
+        anchor = if c.fill { anchor.w_full() } else { anchor.w(c.width) };
 
         if let Some(pick) = c.on_pick.clone().filter(|_| show_list) {
             let mut listbox = col()
@@ -201,6 +214,9 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
                     backdrop: false,
                     trap_focus: false,
                     enter: true,
+                    // Match the trigger's width when filling the row, so the
+                    // listbox does not size to the whole canvas.
+                    match_anchor_width: c.fill,
                 })
                 .children(filtered.iter().enumerate().map(|(i, option)| {
                     option_row(
@@ -210,6 +226,7 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
                         pick(option.clone()),
                     )
                 }));
+            listbox = if c.fill { listbox.w_full() } else { listbox.w(c.width) };
             if let Some(close) = c.on_close.clone() {
                 listbox = listbox.on_close(close);
             }

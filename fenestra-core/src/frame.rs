@@ -1685,10 +1685,19 @@ pub fn build_frame<Msg>(
                 q.path = full;
                 queue.push(q);
             }
+            // A listbox told to match its anchor is laid out against the
+            // anchor's width, so its `w_full()` (100%) resolves to the
+            // trigger's width rather than the full canvas.
+            let available_w = if p.def.match_anchor_width {
+                #[expect(clippy::cast_possible_truncation, reason = "logical px")]
+                { anchor_rect.width() as f32 }
+            } else {
+                size.0
+            };
             tree.compute_layout_with_measure(
                 built.taffy,
                 Size {
-                    width: AvailableSpace::Definite(size.0),
+                    width: AvailableSpace::Definite(available_w),
                     height: AvailableSpace::Definite(size.1),
                 },
                 |known, available, _id, ctx, _style| match ctx {
@@ -3663,6 +3672,7 @@ mod tests {
                 backdrop: false,
                 trap_focus: false,
                 enter: true,
+                match_anchor_width: false,
             }));
         let root = col().child(chip);
         let frame = test_frame(&root, (1440.0, 900.0));

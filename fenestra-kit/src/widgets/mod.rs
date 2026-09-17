@@ -77,7 +77,7 @@ pub use panes::{SplitPane, split_pane};
 pub use radio::{Radio, radio, radio_group};
 pub use rating::{Rating, rating};
 pub use segmented::{Segmented, segmented};
-pub use select::{Select, select};
+pub use select::{Select, SelectOption, select};
 pub use skeleton::{skeleton, skeleton_circle, skeleton_text};
 pub use slider::{RangeSlider, Slider, range_slider, slider};
 pub use spin_button::{SpinButton, spin_button};

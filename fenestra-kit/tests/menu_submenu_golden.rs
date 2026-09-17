@@ -45,6 +45,7 @@ fn flyout_view(theme: &Theme) -> Element<()> {
         backdrop: false,
         trap_focus: false,
         enter: true,
+            match_anchor_width: false,
     });
     let menu: Element<()> = menu_items([
         menu_item("Cut").on_select(()),

@@ -245,6 +245,11 @@ pub struct Overlay {
     /// appears instantly with no fade or slide (avoids a modal "flash");
     /// every constructor defaults to `true`.
     pub enter: bool,
+    /// Lay the overlay out against the anchor's width instead of the canvas,
+    /// so a child's `w_full()` (100%) resolves to the anchor's width. A
+    /// select/combobox listbox set with this stays the same width as its
+    /// trigger; without it the listbox would size to the full canvas.
+    pub match_anchor_width: bool,
 }
 
 impl Overlay {
@@ -256,6 +261,7 @@ impl Overlay {
             backdrop: false,
             trap_focus: false,
             enter: true,
+            match_anchor_width: false,
         }
     }
 
@@ -267,6 +273,7 @@ impl Overlay {
             backdrop: false,
             trap_focus: false,
             enter: true,
+            match_anchor_width: false,
         }
     }
 
@@ -278,6 +285,7 @@ impl Overlay {
             backdrop: true,
             trap_focus: true,
             enter: true,
+            match_anchor_width: false,
         }
     }
 
@@ -292,6 +300,7 @@ impl Overlay {
             backdrop: false,
             trap_focus: false,
             enter: true,
+            match_anchor_width: false,
         }
     }
 
@@ -305,6 +314,7 @@ impl Overlay {
             backdrop: false,
             trap_focus: false,
             enter: true,
+            match_anchor_width: false,
         }
     }
 
@@ -318,6 +328,7 @@ impl Overlay {
             backdrop: true,
             trap_focus: true,
             enter: true,
+            match_anchor_width: false,
         }
     }
 
@@ -331,6 +342,7 @@ impl Overlay {
             backdrop: false,
             trap_focus: false,
             enter: true,
+            match_anchor_width: false,
         }
     }
 }
@@ -341,6 +353,15 @@ impl Overlay {
     /// use this; every constructor animates by default.
     pub fn no_enter(mut self) -> Self {
         self.enter = false;
+        self
+    }
+
+    /// Lay the overlay out against its anchor's width, so a child's
+    /// `w_full()` (100%) resolves to the anchor's width. Pair with
+    /// `Overlay::menu()` on a select/combobox listbox to keep it the same
+    /// width as its trigger.
+    pub fn match_anchor_width(mut self) -> Self {
+        self.match_anchor_width = true;
         self
     }
 }
