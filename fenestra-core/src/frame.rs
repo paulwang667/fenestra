@@ -777,6 +777,9 @@ fn build<Msg>(
             state.focus_visible = false;
         }
     }
+    if let Some((request, offset)) = el.scroll_request {
+        state.request_scroll(id, request, offset);
+    }
     let (mut style, anim) = resolve(el, theme, state, id);
     *animating |= anim;
     // Resolve any `ch`-based reading measure now that font metrics are

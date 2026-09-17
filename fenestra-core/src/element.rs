@@ -716,6 +716,7 @@ pub struct Element<Msg> {
     pub(crate) stack: bool,
     pub(crate) focusable: bool,
     pub(crate) autofocus: bool,
+    pub(crate) scroll_request: Option<(u64, f32)>,
     /// Scroll containers only: keep pinned to the bottom while content
     /// grows (chat/log pattern).
     pub(crate) stick_bottom: bool,
@@ -833,6 +834,7 @@ impl<Msg> Element<Msg> {
             stack: false,
             focusable: false,
             autofocus: false,
+            scroll_request: None,
             stick_bottom: false,
             cursor: None,
             disabled: false,
@@ -1848,6 +1850,13 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Scroll to an offset once per request token. Wheel scrolling remains
+    /// independent until the application supplies a different token.
+    pub fn scroll_to(mut self, request: u64, offset: f32) -> Self {
+        self.scroll_request = Some((request, offset));
+        self
+    }
+
     /// Horizontal scrolling with clipped content.
     pub fn scroll_x(mut self) -> Self {
         self.style = self.style.scroll_x();
@@ -2528,6 +2537,7 @@ impl<Msg: 'static> Element<Msg> {
             stack: self.stack,
             focusable: self.focusable,
             autofocus: self.autofocus,
+            scroll_request: self.scroll_request,
             stick_bottom: self.stick_bottom,
             cursor: self.cursor,
             disabled: self.disabled,

@@ -42,6 +42,7 @@ struct Scroll {
     seen: u64,
     /// Sat at the bottom edge after the last clamp (stick-to-bottom).
     at_bottom: bool,
+    request: Option<u64>,
 }
 
 /// Retained state for one UI surface (window or headless session).
@@ -273,6 +274,14 @@ impl FrameState {
         entry.at_bottom = false;
     }
 
+    pub(crate) fn request_scroll(&mut self, id: WidgetId, request: u64, offset: f32) {
+        let entry = self.scroll.entry(id).or_default();
+        if entry.request != Some(request) {
+            entry.request = Some(request);
+            self.scroll_to(id, offset);
+        }
+    }
+
     /// Adds to a scrollable's horizontal offset (clamped on the next build).
     pub fn scroll_by_x(&mut self, id: WidgetId, dx: f32) {
         let entry = self.scroll.entry(id).or_default();
@@ -329,6 +338,7 @@ impl FrameState {
                         last_change: -10.0,
                         seen: frame_no,
                         at_bottom: true,
+                        request: None,
                     },
                 );
                 (max_y, 0.0)
