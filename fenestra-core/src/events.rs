@@ -859,13 +859,19 @@ pub fn dispatch<Msg: Clone>(
         }
         InputEvent::RightDown => {
             if let Some((px, py)) = state.pointer {
-                let chain = frame.hit_chain(Point::new(f64::from(px), f64::from(py)));
-                // Deepest enabled element with a right-click handler wins.
+                let point = Point::new(f64::from(px), f64::from(py));
+                let chain = frame.hit_chain(point);
+                // Deepest enabled element with a right-click handler wins. The
+                // positioned form is offered to the same element, so a canvas
+                // can open its menu at the cursor; `None` declines and the
+                // search continues outward.
                 if let Some(msg) = chain.iter().rev().find_map(|id| {
-                    handlers
-                        .get(*id)
-                        .filter(|el| !el.disabled)
-                        .and_then(|el| el.on_right_click.clone())
+                    let el = handlers.get(*id).filter(|el| !el.disabled)?;
+                    el.on_right_click.clone().or_else(|| {
+                        let f = el.on_right_click_at.as_ref()?;
+                        let (x, y) = local_px(frame, *id, point)?;
+                        f(x, y)
+                    })
                 }) {
                     out.msgs.push(msg);
                     out.redraw = true;

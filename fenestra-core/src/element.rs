@@ -20,6 +20,8 @@ pub(crate) type WheelFn<Msg> = Box<dyn Fn(WheelEvent) -> Option<Msg>>;
 pub(crate) type DragEventFn<Msg> = Box<dyn Fn(DragEvent) -> Option<Msg>>;
 /// See [`Element::on_pointer_move`].
 pub(crate) type PointerMoveFn<Msg> = Box<dyn Fn(f32, f32) -> Option<Msg>>;
+/// See [`Element::on_right_click_at`].
+pub(crate) type RightClickAtFn<Msg> = Box<dyn Fn(f32, f32) -> Option<Msg>>;
 /// Maps a trackpad magnification gesture to an optional message.
 pub(crate) type PinchFn<Msg> = Box<dyn Fn(PinchEvent) -> Option<Msg>>;
 /// Maps a recognized [`SwipeDir`] to a message.
@@ -738,6 +740,8 @@ pub struct Element<Msg> {
     pub(crate) on_drag_event: Option<DragEventFn<Msg>>,
     /// The pointer moving over this element with no button held.
     pub(crate) on_pointer_move: Option<PointerMoveFn<Msg>>,
+    /// A right-press over this element, with the pointer position.
+    pub(crate) on_right_click_at: Option<RightClickAtFn<Msg>>,
     /// Trackpad magnification over this element.
     pub(crate) on_pinch: Option<PinchFn<Msg>>,
     /// Fired when a press-drag-release on this element is recognized as a swipe
@@ -848,6 +852,7 @@ impl<Msg> Element<Msg> {
             on_wheel: None,
             on_drag_event: None,
             on_pointer_move: None,
+            on_right_click_at: None,
             on_pinch: None,
             on_swipe: None,
             on_input: None,
@@ -1128,6 +1133,22 @@ impl<Msg> Element<Msg> {
     /// context-menu gesture; fires on press, like macOS).
     pub fn on_right_click(mut self, msg: Msg) -> Self {
         self.on_right_click = Some(msg);
+        self
+    }
+
+    /// Like [`Self::on_right_click`], but the callback receives the pointer in
+    /// element-local logical px — what a context menu needs in order to open
+    /// *at the cursor*.
+    ///
+    /// An element that draws its own world (a canvas, a timeline, a map) has no
+    /// other way to learn where the press landed: a bare message says only that
+    /// one happened. Return `None` to decline, and the search continues outward
+    /// along the hit chain — the same "handled?" contract as [`Self::on_wheel`].
+    ///
+    /// The deepest element carrying either right-click handler wins; an element
+    /// that sets both sends `on_right_click`.
+    pub fn on_right_click_at(mut self, f: impl Fn(f32, f32) -> Option<Msg> + 'static) -> Self {
+        self.on_right_click_at = Some(Box::new(f));
         self
     }
 
@@ -2548,6 +2569,10 @@ impl<Msg: 'static> Element<Msg> {
             on_pointer_move: self.on_pointer_move.map(|g| {
                 let f = f.clone();
                 Box::new(move |x, y| g(x, y).map(&f)) as PointerMoveFn<B>
+            }),
+            on_right_click_at: self.on_right_click_at.map(|g| {
+                let f = f.clone();
+                Box::new(move |x, y| g(x, y).map(&f)) as RightClickAtFn<B>
             }),
             on_key: self.on_key.map(|k| {
                 let f = f.clone();
