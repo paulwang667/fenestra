@@ -35,7 +35,7 @@ impl App for Pressed {
     /// starts well below it.
     fn view(&self) -> Element<Msg> {
         let filler: Vec<Element<Msg>> = (0..20)
-            .map(|i| text(format!("row {i}")).h(30.0).shrink0().into())
+            .map(|i| text(format!("row {i}")).h(30.0).shrink0())
             .collect();
         col().w_full().h_full().scroll_y().id("body").children(
             filler
@@ -46,8 +46,7 @@ impl App for Pressed {
                     .focusable(true)
                     .semantics(Semantics::Button)
                     .label("Deep")
-                    .on_click(Msg::Press)
-                    .into()])
+                    .on_click(Msg::Press)])
                 .collect::<Vec<_>>(),
         )
     }

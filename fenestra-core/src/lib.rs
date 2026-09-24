@@ -38,7 +38,7 @@ mod theme;
 mod tokens;
 
 pub use apca::{lc, lc_abs, meets, required_lc, wcag2_passes, wcag2_ratio};
-pub use app::{App, MAIN_WINDOW, WindowDesc};
+pub use app::{App, CustomRender, MAIN_WINDOW, WindowDesc};
 pub use breakpoints::{Breakpoint, Breakpoints};
 pub use children::{FromIter, FromTuple, IntoChildren};
 pub use chrome::{ChromeElevation, ChromeText};

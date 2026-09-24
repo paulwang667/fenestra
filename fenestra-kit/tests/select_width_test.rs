@@ -7,7 +7,7 @@ use fenestra_shell::Harness;
 
 #[derive(Clone)]
 enum Msg {
-    Pick(usize),
+    Pick,
     Go,
 }
 
@@ -21,7 +21,7 @@ impl App for A {
                 text("Model"),
                 select(0, ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"])
                     .fill()
-                    .on_change(Msg::Pick)
+                    .on_change(|_| Msg::Pick)
                     .into(),
                 button("Go").on_click(Msg::Go).into(),
             ]),

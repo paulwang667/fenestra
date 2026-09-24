@@ -89,7 +89,6 @@ impl Fixture {
     fn composing(&self) -> bool {
         self.state
             .composing_in(self.state.focused().expect("focused"))
-            .into()
     }
 }
 

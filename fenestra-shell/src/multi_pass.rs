@@ -235,7 +235,7 @@ mod tests {
             1.0,
             &|_key, w, h| {
                 Some(peniko::ImageData {
-                    data: vec![255u8, 0, 0, 255]
+                    data: [255u8, 0, 0, 255]
                         .repeat((w as usize) * (h as usize))
                         .into(),
                     format: peniko::ImageFormat::Rgba8,
@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(img.data.as_ref()[0], 255); // red
 
         let result = process_specs(&backdrop, &specs, 1.0, &|_, _, _| None, &mut HashMap::new());
-        assert!(result.get(&id).is_none());
+        assert!(!result.contains_key(&id));
     }
 
     /// Cache hit: same `(render_key, cache_key)` reuses the cached image
@@ -275,9 +275,7 @@ mod tests {
             Rc::new(move |_key: u64, w: u32, h: u32| {
                 calls.set(calls.get() + 1);
                 Some(peniko::ImageData {
-                    data: vec![r, g, b, 255]
-                        .repeat((w as usize) * (h as usize))
-                        .into(),
+                    data: [r, g, b, 255].repeat((w as usize) * (h as usize)).into(),
                     format: peniko::ImageFormat::Rgba8,
                     alpha_type: peniko::ImageAlphaType::Alpha,
                     width: w,

@@ -209,32 +209,25 @@ fn render_cube(angle_x: f32, angle_y: f32, w: u32, h: u32) -> Vec<u8> {
         let g = (base[1] as f32 * shade).clamp(0.0, 255.0) as u8;
         let b = (base[2] as f32 * shade).clamp(0.0, 255.0) as u8;
 
-        fill_triangle(&mut buf, w, h, pts[0], pts[1], pts[2], r, g, b);
+        fill_triangle(&mut buf, w, h, [pts[0], pts[1], pts[2]], [r, g, b]);
     }
 
     // Wireframe edges on top for clarity.
     for pts in &tris {
         let [a, b, c] = pts.0;
-        draw_line(&mut buf, w, h, a, b, 200, 200, 210);
-        draw_line(&mut buf, w, h, b, c, 200, 200, 210);
-        draw_line(&mut buf, w, h, c, a, 200, 200, 210);
+        draw_line(&mut buf, w, h, a, b, EDGE_RGB);
+        draw_line(&mut buf, w, h, b, c, EDGE_RGB);
+        draw_line(&mut buf, w, h, c, a, EDGE_RGB);
     }
 
     buf
 }
 
+/// Wireframe edge color.
+const EDGE_RGB: [u8; 3] = [200, 200, 210];
+
 /// Barycentric scanline triangle fill with simple bounds clipping.
-fn fill_triangle(
-    buf: &mut [u8],
-    w: usize,
-    h: usize,
-    a: Vec3,
-    b: Vec3,
-    c: Vec3,
-    r: u8,
-    g: u8,
-    bl: u8,
-) {
+fn fill_triangle(buf: &mut [u8], w: usize, h: usize, [a, b, c]: [Vec3; 3], [r, g, bl]: [u8; 3]) {
     let min_x = a[0].min(b[0]).min(c[0]).floor() as i32;
     let max_x = a[0].max(b[0]).max(c[0]).ceil() as i32;
     let min_y = a[1].min(b[1]).min(c[1]).floor() as i32;
@@ -270,7 +263,7 @@ fn fill_triangle(
 }
 
 /// Bresenham line draw.
-fn draw_line(buf: &mut [u8], w: usize, h: usize, a: Vec3, b: Vec3, r: u8, g: u8, bl: u8) {
+fn draw_line(buf: &mut [u8], w: usize, h: usize, a: Vec3, b: Vec3, [r, g, bl]: [u8; 3]) {
     let (mut x0, mut y0) = (a[0] as i32, a[1] as i32);
     let (x1, y1) = (b[0] as i32, b[1] as i32);
     let dx = (x1 - x0).abs();
@@ -408,7 +401,7 @@ impl App for Scene3d {
 /// Counts cube-face pixels and reports the bounding box, for shot verification.
 fn report_pixels(img: &image::RgbaImage, label: &str) {
     let (w, h) = img.dimensions();
-    let opaque = img.chunks_exact(4).filter(|p| p[3] > 0).count();
+    let opaque = img.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count();
     let (mut blue, mut green, mut red) = (0u32, 0u32, 0u32);
     let (mut min_x, mut max_x, mut min_y, mut max_y) = (w, 0u32, h, 0u32);
     for y in 0..h {

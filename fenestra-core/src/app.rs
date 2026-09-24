@@ -104,6 +104,10 @@ impl<Msg> WindowDesc<Msg> {
     }
 }
 
+/// A custom renderer (see [`App::custom_render`]): render key and physical
+/// pixel size in, the rendered image out (`None` = paint the element normally).
+pub type CustomRender = std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<ImageData> + Send + Sync>;
+
 /// An application: state, a pure view of it, and a message-driven update.
 ///
 /// ```
@@ -284,9 +288,7 @@ pub trait App {
     /// key and physical pixel dimensions; returns `None` when no renderer is
     /// registered for the key (the element paints normally). The default
     /// returns `None` — apps that don't use custom renders ignore this.
-    fn custom_render(
-        &self,
-    ) -> Option<std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<ImageData> + Send + Sync>> {
+    fn custom_render(&self) -> Option<CustomRender> {
         None
     }
 }

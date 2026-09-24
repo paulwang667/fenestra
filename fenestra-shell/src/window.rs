@@ -1360,9 +1360,7 @@ struct AppRunner<A: App> {
     custom_cache: std::collections::HashMap<(u64, u64), vello::peniko::ImageData>,
     /// Custom render registry from [`App::custom_render`]. `None` when
     /// the app doesn't register custom renderers (the default).
-    custom_render: Option<
-        std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<fenestra_core::ImageData> + Send + Sync>,
-    >,
+    custom_render: Option<fenestra_core::CustomRender>,
 }
 
 /// One reconciled secondary window: its own surface, retained state, and

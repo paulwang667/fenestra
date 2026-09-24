@@ -2111,7 +2111,7 @@ fn adapt_fill(
     let mut n = 0u32;
     // Every fourth pixel in each direction: a mean does not need all of them,
     // and a pane can be a megapixel.
-    for px in bytes.chunks_exact(4).step_by(4) {
+    for px in bytes.as_chunks::<4>().0.iter().step_by(4) {
         sum += 0.2126 * f64::from(px[0]) + 0.7152 * f64::from(px[1]) + 0.0722 * f64::from(px[2]);
         n += 1;
     }
@@ -2427,7 +2427,7 @@ impl Frame {
                     rect: node.rect,
                     kind: PassKind::Custom {
                         render_key,
-                        cache_key: node.id.0 as u64,
+                        cache_key: node.id.0,
                     },
                 });
                 return;
@@ -3464,14 +3464,16 @@ mod tests {
         use crate::style::AdaptiveTint;
 
         let image = |v: u8| peniko::ImageData {
-            data: peniko::Blob::from(vec![v, v, v, 255].repeat(64)),
+            data: peniko::Blob::from([v, v, v, 255].repeat(64)),
             format: peniko::ImageFormat::Rgba8,
             width: 8,
             height: 8,
             alpha_type: peniko::ImageAlphaType::Alpha,
         };
-        let mut style = Style::default();
-        style.fill = Some(Paint::Solid(crate::theme::oklch(0.30, 0.01, 258.0)));
+        let style = Style {
+            fill: Some(Paint::Solid(crate::theme::oklch(0.30, 0.01, 258.0))),
+            ..Style::default()
+        };
         let tint = AdaptiveTint::glass();
 
         let lightness = |img: &peniko::ImageData| {
@@ -3508,7 +3510,7 @@ mod tests {
     fn a_style_with_no_solid_fill_is_left_alone() {
         use crate::style::AdaptiveTint;
         let image = peniko::ImageData {
-            data: peniko::Blob::from(vec![40u8, 40, 40, 255].repeat(16)),
+            data: peniko::Blob::from([40u8, 40, 40, 255].repeat(16)),
             format: peniko::ImageFormat::Rgba8,
             width: 4,
             height: 4,

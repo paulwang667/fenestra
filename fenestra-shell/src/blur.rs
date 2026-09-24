@@ -37,20 +37,6 @@ pub fn box_blur_rgba8(img: &RgbaImage, radius: u32) -> RgbaImage {
     a
 }
 
-/// Edge refraction (lensing): within a bevel band along the rounded-rect
-/// perimeter, resample each pixel from further *inside* along the inward edge
-/// normal, so the blurred backdrop appears to bend and compress into the rim —
-/// the optical signature that separates real glass from a flat frosted tint
-/// (Apple Liquid Glass). `radius_px` is the pane's corner radius in the image's
-/// own (physical) pixels; the image is assumed to span the pane's rounded
-/// silhouette (the shell crops the backdrop to the pane rect). The interior
-/// (beyond the band) is returned byte-identical to the input; only the rim
-/// bends.
-///
-/// Determinism is the contract, as for [`box_blur_rgba8`]: plain IEEE-754 `f32`
-/// with edge-clamped bilinear sampling, bit-stable across rasterizers. A
-/// degenerate (tiny) image is returned unchanged.
-#[must_use]
 /// How thick the glass is, in logical px: how far in from its outline a pane
 /// bends what is behind it.
 ///
@@ -69,6 +55,20 @@ pub(crate) const EDGE: f32 = 7.0;
 /// pixel, and more reads as a rendering fault rather than as glass.
 const DISPERSION: (f32, f32) = (0.94, 1.06);
 
+/// Edge refraction (lensing): within a bevel band along the rounded-rect
+/// perimeter, resample each pixel from further *inside* along the inward edge
+/// normal, so the blurred backdrop appears to bend and compress into the rim —
+/// the optical signature that separates real glass from a flat frosted tint
+/// (Apple Liquid Glass). `radius_px` is the pane's corner radius in the image's
+/// own (physical) pixels; the image is assumed to span the pane's rounded
+/// silhouette (the shell crops the backdrop to the pane rect). The interior
+/// (beyond the band) is returned byte-identical to the input; only the rim
+/// bends.
+///
+/// Determinism is the contract, as for [`box_blur_rgba8`]: plain IEEE-754 `f32`
+/// with edge-clamped bilinear sampling, bit-stable across rasterizers. A
+/// degenerate (tiny) image is returned unchanged.
+#[must_use]
 pub(crate) fn refract_edges(img: &RgbaImage, radius_px: f32, band_px: f32) -> RgbaImage {
     let (w, h) = (img.width(), img.height());
     if w < 4 || h < 4 {
