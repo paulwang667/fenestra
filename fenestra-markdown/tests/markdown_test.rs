@@ -543,3 +543,50 @@ fn base_px_shrinks_body_and_headings_together() {
         ratio(Some(12.0))
     );
 }
+
+/// A long list item, a long quote and a long paragraph in a narrow column.
+struct Narrow;
+
+impl App for Narrow {
+    type Msg = ();
+
+    fn update(&mut self, (): ()) {}
+
+    fn view(&self) -> Element<()> {
+        let long = "listwrap ".repeat(40);
+        col().w(320.0).p(8.0).children([Element::from(markdown(format!(
+            "para {long}\n\n- item {long}\n\n> quote {long}\n\n1. ordered {long}\n\nunbroken `{}`",
+            "x".repeat(300)
+        )))])
+    }
+}
+
+#[test]
+fn list_items_and_quotes_wrap_inside_their_column() {
+    // Paragraphs already wrapped; a list item / quote sat in a row with its
+    // marker (or bar), sized to its max-content width and ran off the column.
+    let h = Harness::new(Narrow, Theme::light(), (800, 900));
+    for lead in [
+        "para listwrap",
+        "item listwrap",
+        "quote listwrap",
+        "ordered listwrap",
+        // One 300-char word with no break opportunity: breaks anywhere.
+        "unbroken xxxx",
+    ] {
+        let r = h
+            .query(&by::label_contains(lead))
+            .unwrap_or_else(|| panic!("no leaf for {lead}"))
+            .rect;
+        assert!(
+            r.x1 <= 330.0,
+            "{lead}: should wrap inside the 320px column, runs to x={}",
+            r.x1
+        );
+        assert!(
+            r.height() > 40.0,
+            "{lead}: should take several lines, h={}",
+            r.height()
+        );
+    }
+}

@@ -65,8 +65,11 @@ impl<Msg> Markdown<Msg> {
     }
 }
 
-/// Applies the document's body size, when one was set, to a text element.
+/// Applies the document's body size, when one was set, to a text element,
+/// and lets an overlong word (a path, a URL, a hash) break instead of running
+/// past the column.
 fn sized<Msg>(el: Element<Msg>, base: Option<f32>) -> Element<Msg> {
+    let el = el.break_anywhere();
     match base {
         Some(px) => el.size_px(px),
         None => el,
@@ -640,19 +643,29 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
                 }
                 row().wrap().items_baseline().children(pieces)
             };
+            // A marker (or quote bar) sits beside its text in a row. The row
+            // spans the column and the text may shrink below its max-content
+            // width — otherwise a long item is laid out on one line and runs
+            // off the column instead of wrapping like a plain paragraph.
             if let Some(marker) = list_marker {
-                block = row().gap(6.0).pl(16.0 * list_depth as f32).children((
-                    sized(text(marker), base).themed(|t: &Theme, s| s.color(t.text_muted)),
-                    block,
-                ));
+                block = row()
+                    .w_full()
+                    .gap(6.0)
+                    .pl(16.0 * list_depth as f32)
+                    .children((
+                        sized(text(marker), base)
+                            .shrink0()
+                            .themed(|t: &Theme, s| s.color(t.text_muted)),
+                        block.grow().min_w(0.0),
+                    ));
             }
             if quote_depth > 0 {
-                block = row().children((
+                block = row().w_full().children((
                     div()
                         .w(3.0)
                         .shrink0()
                         .themed(|t: &Theme, s| s.bg(t.border_subtle)),
-                    col().pl(10.0).child(block),
+                    col().pl(10.0).grow().min_w(0.0).child(block),
                 ));
             }
             blocks.push(block);
