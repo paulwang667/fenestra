@@ -34,6 +34,7 @@ type LinkFn<Msg> = std::rc::Rc<dyn Fn(&str) -> Msg>;
 pub struct Markdown<Msg> {
     source: String,
     on_link: Option<LinkFn<Msg>>,
+    base_px: Option<f32>,
 }
 
 /// Renders CommonMark + GFM as native elements. Inline emphasis/strong/code
@@ -43,6 +44,7 @@ pub fn markdown<Msg>(source: impl Into<String>) -> Markdown<Msg> {
     Markdown {
         source: source.into(),
         on_link: None,
+        base_px: None,
     }
 }
 
@@ -51,6 +53,23 @@ impl<Msg> Markdown<Msg> {
     pub fn on_link(mut self, f: impl Fn(&str) -> Msg + 'static) -> Self {
         self.on_link = Some(std::rc::Rc::new(f));
         self
+    }
+
+    /// Sets the body text size in px (default: the theme's `Base`, 16px).
+    /// Headings scale by the same ratio, so a compact surface (a chat
+    /// transcript, a side panel) keeps the document's proportions at its own
+    /// size. Code blocks keep their `Sm` mono size.
+    pub fn base_px(mut self, px: f32) -> Self {
+        self.base_px = Some(px.max(1.0));
+        self
+    }
+}
+
+/// Applies the document's body size, when one was set, to a text element.
+fn sized<Msg>(el: Element<Msg>, base: Option<f32>) -> Element<Msg> {
+    match base {
+        Some(px) => el.size_px(px),
+        None => el,
     }
 }
 
@@ -80,13 +99,15 @@ struct SpanSpec {
     link: Option<String>,
 }
 
-fn heading_size(level: HeadingLevel) -> (f32, Weight) {
-    match level {
+fn heading_size(level: HeadingLevel, base: Option<f32>) -> (f32, Weight) {
+    let (px, weight) = match level {
         HeadingLevel::H1 => (28.0, Weight::Semibold),
         HeadingLevel::H2 => (22.0, Weight::Semibold),
         HeadingLevel::H3 => (18.0, Weight::Semibold),
         _ => (16.0, Weight::Medium),
-    }
+    };
+    // The table above is written against the 16px default body.
+    (base.map_or(px, |b| (px * b / 16.0).round()), weight)
 }
 
 fn build_spans(specs: &[SpanSpec]) -> Vec<Span> {
@@ -496,6 +517,7 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
         // pulldown-cmark 0.13.4; standard <url> autolinks work via CommonMark.
         options.insert(Options::ENABLE_GFM);
         let parser = Parser::new_ext(&md.source, options);
+        let base = md.base_px;
 
         let mut blocks: Vec<Element<Msg>> = Vec::new();
         let mut current = BlockBuilder { spans: Vec::new() };
@@ -543,7 +565,7 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
             let style_spans = |seg: &[SpanSpec]| -> Vec<Span> {
                 match heading {
                     Some(level) => {
-                        let (px, weight) = heading_size(level);
+                        let (px, weight) = heading_size(level, base);
                         build_spans(seg)
                             .into_iter()
                             .map(|s| s.size_px(px).weight(weight))
@@ -559,7 +581,7 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
                 // wrapping to avoid a stranded one-word last line (orphan).
                 // (A paragraph with an inline link falls through to the
                 // wrap-row path below, which has no single layout to refine.)
-                let para = rich_text(style_spans(&specs)).selectable();
+                let para = sized(rich_text(style_spans(&specs)), base).selectable();
                 if heading.is_some() {
                     para.balance()
                 } else {
@@ -596,7 +618,8 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
                             link: spec.link.clone(),
                         };
                         let mut el: Element<Msg> =
-                            rich_text(style_spans(std::slice::from_ref(&piece))).shrink0();
+                            sized(rich_text(style_spans(std::slice::from_ref(&piece))), base)
+                                .shrink0();
                         if let (Some(url), Some(f)) = (&spec.link, on_link) {
                             el = el
                                 .on_click(f(url))
@@ -619,7 +642,7 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
             };
             if let Some(marker) = list_marker {
                 block = row().gap(6.0).pl(16.0 * list_depth as f32).children((
-                    text(marker).themed(|t: &Theme, s| s.color(t.text_muted)),
+                    sized(text(marker), base).themed(|t: &Theme, s| s.color(t.text_muted)),
                     block,
                 ));
             }
@@ -835,7 +858,7 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
                                 s.bg(t.elevated_surface(1))
                                     .border_bottom(1.0, t.border_subtle)
                             })
-                            .child(rich_text(spans).text_align(ta).selectable());
+                            .child(sized(rich_text(spans), base).text_align(ta).selectable());
                         all_cells.push(cell);
                     }
 
@@ -850,7 +873,7 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
                                 .px(8.0)
                                 .py(4.0)
                                 .themed(|t: &Theme, s| s.border_bottom(1.0, t.border_subtle))
-                                .child(rich_text(spans).text_align(ta).selectable());
+                                .child(sized(rich_text(spans), base).text_align(ta).selectable());
                             all_cells.push(cell);
                         }
                     }
@@ -1005,10 +1028,11 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
                     // of flattening to plain text. The muted base color is set
                     // on the paragraph; spans that set no color of their own
                     // inherit it.
-                    rich_text(build_spans(def_spans)).themed(|t: &Theme, s| s.color(t.text_muted))
+                    sized(rich_text(build_spans(def_spans)), base)
+                        .themed(|t: &Theme, s| s.color(t.text_muted))
                 };
                 footnote_els.push(row().gap(6.0).items_start().children((
-                    text(marker).themed(|t: &Theme, s| s.color(t.text_muted)),
+                    sized(text(marker), base).themed(|t: &Theme, s| s.color(t.text_muted)),
                     body,
                 )));
             }

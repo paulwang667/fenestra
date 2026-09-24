@@ -498,3 +498,48 @@ fn footnote_inline_styling_golden() {
     let image = render_element(view, &Theme::light(), (500, 220));
     assert_png_snapshot(snapshot_dir(), "markdown_footnote_rich", &image);
 }
+
+/// `base_px` sets the body size and scales headings by the same ratio, so a
+/// compact surface keeps the document's proportions at its own size.
+struct Sized(Option<f32>);
+
+impl App for Sized {
+    type Msg = ();
+
+    fn update(&mut self, (): ()) {}
+
+    fn view(&self) -> Element<()> {
+        let md = markdown("# Heading here\n\nA body line.\n\n- listed");
+        let md = match self.0 {
+            Some(px) => md.base_px(px),
+            None => md,
+        };
+        col().p(16.0).children([Element::from(md)])
+    }
+}
+
+#[test]
+fn base_px_shrinks_body_and_headings_together() {
+    let height = |px: Option<f32>, label: &str| {
+        let h = Harness::new(Sized(px), Theme::light(), (600, 300));
+        h.query(&by::label_contains(label))
+            .unwrap_or_else(|| panic!("no leaf for {label}"))
+            .rect
+            .height()
+    };
+    for label in ["Heading here", "A body line.", "listed"] {
+        let (full, small) = (height(None, label), height(Some(12.0), label));
+        assert!(
+            small < full * 0.9,
+            "{label}: base_px(12) should render smaller than the 16px default ({small} vs {full})"
+        );
+    }
+    // Headings keep their ratio to the body.
+    let ratio = |px| height(px, "Heading here") / height(px, "A body line.");
+    assert!(
+        (ratio(None) - ratio(Some(12.0))).abs() < 0.25,
+        "heading/body ratio should hold: {} vs {}",
+        ratio(None),
+        ratio(Some(12.0))
+    );
+}
