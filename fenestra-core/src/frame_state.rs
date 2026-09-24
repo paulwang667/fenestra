@@ -59,6 +59,11 @@ pub struct FrameState {
     pub(crate) active: Option<WidgetId>,
     /// The focused element.
     pub(crate) focus: Option<WidgetId>,
+    /// Last focus-request token seen per element ([`crate::Element::focus_on`]).
+    /// Not garbage-collected with the frame: an element that drops its token
+    /// and later carries the *same* one again must not refocus, and the map
+    /// only ever holds elements that carried a token.
+    pub(crate) focus_requests: HashMap<WidgetId, u64>,
     /// Whether focus arrived via keyboard (paints the focus ring).
     pub(crate) focus_visible: bool,
     /// Last pointer position in logical coordinates.
@@ -132,6 +137,7 @@ impl Default for FrameState {
             hovered: HashMap::new(),
             active: None,
             focus: None,
+            focus_requests: HashMap::new(),
             focus_visible: false,
             pointer: None,
             press_origin: None,
@@ -272,6 +278,14 @@ impl FrameState {
         entry.last_change = now;
         // Recomputed at the next clamp; a manual move unpins the bottom.
         entry.at_bottom = false;
+    }
+
+    /// Focuses `id` when it carries a request token it did not carry last time.
+    pub(crate) fn request_focus(&mut self, id: WidgetId, request: u64) {
+        if self.focus_requests.insert(id, request) != Some(request) {
+            self.focus = Some(id);
+            self.focus_visible = true;
+        }
     }
 
     pub(crate) fn request_scroll(&mut self, id: WidgetId, request: u64, offset: f32) {

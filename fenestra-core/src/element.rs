@@ -719,6 +719,7 @@ pub struct Element<Msg> {
     pub(crate) focusable: bool,
     pub(crate) autofocus: bool,
     pub(crate) scroll_request: Option<(u64, f32)>,
+    pub(crate) focus_request: Option<u64>,
     /// Scroll containers only: keep pinned to the bottom while content
     /// grows (chat/log pattern).
     pub(crate) stick_bottom: bool,
@@ -839,6 +840,7 @@ impl<Msg> Element<Msg> {
             focusable: false,
             autofocus: false,
             scroll_request: None,
+            focus_request: None,
             stick_bottom: false,
             cursor: None,
             disabled: false,
@@ -1547,6 +1549,21 @@ impl<Msg> Element<Msg> {
     /// most one element autofocus per view state.
     pub fn autofocus(mut self) -> Self {
         self.autofocus = true;
+        self.focusable = true;
+        self
+    }
+
+    /// Focuses this element once per request token — the programmatic
+    /// counterpart of [`Self::autofocus`], and the focus sibling of
+    /// [`Self::scroll_to`]. Focus moves when the element carries a token it
+    /// did not carry last time (the first token counts), then stays wherever
+    /// the user takes it until the application supplies a different token.
+    ///
+    /// Put the token only on the element that should take focus: moving
+    /// focus from one item to another is "the new item carries the next
+    /// token". A keyboard-driven move, so the focus ring is shown.
+    pub fn focus_on(mut self, request: u64) -> Self {
+        self.focus_request = Some(request);
         self.focusable = true;
         self
     }
@@ -2559,6 +2576,7 @@ impl<Msg: 'static> Element<Msg> {
             focusable: self.focusable,
             autofocus: self.autofocus,
             scroll_request: self.scroll_request,
+            focus_request: self.focus_request,
             stick_bottom: self.stick_bottom,
             cursor: self.cursor,
             disabled: self.disabled,

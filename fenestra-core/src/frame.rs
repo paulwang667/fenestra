@@ -780,6 +780,11 @@ fn build<Msg>(
     if let Some((request, offset)) = el.scroll_request {
         state.request_scroll(id, request, offset);
     }
+    if let Some(request) = el.focus_request
+        && !el.disabled
+    {
+        state.request_focus(id, request);
+    }
     let (mut style, anim) = resolve(el, theme, state, id);
     *animating |= anim;
     // Resolve any `ch`-based reading measure now that font metrics are

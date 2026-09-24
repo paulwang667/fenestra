@@ -7,6 +7,17 @@ expansion, and two checks that were narrower than the thing they guarded.
 
 ### Added
 
+- **`Element::focus_on(token)` — programmatic focus, once per request.**
+  `autofocus` only fires when an element newly appears, so an app could
+  not say "put the cursor here now" for an element that is already
+  mounted; the workaround was to drop `autofocus` for a frame and
+  re-arm it on a timer. `focus_on` is the focus sibling of
+  `scroll_to(request, offset)`: focus moves when the element carries a
+  token it did not carry last time (the first one counts), shows the
+  focus ring, and never steals focus back while the token is unchanged.
+  Moving focus between items is "the new item carries the next token".
+  The editor keeps its state, so the caret stays where the text ends.
+
 - **fenestra-shell builds for Android.** winit's Android backend binds
   the event loop to the activity before it starts, and nothing in
   `WindowOptions` carried the `AndroidApp` that `android_main`
