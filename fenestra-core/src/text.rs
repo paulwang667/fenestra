@@ -178,6 +178,8 @@ pub(crate) struct ResolvedText {
     pub features: FontFeatures,
     /// Line-breaking refinement (greedy / balance / pretty).
     pub wrap: TextWrap,
+    /// Overlong words break anywhere (`overflow-wrap: anywhere`).
+    pub break_anywhere: bool,
     /// Optical sizing: drives a variable font's `opsz` axis (no-op on static
     /// faces). The base value applies at [`px`](Self::px); rich spans that
     /// override the size re-track `opsz` to their own size under
@@ -218,6 +220,7 @@ pub(crate) fn resolve_text(ts: &TextStyle, theme: &Theme) -> ResolvedText {
         color: ts.color.unwrap_or(theme.text),
         features: ts.features,
         wrap: ts.wrap,
+        break_anywhere: ts.break_anywhere,
         // Optical sizing inherits the theme default unless the run set its own.
         optical: match ts.optical {
             OpticalSizing::Inherit => theme.optical_sizing,
@@ -249,6 +252,8 @@ struct LayoutKey {
     /// Line-breaking refinement; different modes search to different wrap
     /// widths, so the result must not be cached across modes.
     wrap: TextWrap,
+    /// Emergency breaks change where lines end, so they key the cache too.
+    break_anywhere: bool,
     /// Resolved `opsz` axis value bits (variable-font optical sizing);
     /// `u32::MAX` = no axis set. `f32::to_bits` of a finite non-negative
     /// value is always `< u32::MAX`, so it never collides with the sentinel.
@@ -270,6 +275,7 @@ impl LayoutKey {
             max_lines: style.max_lines,
             features: style.features,
             wrap: style.wrap,
+            break_anywhere: style.break_anywhere,
             opsz: match style.optical.opsz_at(style.px) {
                 Some(v) => v.to_bits(),
                 None => u32::MAX,
@@ -468,6 +474,9 @@ impl Fonts {
             .ranged_builder(&mut self.font_cx, text, 1.0, true);
         builder.push_default(StyleProperty::FontFamily(family));
         builder.push_default(StyleProperty::FontSize(style.px));
+        if style.break_anywhere {
+            builder.push_default(StyleProperty::OverflowWrap(parley::OverflowWrap::Anywhere));
+        }
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight)));
         builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
             style.line_height,
@@ -587,6 +596,9 @@ impl Fonts {
             .ranged_builder(&mut self.font_cx, &text, 1.0, true);
         builder.push_default(StyleProperty::FontFamily(to_family(&base_family)));
         builder.push_default(StyleProperty::FontSize(style.px));
+        if style.break_anywhere {
+            builder.push_default(StyleProperty::OverflowWrap(parley::OverflowWrap::Anywhere));
+        }
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight)));
         builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
             style.line_height,

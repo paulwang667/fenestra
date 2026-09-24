@@ -2283,6 +2283,13 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Lets an overlong word (a path, a URL, a hash) break anywhere instead
+    /// of running past the box (CSS `overflow-wrap: anywhere`).
+    pub fn break_anywhere(mut self) -> Self {
+        self.style = self.style.break_anywhere();
+        self
+    }
+
     /// Sets the line-breaking mode explicitly ([`TextWrap`](crate::TextWrap)).
     pub fn text_wrap(mut self, wrap: TextWrap) -> Self {
         self.style = self.style.text_wrap(wrap);

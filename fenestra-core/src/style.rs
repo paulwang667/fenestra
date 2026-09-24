@@ -746,6 +746,10 @@ pub struct TextStyle {
     /// [`TextWrap::Normal`], which costs nothing; other modes do extra
     /// line-break passes inside shaping for this element only.
     pub wrap: TextWrap,
+    /// Break a word at an arbitrary point when it would otherwise overflow
+    /// the line (CSS `overflow-wrap: anywhere`) — long paths, URLs, hashes.
+    /// Off by default: ordinary text only breaks at word opportunities.
+    pub break_anywhere: bool,
     /// Optical sizing: how the `opsz` variation axis of a variable font is set.
     /// Defaults to [`OpticalSizing::Inherit`] — the theme's
     /// [`Theme::optical_sizing`](crate::Theme::optical_sizing) (`Auto` out of the
@@ -2078,6 +2082,13 @@ impl Style {
     /// paragraphs; never adds a line and never makes the break worse.
     pub fn pretty(mut self) -> Self {
         self.text.wrap = TextWrap::Pretty;
+        self
+    }
+
+    /// Lets an overlong word break anywhere instead of overflowing
+    /// (CSS `overflow-wrap: anywhere`).
+    pub fn break_anywhere(mut self) -> Self {
+        self.text.break_anywhere = true;
         self
     }
 
