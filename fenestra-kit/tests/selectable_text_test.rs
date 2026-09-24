@@ -110,3 +110,17 @@ fn selection_highlight_renders() {
         &image,
     );
 }
+
+#[test]
+fn selecting_text_while_an_input_has_focus_still_copies_the_selection() {
+    // Focus the input first (the user was typing), then go select the
+    // sentence: the press ends typing, so Cmd+C copies the selection instead
+    // of being swallowed by the focused (empty) editor.
+    let mut h = Harness::new(Reader::default(), Theme::light(), (420, 160));
+    h.tab();
+    h.triple_click(&by::id("para"));
+    h.key(copy_combo());
+    h.tab();
+    h.key(paste_combo());
+    assert_eq!(h.app().pasted, "copy this exact sentence");
+}

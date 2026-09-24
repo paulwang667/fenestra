@@ -778,6 +778,16 @@ pub fn dispatch<Msg: Clone>(
                             editor.last_activity = now;
                         }
                     } else if el.selectable && matches!(el.kind, Kind::Text(_) | Kind::Rich(_)) {
+                        // Starting a selection in static text ends typing into
+                        // a focused field (platform convention, same as a press
+                        // on empty space). Otherwise that editor keeps focus and
+                        // swallows Cmd/Ctrl+C with its own (empty) selection, so
+                        // the text the user just selected never reaches the
+                        // clipboard.
+                        if state.focus.is_some_and(|f| state.editors.contains_key(&f)) {
+                            state.focus = None;
+                            state.focus_visible = false;
+                        }
                         let now = state.now();
                         let count = match state.last_press {
                             Some((pid, at, c)) if pid == id && now - at <= 0.4 => (c % 3) + 1,
