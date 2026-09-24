@@ -590,3 +590,38 @@ fn list_items_and_quotes_wrap_inside_their_column() {
         );
     }
 }
+
+struct MeasureAt(Option<f32>);
+
+impl App for MeasureAt {
+    type Msg = ();
+
+    fn update(&mut self, (): ()) {}
+
+    fn view(&self) -> Element<()> {
+        let md = markdown(LONG_PARA);
+        let md = match self.0 {
+            Some(px) => md.base_px(px),
+            None => md,
+        };
+        col().p(16.0).children([Element::from(md)])
+    }
+}
+
+#[test]
+fn the_reading_measure_follows_base_px() {
+    // 52ch at a 12px body is narrower than 52ch at the 16px default: the
+    // measure is in characters, so a smaller body keeps the same line length.
+    let width = |px| {
+        Harness::new(MeasureAt(px), Theme::light(), (1000, 600))
+            .query(&by::label_contains("reading measure is the width"))
+            .expect("paragraph leaf")
+            .rect
+            .width()
+    };
+    let (full, small) = (width(None), width(Some(12.0)));
+    assert!(
+        small < full * 0.85,
+        "base_px(12) should cap the column at a 12px measure: {small} vs {full}"
+    );
+}

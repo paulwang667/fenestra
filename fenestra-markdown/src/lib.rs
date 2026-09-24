@@ -1056,11 +1056,16 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
         // against the body text size: a long paragraph wraps at the reading
         // column instead of spanning an arbitrarily wide canvas. Narrower
         // containers (the cap doesn't bind) are unaffected.
-        col()
-            .gap(10.0)
-            .items_start()
-            .measure(MEASURE_CH)
-            .children(blocks)
+        //
+        // `ch` resolves against the column's own text size, so a document with
+        // `base_px` carries that size here too — otherwise a 14px body would
+        // still be capped at the 16px measure.
+        let doc = col().gap(10.0).items_start().measure(MEASURE_CH);
+        let doc = match base {
+            Some(px) => doc.size_px(px),
+            None => doc,
+        };
+        doc.children(blocks)
     }
 }
 
