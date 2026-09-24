@@ -113,14 +113,18 @@ pub(crate) fn refract_edges(img: &RgbaImage, radius_px: f32, band_px: f32) -> Rg
                 // colour at the rim rather than a grey smear.
                 //
                 // Paid only inside the band, which is a fraction of the pane.
-                let r_px = bilinear(img, px - nx * disp * DISPERSION.0, py - ny * disp * DISPERSION.0);
-                let g_px = bilinear(img, px - nx * disp, py - ny * disp);
-                let b_px = bilinear(img, px - nx * disp * DISPERSION.1, py - ny * disp * DISPERSION.1);
-                out.put_pixel(
-                    x,
-                    y,
-                    image::Rgba([r_px[0], g_px[1], b_px[2], g_px[3]]),
+                let r_px = bilinear(
+                    img,
+                    px - nx * disp * DISPERSION.0,
+                    py - ny * disp * DISPERSION.0,
                 );
+                let g_px = bilinear(img, px - nx * disp, py - ny * disp);
+                let b_px = bilinear(
+                    img,
+                    px - nx * disp * DISPERSION.1,
+                    py - ny * disp * DISPERSION.1,
+                );
+                out.put_pixel(x, y, image::Rgba([r_px[0], g_px[1], b_px[2], g_px[3]]));
             } else {
                 out.put_pixel(x, y, bilinear(img, px, py));
             }
@@ -543,7 +547,10 @@ mod tests {
             let v = (i as u32 * 53 % 256) as u8;
             *px = Rgba([v, v.wrapping_mul(2), v.wrapping_add(7), 255]);
         }
-        assert_eq!(refract_edges(&img, 14.0, EDGE * 2.0), refract_edges(&img, 14.0, EDGE * 2.0));
+        assert_eq!(
+            refract_edges(&img, 14.0, EDGE * 2.0),
+            refract_edges(&img, 14.0, EDGE * 2.0)
+        );
     }
 
     /// A degenerate (tiny) image is returned unchanged.

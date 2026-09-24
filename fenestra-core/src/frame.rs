@@ -1698,7 +1698,9 @@ pub fn build_frame<Msg>(
             // trigger's width rather than the full canvas.
             let available_w = if p.def.match_anchor_width {
                 #[expect(clippy::cast_possible_truncation, reason = "logical px")]
-                { anchor_rect.width() as f32 }
+                {
+                    anchor_rect.width() as f32
+                }
             } else {
                 size.0
             };
@@ -2471,14 +2473,7 @@ impl Frame {
             .zip(backdrop)
             .and_then(|(tint, image)| adapt_fill(&node.style, tint, image));
         let style = adapted.as_ref().unwrap_or(&node.style);
-        let layers = painter::push_box(
-            scene,
-            style,
-            node.rect,
-            self.canvas,
-            self.scale,
-            backdrop,
-        );
+        let layers = painter::push_box(scene, style, node.rect, self.canvas, self.scale, backdrop);
         if node.meta.focus_ring {
             let ring = if node.meta.invalid {
                 self.ring_color_invalid

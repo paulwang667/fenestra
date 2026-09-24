@@ -79,7 +79,10 @@ pub fn process_specs(
                 let filtered = apply_element_filter(&sub, scale_filter(filter, scale));
                 to_image_data(&filtered)
             }
-            PassKind::Custom { render_key, cache_key } => {
+            PassKind::Custom {
+                render_key,
+                cache_key,
+            } => {
                 if let Some(cached) = cache.get(&(render_key, cache_key)) {
                     cached.clone()
                 } else {
@@ -208,7 +211,6 @@ mod tests {
         ));
     }
 
-
     /// A `PassKind::Custom` spec with a registered render function produces
     /// an injected image; one with no registered function is skipped (paints
     /// normally). This proves the multi-pass pipeline can carry custom GPU
@@ -227,17 +229,23 @@ mod tests {
         }];
 
         // Registered renderer: returns a solid red 100×80 image.
-        let result = process_specs(&backdrop, &specs, 1.0, &|_key, w, h| {
-            Some(peniko::ImageData {
-                data: vec![255u8, 0, 0, 255]
-                    .repeat((w as usize) * (h as usize))
-                .into(),
-                format: peniko::ImageFormat::Rgba8,
-                alpha_type: peniko::ImageAlphaType::Alpha,
-                width: w,
-                height: h,
-            })
-        }, &mut HashMap::new());
+        let result = process_specs(
+            &backdrop,
+            &specs,
+            1.0,
+            &|_key, w, h| {
+                Some(peniko::ImageData {
+                    data: vec![255u8, 0, 0, 255]
+                        .repeat((w as usize) * (h as usize))
+                        .into(),
+                    format: peniko::ImageFormat::Rgba8,
+                    alpha_type: peniko::ImageAlphaType::Alpha,
+                    width: w,
+                    height: h,
+                })
+            },
+            &mut HashMap::new(),
+        );
         let img = result.get(&id).expect("custom render produced an image");
         assert_eq!(img.width, 100);
         assert_eq!(img.height, 80);
@@ -267,7 +275,9 @@ mod tests {
             Rc::new(move |_key: u64, w: u32, h: u32| {
                 calls.set(calls.get() + 1);
                 Some(peniko::ImageData {
-                    data: vec![r, g, b, 255].repeat((w as usize) * (h as usize)).into(),
+                    data: vec![r, g, b, 255]
+                        .repeat((w as usize) * (h as usize))
+                        .into(),
                     format: peniko::ImageFormat::Rgba8,
                     alpha_type: peniko::ImageAlphaType::Alpha,
                     width: w,
@@ -280,7 +290,10 @@ mod tests {
         let specs = [MultiPassSpec {
             id,
             rect,
-            kind: PassKind::Custom { render_key: 1, cache_key: 1 },
+            kind: PassKind::Custom {
+                render_key: 1,
+                cache_key: 1,
+            },
         }];
         let renderer = mk_counted(255, 0, 0);
         let result = process_specs(&backdrop, &specs, 1.0, &*renderer, &mut cache);
@@ -294,7 +307,11 @@ mod tests {
         let renderer = mk_counted(0, 0, 255);
         let result = process_specs(&backdrop, &specs, 1.0, &*renderer, &mut cache);
         let img = result.get(&id).expect("cache hit produced an image");
-        assert_eq!(img.data.as_ref()[0], 255, "cached red reused, not re-rendered blue");
+        assert_eq!(
+            img.data.as_ref()[0],
+            255,
+            "cached red reused, not re-rendered blue"
+        );
         assert_eq!(calls.get(), 1, "renderer NOT called on cache hit");
         assert_eq!(cache.len(), 1, "cache unchanged after hit");
 
@@ -302,13 +319,20 @@ mod tests {
         let specs2 = [MultiPassSpec {
             id,
             rect,
-            kind: PassKind::Custom { render_key: 1, cache_key: 2 },
+            kind: PassKind::Custom {
+                render_key: 1,
+                cache_key: 2,
+            },
         }];
         let renderer = mk_counted(0, 255, 0);
         let result = process_specs(&backdrop, &specs2, 1.0, &*renderer, &mut cache);
         let img = result.get(&id).expect("cache miss produced an image");
         assert_eq!(img.data.as_ref()[0], 0, "re-rendered green, not cached red");
-        assert_eq!(calls.get(), 2, "renderer called again on cache miss (different key)");
+        assert_eq!(
+            calls.get(),
+            2,
+            "renderer called again on cache miss (different key)"
+        );
         assert_eq!(cache.len(), 2, "two images cached");
     }
 
@@ -333,10 +357,10 @@ mod tests {
             let mut data = Vec::with_capacity((w * h * 4) as usize);
             for _y in 0..h {
                 for x in 0..w {
-                    data.push(x as u8);        // r
+                    data.push(x as u8); // r
                     data.push(255 - x as u8); // g
-                    data.push(128);            // b
-                    data.push(255);            // a
+                    data.push(128); // b
+                    data.push(255); // a
                 }
             }
             Some(peniko::ImageData {

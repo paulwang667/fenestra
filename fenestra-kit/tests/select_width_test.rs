@@ -17,21 +17,14 @@ impl App for A {
     fn update(&mut self, _: Msg) {}
     fn view(&self) -> Element<Msg> {
         col().child(
-            row()
-                .items_center()
-                .gap(8.0)
-                .p(16.0)
-                .children([
-                    text("Model"),
-                    select(
-                        0,
-                        ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"],
-                    )
+            row().items_center().gap(8.0).p(16.0).children([
+                text("Model"),
+                select(0, ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"])
                     .fill()
                     .on_change(Msg::Pick)
                     .into(),
-                    button("Go").on_click(Msg::Go).into(),
-                ]),
+                button("Go").on_click(Msg::Go).into(),
+            ]),
         )
     }
 }

@@ -1712,7 +1712,9 @@ impl<A: App> AppRunner<A> {
             // render is registered — the element paints normally.
             let custom_arc = self.custom_render.clone();
             let custom_fn = move |key: u64, w: u32, h: u32| -> Option<vello::peniko::ImageData> {
-                custom_arc.as_ref().and_then(|f| f(key, w, h).map(|d| d.image))
+                custom_arc
+                    .as_ref()
+                    .and_then(|f| f(key, w, h).map(|d| d.image))
             };
             // Two-pass: render backdrop to off-screen, readback, process, final.
             let physical_backdrop = WindowShell::at_scale(backdrop_scene, scale);
@@ -1722,7 +1724,10 @@ impl<A: App> AppRunner<A> {
                 reason = "physical window size fits in u32"
             )]
             let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
-            match self.shell.render_to_image(&physical_backdrop, pw, ph, theme.bg) {
+            match self
+                .shell
+                .render_to_image(&physical_backdrop, pw, ph, theme.bg)
+            {
                 Some(Ok(backdrop_pixels)) => {
                     let injected = crate::multi_pass::process_specs(
                         &backdrop_pixels,
@@ -1975,7 +1980,9 @@ impl<A: App> AppRunner<A> {
             // Same custom-render closure as the main window (see redraw).
             let custom_arc = self.custom_render.clone();
             let custom_fn = move |key: u64, w: u32, h: u32| -> Option<vello::peniko::ImageData> {
-                custom_arc.as_ref().and_then(|f| f(key, w, h).map(|d| d.image))
+                custom_arc
+                    .as_ref()
+                    .and_then(|f| f(key, w, h).map(|d| d.image))
             };
             let physical_backdrop = WindowShell::at_scale(backdrop_scene, scale);
             #[expect(
@@ -1984,7 +1991,10 @@ impl<A: App> AppRunner<A> {
                 reason = "physical window size fits in u32"
             )]
             let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
-            match bundle.shell.render_to_image(&physical_backdrop, pw, ph, theme.bg) {
+            match bundle
+                .shell
+                .render_to_image(&physical_backdrop, pw, ph, theme.bg)
+            {
                 Some(Ok(backdrop_pixels)) => WindowShell::at_scale(
                     frame.paint_final(
                         &mut self.fonts,

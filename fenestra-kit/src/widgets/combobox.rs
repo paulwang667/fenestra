@@ -200,7 +200,11 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
             .semantics(Semantics::ComboBox)
             .expanded(show_list)
             .children([input]);
-        anchor = if c.fill { anchor.w_full() } else { anchor.w(c.width) };
+        anchor = if c.fill {
+            anchor.w_full()
+        } else {
+            anchor.w(c.width)
+        };
 
         if let Some(pick) = c.on_pick.clone().filter(|_| show_list) {
             let mut listbox = col()
@@ -226,7 +230,11 @@ impl<Msg: Clone + 'static> From<Combobox<Msg>> for Element<Msg> {
                         pick(option.clone()),
                     )
                 }));
-            listbox = if c.fill { listbox.w_full() } else { listbox.w(c.width) };
+            listbox = if c.fill {
+                listbox.w_full()
+            } else {
+                listbox.w(c.width)
+            };
             if let Some(close) = c.on_close.clone() {
                 listbox = listbox.on_close(close);
             }

@@ -23,7 +23,6 @@ use fenestra::shell::{WindowOptions, render_element};
 
 type Vec3 = [f32; 3];
 
-
 fn sub(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -70,13 +69,13 @@ fn transform(m: [[f32; 3]; 3], v: Vec3) -> Vec3 {
 /// 8 corners of a unit cube centered at origin, edge length 1.0.
 const CUBE_VERTS: [Vec3; 8] = [
     [-0.5, -0.5, -0.5],
-    [ 0.5, -0.5, -0.5],
-    [ 0.5,  0.5, -0.5],
-    [-0.5,  0.5, -0.5],
-    [-0.5, -0.5,  0.5],
-    [ 0.5, -0.5,  0.5],
-    [ 0.5,  0.5,  0.5],
-    [-0.5,  0.5,  0.5],
+    [0.5, -0.5, -0.5],
+    [0.5, 0.5, -0.5],
+    [-0.5, 0.5, -0.5],
+    [-0.5, -0.5, 0.5],
+    [0.5, -0.5, 0.5],
+    [0.5, 0.5, 0.5],
+    [-0.5, 0.5, 0.5],
 ];
 
 /// 12 triangles (2 per face), indices into CUBE_VERTS, plus a base color.
@@ -87,23 +86,59 @@ struct Tri {
 
 const CUBE_TRIS: [Tri; 12] = [
     // -Z (back, dark blue)
-    Tri { vi: [0, 2, 1], color: [40, 70, 120] },
-    Tri { vi: [0, 3, 2], color: [40, 70, 120] },
+    Tri {
+        vi: [0, 2, 1],
+        color: [40, 70, 120],
+    },
+    Tri {
+        vi: [0, 3, 2],
+        color: [40, 70, 120],
+    },
     // +Z (front, light blue)
-    Tri { vi: [4, 5, 6], color: [80, 130, 200] },
-    Tri { vi: [4, 6, 7], color: [80, 130, 200] },
+    Tri {
+        vi: [4, 5, 6],
+        color: [80, 130, 200],
+    },
+    Tri {
+        vi: [4, 6, 7],
+        color: [80, 130, 200],
+    },
     // -X (left, dark green)
-    Tri { vi: [0, 4, 7], color: [40, 100, 60] },
-    Tri { vi: [0, 7, 3], color: [40, 100, 60] },
+    Tri {
+        vi: [0, 4, 7],
+        color: [40, 100, 60],
+    },
+    Tri {
+        vi: [0, 7, 3],
+        color: [40, 100, 60],
+    },
     // +X (right, light green)
-    Tri { vi: [1, 2, 6], color: [70, 160, 90] },
-    Tri { vi: [1, 6, 5], color: [70, 160, 90] },
+    Tri {
+        vi: [1, 2, 6],
+        color: [70, 160, 90],
+    },
+    Tri {
+        vi: [1, 6, 5],
+        color: [70, 160, 90],
+    },
     // -Y (bottom, dark red)
-    Tri { vi: [0, 1, 5], color: [100, 40, 40] },
-    Tri { vi: [0, 5, 4], color: [100, 40, 40] },
+    Tri {
+        vi: [0, 1, 5],
+        color: [100, 40, 40],
+    },
+    Tri {
+        vi: [0, 5, 4],
+        color: [100, 40, 40],
+    },
     // +Y (top, light red — the "lit" face)
-    Tri { vi: [3, 7, 6], color: [200, 80, 80] },
-    Tri { vi: [3, 6, 2], color: [200, 80, 80] },
+    Tri {
+        vi: [3, 7, 6],
+        color: [200, 80, 80],
+    },
+    Tri {
+        vi: [3, 6, 2],
+        color: [200, 80, 80],
+    },
 ];
 
 // ───────────────────────── software rasterizer ─────────────────────────────
@@ -190,9 +225,15 @@ fn render_cube(angle_x: f32, angle_y: f32, w: u32, h: u32) -> Vec<u8> {
 
 /// Barycentric scanline triangle fill with simple bounds clipping.
 fn fill_triangle(
-    buf: &mut [u8], w: usize, h: usize,
-    a: Vec3, b: Vec3, c: Vec3,
-    r: u8, g: u8, bl: u8,
+    buf: &mut [u8],
+    w: usize,
+    h: usize,
+    a: Vec3,
+    b: Vec3,
+    c: Vec3,
+    r: u8,
+    g: u8,
+    bl: u8,
 ) {
     let min_x = a[0].min(b[0]).min(c[0]).floor() as i32;
     let max_x = a[0].max(b[0]).max(c[0]).ceil() as i32;
@@ -229,11 +270,7 @@ fn fill_triangle(
 }
 
 /// Bresenham line draw.
-fn draw_line(
-    buf: &mut [u8], w: usize, h: usize,
-    a: Vec3, b: Vec3,
-    r: u8, g: u8, bl: u8,
-) {
+fn draw_line(buf: &mut [u8], w: usize, h: usize, a: Vec3, b: Vec3, r: u8, g: u8, bl: u8) {
     let (mut x0, mut y0) = (a[0] as i32, a[1] as i32);
     let (x1, y1) = (b[0] as i32, b[1] as i32);
     let dx = (x1 - x0).abs();
@@ -249,10 +286,18 @@ fn draw_line(
             buf[idx + 2] = bl;
             buf[idx + 3] = 255;
         }
-        if x0 == x1 && y0 == y1 { break; }
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
         let e2 = 2 * err;
-        if e2 > -dy { err -= dy; x0 += sx; }
-        if e2 < dx { err += dx; y0 += sy; }
+        if e2 > -dy {
+            err -= dy;
+            x0 += sx;
+        }
+        if e2 < dx {
+            err += dx;
+            y0 += sy;
+        }
     }
 }
 
@@ -324,17 +369,14 @@ impl App for Scene3d {
         // frame uses the hint, then converges to the real size).
         let canvas: Element<Msg> = if self.responsive {
             let cached = self.cached.clone();
-            responsive_hinted(
-                (RW as f32, RH as f32),
-                move |(w, h)| match &cached {
-                    Some(data) => image_from_data(data.clone())
-                        .w(w)
-                        .h(h)
-                        .rounded(8.0)
-                        .border(1.0, border),
-                    None => div().w(w).h(h).bg(placeholder).rounded(8.0),
-                },
-            )
+            responsive_hinted((RW as f32, RH as f32), move |(w, h)| match &cached {
+                Some(data) => image_from_data(data.clone())
+                    .w(w)
+                    .h(h)
+                    .rounded(8.0)
+                    .border(1.0, border),
+                None => div().w(w).h(h).bg(placeholder).rounded(8.0),
+            })
         } else {
             match &self.cached {
                 Some(data) => image_from_data(data.clone())
@@ -344,22 +386,22 @@ impl App for Scene3d {
             }
         };
 
-        let mode_label = if self.responsive { "responsive" } else { "fixed" };
-        col()
-            .p(SP6)
-            .gap(SP4)
-            .items_center()
-            .children((
-                text("3D in fenestra")
-                    .size(TextSize::Xl)
-                    .weight(Weight::Semibold),
-                canvas,
-                text(format!(
-                    "yaw: {angle_deg:.0}°  ·  {mode_label}  ·  CPU rasterizer → image_rgba8"
-                ))
-                .size(TextSize::Sm)
-                .color(Color::from_rgba8(140, 140, 150, 255)),
+        let mode_label = if self.responsive {
+            "responsive"
+        } else {
+            "fixed"
+        };
+        col().p(SP6).gap(SP4).items_center().children((
+            text("3D in fenestra")
+                .size(TextSize::Xl)
+                .weight(Weight::Semibold),
+            canvas,
+            text(format!(
+                "yaw: {angle_deg:.0}°  ·  {mode_label}  ·  CPU rasterizer → image_rgba8"
             ))
+            .size(TextSize::Sm)
+            .color(Color::from_rgba8(140, 140, 150, 255)),
+        ))
     }
 }
 
@@ -374,30 +416,41 @@ fn report_pixels(img: &image::RgbaImage, label: &str) {
             let p = img.get_pixel(x, y);
             let (r, g, b) = (p[0], p[1], p[2]);
             let hit = if b > r + 10 && b > g + 10 {
-                blue += 1; true
+                blue += 1;
+                true
             } else if g > r + 10 && g > b + 10 {
-                green += 1; true
+                green += 1;
+                true
             } else if r > g + 15 && r > b + 15 && r > 50 {
-                red += 1; true
+                red += 1;
+                true
             } else {
                 false
             };
             if hit {
-                min_x = min_x.min(x); max_x = max_x.max(x);
-                min_y = min_y.min(y); max_y = max_y.max(y);
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
             }
         }
     }
     let total = blue + green + red;
     println!("{label}: {w}x{h}, {opaque} opaque, cube={total} (b={blue} g={green} r={red})");
     if total > 0 {
-        println!("  bbox: ({min_x},{min_y})-({max_x},{max_y}) {}x{}",
-            max_x - min_x + 1, max_y - min_y + 1);
+        println!(
+            "  bbox: ({min_x},{min_y})-({max_x},{max_y}) {}x{}",
+            max_x - min_x + 1,
+            max_y - min_y + 1
+        );
     }
     let cx = w / 2;
     let cy = h / 2;
     let p = img.get_pixel(cx, cy);
-    println!("  center ({cx},{cy}): RGBA({},{},{},{})", p[0], p[1], p[2], p[3]);
+    println!(
+        "  center ({cx},{cy}): RGBA({},{},{},{})",
+        p[0], p[1], p[2], p[3]
+    );
 }
 
 // ───────────────────────── Tier 3: PassKind::Custom (windowed) ────────────
@@ -444,7 +497,9 @@ impl App for Scene3dCustom {
     }
 
     fn subscriptions(&self) -> Vec<Sub<MsgCustom>> {
-        vec![Sub::every("spin-custom", Duration::from_millis(16), || MsgCustom::Tick)]
+        vec![Sub::every("spin-custom", Duration::from_millis(16), || {
+            MsgCustom::Tick
+        })]
     }
 
     /// Registers the cube renderer. The shell calls this closure (on a
@@ -453,8 +508,7 @@ impl App for Scene3dCustom {
     /// cube synchronously to a fresh `ImageData`.
     fn custom_render(
         &self,
-    ) -> Option<std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<ImageData> + Send + Sync>>
-    {
+    ) -> Option<std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<ImageData> + Send + Sync>> {
         let angles = std::sync::Arc::clone(&self.angles);
         Some(std::sync::Arc::new(move |_key, w, h| {
             let (ax, ay) = *angles.lock().expect("angles mutex");
@@ -480,21 +534,17 @@ impl App for Scene3dCustom {
             .border(1.0, border)
             .custom_render(CUBE_KEY);
 
-        col()
-            .p(SP6)
-            .gap(SP4)
-            .items_center()
-            .children((
-                text("3D in fenestra (Tier 3: PassKind::Custom)")
-                    .size(TextSize::Xl)
-                    .weight(Weight::Semibold),
-                cube,
-                text(format!(
-                    "yaw: {angle_deg:.0}°  ·  PassKind::Custom  ·  shell calls App::custom_render"
-                ))
-                .size(TextSize::Sm)
-                .color(Color::from_rgba8(140, 140, 150, 255)),
+        col().p(SP6).gap(SP4).items_center().children((
+            text("3D in fenestra (Tier 3: PassKind::Custom)")
+                .size(TextSize::Xl)
+                .weight(Weight::Semibold),
+            cube,
+            text(format!(
+                "yaw: {angle_deg:.0}°  ·  PassKind::Custom  ·  shell calls App::custom_render"
             ))
+            .size(TextSize::Sm)
+            .color(Color::from_rgba8(140, 140, 150, 255)),
+        ))
     }
 }
 

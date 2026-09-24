@@ -17,22 +17,20 @@ enum Msg {
 }
 
 fn view(value: &str) -> Element<Msg> {
-    col().children([
-        raw_text_area(value.to_owned(), "type here")
-            // As a chat composer is: the editor leaves Enter to the app
-            // instead of inserting a newline, which is what puts the key in
-            // reach of the binding below.
-            .submit_on_enter(true)
-            .w(200.0)
-            .h(80.0)
-            .on_input(|v| Msg::Input(v.to_owned()))
-            // What a chat composer binds, and what accepting a candidate
-            // presses.
-            .on_key(|k| match k.key {
-                Key::Enter if !k.shift => Some(Msg::Sent),
-                _ => None,
-            }),
-    ])
+    col().children([raw_text_area(value.to_owned(), "type here")
+        // As a chat composer is: the editor leaves Enter to the app
+        // instead of inserting a newline, which is what puts the key in
+        // reach of the binding below.
+        .submit_on_enter(true)
+        .w(200.0)
+        .h(80.0)
+        .on_input(|v| Msg::Input(v.to_owned()))
+        // What a chat composer binds, and what accepting a candidate
+        // presses.
+        .on_key(|k| match k.key {
+            Key::Enter if !k.shift => Some(Msg::Sent),
+            _ => None,
+        })])
 }
 
 struct Fixture {

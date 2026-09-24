@@ -286,9 +286,7 @@ pub trait App {
     /// returns `None` — apps that don't use custom renders ignore this.
     fn custom_render(
         &self,
-    ) -> Option<
-        std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<ImageData> + Send + Sync>,
-    > {
+    ) -> Option<std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<ImageData> + Send + Sync>> {
         None
     }
 }
@@ -352,9 +350,7 @@ impl<A: App> App for &mut A {
 
     fn custom_render(
         &self,
-    ) -> Option<
-        std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<ImageData> + Send + Sync>,
-    > {
+    ) -> Option<std::sync::Arc<dyn Fn(u64, u32, u32) -> Option<ImageData> + Send + Sync>> {
         (**self).custom_render()
     }
 }

@@ -67,7 +67,10 @@ pub struct SelectOption {
 
 impl From<String> for SelectOption {
     fn from(label: String) -> Self {
-        Self { label, detail: None }
+        Self {
+            label,
+            detail: None,
+        }
     }
 }
 
@@ -169,22 +172,23 @@ impl<Msg: 'static> From<Select<Msg>> for Element<Msg> {
                 // The label and an optional muted detail line (metadata) sit in
                 // a column; the checkmark (if selected) is pushed to the right
                 // by the spacer.
-                let mut label_col = col()
-                    .items_start()
-                    .gap(1.0)
-                    .children([text(opt.label.clone()).size(m.font).themed(move |t: &Theme, s| {
-                        if is_selected {
-                            s.color(t.accent_text)
-                        } else {
-                            s.color(t.text)
-                        }
-                    })]);
+                let mut label_col =
+                    col()
+                        .items_start()
+                        .gap(1.0)
+                        .children([text(opt.label.clone()).size(m.font).themed(
+                            move |t: &Theme, s| {
+                                if is_selected {
+                                    s.color(t.accent_text)
+                                } else {
+                                    s.color(t.text)
+                                }
+                            },
+                        )]);
                 if let Some(detail) = &opt.detail {
-                    label_col = label_col.children([
-                        text(detail.clone())
-                            .size(TextSize::Xs)
-                            .themed(|t: &Theme, s| s.color(t.text_muted)),
-                    ]);
+                    label_col = label_col.children([text(detail.clone())
+                        .size(TextSize::Xs)
+                        .themed(|t: &Theme, s| s.color(t.text_muted))]);
                 }
                 let mut option = row()
                     .items_center()
@@ -207,11 +211,9 @@ impl<Msg: 'static> From<Select<Msg>> for Element<Msg> {
                 if is_selected {
                     // A checkmark, not just a tint, marks the option in use -
                     // the tint alone is easy to miss in a long list.
-                    option = option.children([
-                        icons::check()
-                            .themed(|t: &Theme, s| s.color(t.accent_text))
-                            .shrink0(),
-                    ]);
+                    option = option.children([icons::check()
+                        .themed(|t: &Theme, s| s.color(t.accent_text))
+                        .shrink0()]);
                     option = option.themed(|t: &Theme, s| s.bg(t.accent_bg));
                 }
                 if let Some(f) = &sel.on_change {
@@ -253,11 +255,7 @@ impl<Msg: 'static> From<Select<Msg>> for Element<Msg> {
         };
 
         if let Some(f) = sel.on_change {
-            let options: Vec<String> = sel
-                .options
-                .iter()
-                .map(|o| o.label.clone())
-                .collect();
+            let options: Vec<String> = sel.options.iter().map(|o| o.label.clone()).collect();
             let count = options.len();
             let nav = std::rc::Rc::new(f);
             let pick = std::rc::Rc::clone(&nav);

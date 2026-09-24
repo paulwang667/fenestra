@@ -69,5 +69,9 @@ fn a_request_token_moves_focus_once_and_again_on_the_next_token() {
     h.update(Msg::FocusB);
     h.rebuild();
     h.type_text(" two");
-    assert_eq!(h.app().b, "one two", "the next token refocuses, caret kept at the end");
+    assert_eq!(
+        h.app().b,
+        "one two",
+        "the next token refocuses, caret kept at the end"
+    );
 }
