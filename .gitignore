@@ -1,6 +1,8 @@
 /target
 **/*.png.new
 **/*.actual.png
+**/*.diff.png
+**/*.side.png
 
 # Local Claude guidance stays out of the repo.
 CLAUDE.local.md
