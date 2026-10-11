@@ -197,10 +197,9 @@ pub(crate) fn resolve_text(ts: &TextStyle, theme: &Theme) -> ResolvedText {
         px,
         weight: ts.weight.value(),
         line_height: ts.line_height.unwrap_or_else(|| {
-            // Free-form sizes default to a tight display leading; tokens
-            // keep their scale's value.
+            // Free-form sizes take the theme's leading; tokens keep their scale's value.
             if ts.size_px.is_some() {
-                1.25
+                theme.text_leading
             } else {
                 ts.size.line_height()
             }

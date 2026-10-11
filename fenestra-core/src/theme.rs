@@ -253,6 +253,10 @@ pub struct Theme {
     /// [`Theme::with_text_scale`]; lets a whole UI grow or shrink its type for
     /// accessibility without touching individual sizes.
     pub text_scale: f32,
+    /// Line height (a multiple of the font size) for free-form text sizes (`size_px`)
+    /// that don't set their own [`crate::Element::leading`]. Set via
+    /// [`Theme::with_text_leading`]; token sizes keep their scale's leading.
+    pub text_leading: f32,
     /// Writing direction (LTR default; RTL mirrors the layout). Set via
     /// [`Theme::rtl`] / [`Theme::with_direction`].
     pub direction: WritingDir,
@@ -432,6 +436,7 @@ impl Theme {
             optical_sizing: OpticalSizing::Auto,
             elevation: Elevation::default(),
             text_scale: 1.0,
+            text_leading: 1.25,
             direction: WritingDir::default(),
         }
     }
@@ -483,6 +488,14 @@ impl Theme {
     #[must_use]
     pub fn with_text_scale(mut self, scale: f32) -> Self {
         self.text_scale = scale;
+        self
+    }
+
+    /// Returns this theme with a default line height for free-form text sizes
+    /// (a multiple of the font size; 1.25 is the stock display leading).
+    #[must_use]
+    pub fn with_text_leading(mut self, leading: f32) -> Self {
+        self.text_leading = leading;
         self
     }
 
