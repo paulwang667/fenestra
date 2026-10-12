@@ -1951,6 +1951,12 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Uniform dashed border (see [`Style::border_dashed`]).
+    pub fn border_dashed(mut self, width: f32, color: Color) -> Self {
+        self.style = self.style.border_dashed(width, color);
+        self
+    }
+
     /// A border stroke on just the top edge — a straight hairline (square
     /// corners) for ruled layouts, no manual divider child needed. See
     /// [`Style::border_top`](crate::Style::border_top).

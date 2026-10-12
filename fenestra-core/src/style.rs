@@ -973,6 +973,9 @@ pub struct Style {
     pub fill: Option<Paint>,
     /// Uniform border.
     pub border: Option<Border>,
+    /// Whether the uniform border is drawn dashed. Only meaningful with
+    /// `border` set; `false` keeps the solid stroke.
+    pub border_dashed: bool,
     /// Per-edge border strokes, independent of the uniform [`border`](Self::border).
     pub side_borders: EdgeBorders,
     /// Per-corner radii.
@@ -1108,6 +1111,7 @@ impl Default for Style {
             sticky_left: None,
             fill: None,
             border: None,
+            border_dashed: false,
             side_borders: EdgeBorders::default(),
             corner_radius: CornerRadius::default(),
             corner_smoothing: None,
@@ -1750,6 +1754,15 @@ impl Style {
     /// Uniform border (a stroke on the element's edge).
     pub fn border(mut self, width: f32, color: Color) -> Self {
         self.border = Some(Border { width, color });
+        self.border_dashed = false;
+        self
+    }
+
+    /// A uniform border drawn as dashes: short strokes with equal gaps, for
+    /// drop targets and placeholders that should read as "put something here".
+    pub fn border_dashed(mut self, width: f32, color: Color) -> Self {
+        self.border = Some(Border { width, color });
+        self.border_dashed = true;
         self
     }
 

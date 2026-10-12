@@ -635,8 +635,15 @@ pub(crate) fn push_box(
                 *r = (*r - half as f32).max(0.0);
             }
         }
+        // A dash is four stroke widths long, with a gap of the same length:
+        // long enough to read as dashes at 1px, not as a dotted hairline.
+        let stroke = if style.border_dashed {
+            Stroke::new(width).with_dashes(0.0, [width * 4.0, width * 4.0])
+        } else {
+            Stroke::new(width)
+        };
         scene.stroke(
-            &Stroke::new(width),
+            &stroke,
             Affine::IDENTITY,
             border.color,
             None,
