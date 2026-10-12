@@ -26,7 +26,7 @@ use fenestra_core::{
 
 const TRACK_H: f32 = 4.0;
 const THUMB: f32 = 16.0;
-const HEIGHT: f32 = 20.0;
+const HEIGHT: f32 = 24.0;
 /// Upper bound on how many step marks are drawn (denser steps render none).
 const MAX_MARKS: usize = 50;
 
