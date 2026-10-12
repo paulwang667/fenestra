@@ -7,6 +7,10 @@ expansion, and two checks that were narrower than the thing they guarded.
 
 ### Added
 
+- **`Slider::on_release(msg)` — one undo step per drag.** The slider
+  emits `msg` once when a drag it captured ends on pointer release, after
+  its value changes. Apps can close a gesture there rather than per value.
+
 - **`App::window_key` — window-level shortcuts.** A key press that nothing
   in the window took (no focused editor consumed it, no `on_key` or
   clickable answered it, no scroll, overlay, or copy acted on it) is now

@@ -111,6 +111,7 @@ pub struct Slider<Msg> {
     marks: bool,
     disabled: bool,
     on_change: Option<std::rc::Rc<dyn Fn(f32) -> Msg>>,
+    on_release: Option<Msg>,
     key: Option<String>,
 }
 
@@ -126,6 +127,7 @@ pub fn slider<Msg>(value: f32) -> Slider<Msg> {
         marks: false,
         disabled: false,
         on_change: None,
+        on_release: None,
         key: None,
     }
 }
@@ -170,6 +172,14 @@ impl<Msg> Slider<Msg> {
     /// arrow/page keys.
     pub fn on_change(mut self, f: impl Fn(f32) -> Msg + 'static) -> Self {
         self.on_change = Some(std::rc::Rc::new(f));
+        self
+    }
+
+    /// Emits `msg` once when a drag on the slider ends on pointer release.
+    /// Only a drag the slider captured counts. Lets an app close one undo
+    /// step per gesture rather than per value.
+    pub fn on_release(mut self, msg: Msg) -> Self {
+        self.on_release = Some(msg);
         self
     }
 
@@ -220,6 +230,9 @@ impl<Msg: 'static> From<Slider<Msg>> for Element<Msg> {
                 let n = ((fx * width - THUMB / 2.0) / (width - THUMB)).clamp(0.0, 1.0);
                 Some(drag(snap(min + n * (max - min), min, max, step)))
             });
+            if let Some(release) = sl.on_release {
+                el = el.on_drag_end(release);
+            }
             let big = step * 10.0;
             el = el.on_key(move |k| match k.key {
                 Key::ArrowLeft | Key::ArrowDown => Some(f(snap(value - step, min, max, step))),
