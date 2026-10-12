@@ -270,8 +270,14 @@ vello 0.9 is the classic compute-shader renderer (`vello_encoding` +
   `InputEvent::Text` (taken from `KeyEvent.text`, which handles dead keys
   and IME commits) and everything else as `Key`. Dispatch routes both to a
   focused editor first; unconsumed keys fall through to `on_key` and
-  Enter/Space activation. A bare `Text(" ")` still activates focused
-  buttons so Space works for non-editors.
+  Enter/Space activation. A printable `Text` that a non-editor does not
+  take is offered to `on_key` as the key it stands for (`Text(" ")` is
+  `Key::Space`, `Text("+")` is `Key::Char('+')`), and a bare `Text(" ")`
+  still activates focused buttons, so Space works for non-editors.
+  Whatever still nothing took is returned as `Dispatch::unhandled`, and
+  the runner offers it to `App::window_key` (the window-level shortcut
+  hook). A focused editor that changes its text, or an `on_key` /
+  clickable that answers, never reaches that hook.
 - **Paint needs state.** `Frame::paint(fonts, state)` gained the state
   parameter: input painting refreshes the editor layout, updates the
   horizontal follow-scroll, and computes the caret blink phase (530ms

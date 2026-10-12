@@ -2,6 +2,7 @@
 
 use crate::cmd::{Cmd, Sub};
 use crate::element::{Element, ImageData};
+use crate::events::KeyInput;
 use crate::menu::MenuSpec;
 use crate::proxy::Proxy;
 use crate::theme::Theme;
@@ -208,6 +209,22 @@ pub trait App {
     /// none. (Native only; the web runner ignores subscriptions.)
     fn subscriptions(&self) -> Vec<Sub<Self::Msg>> {
         Vec::new()
+    }
+
+    /// A key press that nothing in the window took, for window-level
+    /// shortcuts: Space to play from anywhere, `+`/`-` to zoom. Called only
+    /// when no focused element consumed the key, no `on_key` or clickable
+    /// answered it, and no scroll, overlay, or copy acted on it. A focused
+    /// text field that changes its text never reaches this hook. The
+    /// default is none.
+    ///
+    /// The returned message is applied like any other, and is the only
+    /// effect of the key. Printable characters arrive as the key they stand
+    /// for (Space is [`Key::Space`](crate::Key::Space), `+` is
+    /// `Key::Char('+')`); modifiers other than Ctrl/Cmd are set from the
+    /// `Key` event, and printable text carries none.
+    fn window_key(&self, _key: &KeyInput) -> Option<Self::Msg> {
+        None
     }
 
     /// The native menu bar, declared from state and reconciled after every

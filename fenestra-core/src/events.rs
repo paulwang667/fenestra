@@ -279,6 +279,12 @@ pub struct Dispatch<Msg> {
     /// Cursor to show; `None` leaves the current cursor unchanged
     /// (non-pointer events must not reset it).
     pub cursor: Option<Cursor>,
+    /// A key press that no element in the window took: no focused editor
+    /// consumed it, no `on_key` or clickable answered it, and no scroll,
+    /// overlay, or copy acted on it. The runner offers it to
+    /// [`App::window_key`](crate::App::window_key). Printable characters
+    /// arrive as the key they stand for. Set only when `msgs` is empty.
+    pub unhandled: Option<KeyInput>,
 }
 
 impl<Msg> Default for Dispatch<Msg> {
@@ -287,6 +293,7 @@ impl<Msg> Default for Dispatch<Msg> {
             msgs: Vec::new(),
             redraw: false,
             cursor: None,
+            unhandled: None,
         }
     }
 }
@@ -1093,6 +1100,11 @@ pub fn dispatch<Msg: Clone>(
         }
         InputEvent::Key(key) => {
             let mut key_handled = false;
+            // Set by each handler that acts on the key without a message
+            // (copy, paging, overlay dismissal), so the window hook is
+            // skipped for it.
+            let mut took = false;
+            let msgs_before = out.msgs.len();
             if let Some(focus) = state.focus
                 && let Some(el) = handlers.get(focus)
                 && !el.disabled
@@ -1224,6 +1236,7 @@ pub fn dispatch<Msg: Clone>(
                 && let Some((sid, sel, _)) = state.static_sel
             {
                 let range = sel.text_range();
+                took = true;
                 if range.start < range.end
                     && let Some((text, _)) = frame.static_text_of(sid)
                 {
@@ -1240,6 +1253,7 @@ pub fn dispatch<Msg: Clone>(
                 && matches!(key.key, Key::PageUp | Key::PageDown | Key::Home | Key::End)
                 && let Some((target, rect)) = frame.scroll_target_for(state.focus)
             {
+                took = true;
                 #[expect(clippy::cast_possible_truncation, reason = "viewports fit in f32")]
                 let page = (rect.height() * 0.9) as f32;
                 match key.key {
@@ -1256,6 +1270,7 @@ pub fn dispatch<Msg: Clone>(
             if matches!(key.key, Key::Escape)
                 && let Some((overlay_id, mode)) = frame.open_overlays_top_down().first().copied()
             {
+                took = true;
                 match mode {
                     crate::element::OverlayMode::Toggle => {
                         state.close_overlay(overlay_id);
@@ -1272,8 +1287,19 @@ pub fn dispatch<Msg: Clone>(
                     crate::element::OverlayMode::Hover { .. } => {}
                 }
             }
+            // Nothing in the window took the key: offer it to the hook.
+            if !took
+                && !key_handled
+                && out.msgs.len() == msgs_before
+                && !state.focus.is_some_and(|f| state.composing_in(f))
+            {
+                out.unhandled = Some(key);
+            }
         }
         InputEvent::Text(text) => {
+            // Set when the focused element took the character; a character
+            // nothing took is offered to the window hook as a key.
+            let mut took = false;
             if let Some(focus) = state.focus
                 && let Some(el) = handlers.get(focus)
                 && !el.disabled
@@ -1284,6 +1310,7 @@ pub fn dispatch<Msg: Clone>(
                     if let Some(editor) = state.editors.get_mut(&focus) {
                         let outcome = input::handle_text(editor, fonts, &text);
                         editor.last_activity = now;
+                        took = outcome.changed;
                         filled = outcome.changed
                             && max_chars_of(el)
                                 .is_some_and(|max| editor.editor.raw_text().chars().count() >= max);
@@ -1297,14 +1324,37 @@ pub fn dispatch<Msg: Clone>(
                     if filled {
                         advance_roving(state, frame, focus);
                     }
-                } else if text == " "
-                    && let Some(msg) = &el.on_click
-                {
-                    // The runner sends printable keys as Text; Space must
-                    // still activate focused buttons.
-                    out.msgs.push(msg.clone());
-                    out.redraw = true;
+                } else {
+                    let msgs_before_text = out.msgs.len();
+                    // The runner sends printable keys as Text, so a
+                    // non-editor's `on_key` would never see Space, `+` or
+                    // `-`. Offer the character as the key it stands for,
+                    // the way a `Key` event would reach it, before the
+                    // Space-activates-a-button rule below.
+                    let mut handled = false;
+                    if !state.composing_in(focus)
+                        && let Some(key) = printable_key(&text)
+                        && let Some(f) = &el.on_key
+                        && let Some(msg) = f(&key)
+                    {
+                        out.msgs.push(msg);
+                        out.redraw = true;
+                        handled = true;
+                    }
+                    if !handled
+                        && text == " "
+                        && let Some(msg) = &el.on_click
+                    {
+                        // Space must still activate focused buttons.
+                        out.msgs.push(msg.clone());
+                        out.redraw = true;
+                    }
+                    took = handled || out.msgs.len() > msgs_before_text;
                 }
+            }
+            // A character nothing in the window took is offered to the hook.
+            if !took && !state.focus.is_some_and(|f| state.composing_in(f)) {
+                out.unhandled = printable_key(&text);
             }
         }
         InputEvent::ImePreedit { text, cursor } => {
@@ -1322,6 +1372,20 @@ pub fn dispatch<Msg: Clone>(
         }
     }
     out
+}
+
+/// The key a single printable character stands for, for an `on_key` that
+/// got it as [`InputEvent::Text`]. Only one character qualifies: a multi-
+/// character commit is text, not a key press. Text carries no modifiers
+/// (Ctrl and Cmd chords never arrive as text), so they are all unset here.
+fn printable_key(text: &str) -> Option<KeyInput> {
+    let mut chars = text.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    let key = if c == ' ' { Key::Space } else { Key::Char(c) };
+    Some(KeyInput::plain(key))
 }
 
 /// The cursor of the deepest element in the chain that sets one.

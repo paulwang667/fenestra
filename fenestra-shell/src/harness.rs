@@ -326,7 +326,13 @@ where
             .expect("active slot exists");
         let result =
             with_fonts(|fonts| dispatch(&slot.view, &slot.frame, &mut slot.state, fonts, event));
-        for msg in result.msgs {
+        let mut msgs = result.msgs;
+        if let Some(key) = &result.unhandled
+            && let Some(msg) = self.app.window_key(key)
+        {
+            msgs.push(msg);
+        }
+        for msg in msgs {
             self.msgs.push(msg.clone());
             let units = Self::apply(&mut self.app, msg);
             self.effects.extend(units);

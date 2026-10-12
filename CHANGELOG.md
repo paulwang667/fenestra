@@ -7,6 +7,22 @@ expansion, and two checks that were narrower than the thing they guarded.
 
 ### Added
 
+- **`App::window_key` — window-level shortcuts.** A key press that nothing
+  in the window took (no focused editor consumed it, no `on_key` or
+  clickable answered it, no scroll, overlay, or copy acted on it) is now
+  offered to `App::window_key(&KeyInput) -> Option<Msg>`, whatever has
+  focus, including nothing. Default `None`, so existing apps are unchanged.
+  The harness, the embed API and both window runners call it; the
+  dispatch result carries the key as `Dispatch::unhandled`.
+
+### Fixed
+
+- **Printable keys reach a focused element's `on_key`.** The runner sends
+  Space, `+`, `-` and other printable keys as `Text`, so a focusable
+  element's `on_key` never saw them, while arrows did. A focused
+  non-editor now gets the character as the key it stands for before the
+  Space-activates-a-button rule. Focused text fields are unaffected.
+
 - **`Element::focus_on(token)` — programmatic focus, once per request.**
   `autofocus` only fires when an element newly appears, so an app could
   not say "put the cursor here now" for an element that is already

@@ -228,8 +228,14 @@ where
         };
         let result = dispatch(view, frame, &mut self.state, &mut self.fonts, event);
         self.cursor_icon = result.cursor;
-        let had_msgs = !result.msgs.is_empty();
-        for msg in result.msgs {
+        let mut msgs = result.msgs;
+        if let Some(key) = &result.unhandled
+            && let Some(msg) = self.app.window_key(key)
+        {
+            msgs.push(msg);
+        }
+        let had_msgs = !msgs.is_empty();
+        for msg in msgs {
             self.apply(msg);
         }
         if had_msgs {

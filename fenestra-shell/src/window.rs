@@ -1821,8 +1821,14 @@ impl<A: App> AppRunner<A> {
         {
             w.set_cursor(winit::window::Cursor::Icon(map_cursor(cursor)));
         }
-        let had_msgs = !result.msgs.is_empty();
-        for msg in result.msgs {
+        let mut msgs = result.msgs;
+        if let Some(key) = &result.unhandled
+            && let Some(msg) = self.app.window_key(key)
+        {
+            msgs.push(msg);
+        }
+        let had_msgs = !msgs.is_empty();
+        for msg in msgs {
             self.apply(msg);
         }
         if result.redraw || had_msgs {
@@ -2218,13 +2224,18 @@ impl<A: App> AppRunner<A> {
         {
             w.set_cursor(winit::window::Cursor::Icon(map_cursor(cursor)));
         }
-        let had_msgs = !result.msgs.is_empty();
+        let mut msgs = result.msgs;
+        if let Some(key) = &result.unhandled
+            && let Some(msg) = self.app.window_key(key)
+        {
+            msgs.push(msg);
+        }
+        let had_msgs = !msgs.is_empty();
         if (result.redraw || had_msgs)
             && let Some(w) = bundle.shell.window()
         {
             w.request_redraw();
         }
-        let msgs = result.msgs;
         for msg in msgs {
             self.apply(msg);
         }
