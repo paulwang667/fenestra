@@ -953,6 +953,17 @@ impl<Msg> Element<Msg> {
         self.stack
     }
 
+    /// Whether this element's text is offered to the selection and copy path.
+    ///
+    /// **Read back by an emitter's tests, which is what it is for.** The flag
+    /// is set by [`Self::selectable`] and read by the frame and the event
+    /// handlers; an app that renders content text can ask whether the tree it
+    /// just built marks every leaf, without needing a pointer drag and a
+    /// clipboard to find out afterwards.
+    pub fn is_selectable(&self) -> bool {
+        self.selectable
+    }
+
     /// Whether any theme-, hover-, focus-, or press-dependent style closure
     /// is attached — state an emitter cannot serialize to static data.
     pub fn has_dynamic_style(&self) -> bool {

@@ -780,7 +780,8 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
                                 row().w_full().justify_end().child(
                                     text(lang.to_owned())
                                         .size(TextSize::Xs)
-                                        .themed(|t: &Theme, s| s.color(t.text_muted)),
+                                        .themed(|t: &Theme, s| s.color(t.text_muted))
+                                        .selectable(),
                                 ),
                             );
                         }
@@ -841,7 +842,8 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
                                 })
                                 .child(
                                     text(format!("[img: {label}]"))
-                                        .themed(|t: &Theme, s| s.color(t.text_muted)),
+                                        .themed(|t: &Theme, s| s.color(t.text_muted))
+                                        .selectable(),
                                 ),
                         );
                     }
@@ -1043,9 +1045,12 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
                     // inherit it.
                     sized(rich_text(build_spans(def_spans)), base)
                         .themed(|t: &Theme, s| s.color(t.text_muted))
+                        .selectable()
                 };
                 footnote_els.push(row().gap(6.0).items_start().children((
-                    sized(text(marker), base).themed(|t: &Theme, s| s.color(t.text_muted)),
+                    sized(text(marker), base)
+                        .themed(|t: &Theme, s| s.color(t.text_muted))
+                        .selectable(),
                     body,
                 )));
             }
