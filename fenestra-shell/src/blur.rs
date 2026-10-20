@@ -37,6 +37,97 @@ pub fn box_blur_rgba8(img: &RgbaImage, radius: u32) -> RgbaImage {
     a
 }
 
+/// The backdrop blur: the same three-box Gaussian as [`box_blur_rgba8`], but
+/// averaged in **linear light** in `f32` and rounded back to bytes once, with
+/// dither.
+///
+/// **Two things the byte blur got wrong for glass.** Averaging sRGB code
+/// values darkens every edge between two colours — red and green blur to a
+/// muddy 128, where the light really mixes to 188 — which is the dark seam
+/// glass drew wherever its backdrop changed hue. And rounding each pass to a
+/// byte throws away the very grain an app dithers its backdrop with: a blur
+/// that wide averages the dither to a smooth value, the rounding steps it, and
+/// a gentle wash comes back out as contour bands.
+///
+/// Running sums are `f64`, so the slide does not drift across a wide row.
+#[must_use]
+pub fn blur_linear(img: &RgbaImage, radius: u32) -> RgbaImage {
+    use fenestra_core::glass::{dither_noise, dither_to_u8, linear_to_srgb, srgb_to_linear};
+    let (w, h) = (img.width(), img.height());
+    if w == 0 || h == 0 {
+        return img.clone();
+    }
+    let radius = radius.min(w.max(h));
+    let mut a: Vec<[f32; 4]> = img
+        .pixels()
+        .map(|p| {
+            [
+                srgb_to_linear(p[0]),
+                srgb_to_linear(p[1]),
+                srgb_to_linear(p[2]),
+                f32::from(p[3]) / 255.0,
+            ]
+        })
+        .collect();
+    if radius > 0 {
+        let mut b = a.clone();
+        for _ in 0..3 {
+            box_pass_f32(&a, &mut b, w, h, radius, true);
+            box_pass_f32(&b, &mut a, w, h, radius, false);
+        }
+    }
+    RgbaImage::from_fn(w, h, |x, y| {
+        let p = a[(y * w + x) as usize];
+        let n = dither_noise(x, y);
+        image::Rgba([
+            dither_to_u8(linear_to_srgb(p[0]), n),
+            dither_to_u8(linear_to_srgb(p[1]), n),
+            dither_to_u8(linear_to_srgb(p[2]), n),
+            dither_to_u8(p[3], 0.0),
+        ])
+    })
+}
+
+/// One box pass over a `w`×`h` float image, horizontal or vertical, clamping
+/// at the edges like the byte blur.
+fn box_pass_f32(
+    src: &[[f32; 4]],
+    dst: &mut [[f32; 4]],
+    w: u32,
+    h: u32,
+    radius: u32,
+    horizontal: bool,
+) {
+    let (len, lines) = if horizontal { (w, h) } else { (h, w) };
+    let at = |line: u32, i: u32| -> usize {
+        if horizontal {
+            (line * w + i) as usize
+        } else {
+            (i * w + line) as usize
+        }
+    };
+    let count = f64::from(2 * radius + 1);
+    for line in 0..lines {
+        let mut sum = [0f64; 4];
+        for i in 0..=2 * radius {
+            let p = src[at(line, i.saturating_sub(radius).min(len - 1))];
+            for c in 0..4 {
+                sum[c] += f64::from(p[c]);
+            }
+        }
+        for i in 0..len {
+            #[expect(clippy::cast_possible_truncation, reason = "a mean of f32 values")]
+            let mean = sum.map(|s| (s / count) as f32);
+            dst[at(line, i)] = mean;
+            let leaving = src[at(line, i.saturating_sub(radius).min(len - 1))];
+            let entering = src[at(line, (i + radius + 1).min(len - 1))];
+            for c in 0..4 {
+                sum[c] += f64::from(entering[c]) - f64::from(leaving[c]);
+            }
+        }
+    }
+}
+
 /// How thick the glass is, in logical px: how far in from its outline a pane
 /// bends what is behind it.
 ///
@@ -453,6 +544,72 @@ mod tests {
     }
     use super::*;
     use image::Rgba;
+
+    /// **Light mixes, code values do not.** Red and green columns blurred
+    /// together are a yellow at half the light of each — sRGB 188 per
+    /// channel — not the 128 that averaging the bytes gives, which is the
+    /// dark seam glass drew wherever its backdrop changed colour.
+    #[test]
+    fn the_backdrop_blur_mixes_light() {
+        let img = RgbaImage::from_fn(40, 10, |x, _| {
+            if x % 2 == 0 {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 255, 0, 255])
+            }
+        });
+        let out = blur_linear(&img, 4);
+        let p = out.get_pixel(20, 5);
+        assert!(
+            p[0] > 175 && p[1] > 175,
+            "red and green mixed to {p:?}: averaged as codes, not light"
+        );
+    }
+
+    /// **A gentle wash survives the blur as a slope.** The app dithers its
+    /// backdrop so a few-level ramp does not contour; a byte blur averages
+    /// the dither away and rounds the ramp back into plateaus.
+    #[test]
+    fn a_dithered_ramp_stays_free_of_plateaus() {
+        let (w, h) = (400u32, 8u32);
+        // 60 → 66 across the row, dithered the way an app's backdrop is.
+        let img = RgbaImage::from_fn(w, h, |x, y| {
+            let v = 60.0 + 6.0 * (x as f32) / (w as f32);
+            let n = fenestra_core::glass::dither_noise(x + 7, y + 3);
+            let b = fenestra_core::glass::dither_to_u8(v / 255.0, n);
+            Rgba([b, b, b, 255])
+        });
+        let longest = |out: &RgbaImage| {
+            let (mut best, mut run, mut prev) = (0, 0, None);
+            for x in 0..w {
+                let p = out.get_pixel(x, h / 2)[0];
+                if Some(p) == prev {
+                    run += 1;
+                } else {
+                    run = 1;
+                    prev = Some(p);
+                }
+                best = best.max(run);
+            }
+            best
+        };
+        let new = longest(&blur_linear(&img, 12));
+        assert!(
+            new < 16,
+            "a {new}px plateau after the blur: the ramp contoured"
+        );
+    }
+
+    #[test]
+    fn the_linear_blur_is_deterministic_and_flat_stays_flat() {
+        let img = RgbaImage::from_pixel(30, 20, Rgba([77, 88, 99, 255]));
+        let a = blur_linear(&img, 5);
+        assert_eq!(a, blur_linear(&img, 5));
+        for p in a.pixels() {
+            assert!(p[0].abs_diff(77) <= 1 && p[1].abs_diff(88) <= 1 && p[2].abs_diff(99) <= 1);
+            assert_eq!(p[3], 255);
+        }
+    }
 
     /// A radius of 0 is a no-op (returns the input unchanged).
     #[test]

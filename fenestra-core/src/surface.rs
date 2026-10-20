@@ -368,6 +368,9 @@ impl SurfaceBundle {
         // material skips the two-pass blur (it still gets the rim + sheen below);
         // an opaque role with no material renders exactly as before.
         style.backdrop_blur = self.material.map(|m| m.blur_radius).filter(|r| *r > 0.0);
+        if let Some(m) = self.material {
+            style.backdrop_saturate = m.saturation.max(0.0);
+        }
         // A frosted material also carries the Liquid Glass edge optics — a
         // luminous specular rim, a directional body sheen, and a backdrop-adaptive
         // vibrancy shift — so the pane reads as lit, lensed glass that picks up the

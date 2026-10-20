@@ -1052,6 +1052,12 @@ pub struct Style {
     /// the shell's two-pass renderer (deterministic CPU box blur). Inert in the
     /// single-pass live-window path (renders as the translucent tint alone).
     pub backdrop_blur: Option<f32>,
+    /// Vibrancy on the frosted backdrop: a saturation multiplier applied, in
+    /// linear light, to the content behind a glass pane before its tint goes
+    /// over it (`1.0`, the default, leaves it alone). Blur averages colour
+    /// toward grey; this is what gives it back. Only read alongside
+    /// [`backdrop_blur`](Self::backdrop_blur).
+    pub backdrop_saturate: f32,
     /// A foreground filter on this element's *own* content (blur / brightness /
     /// saturate). `None` (the default) paints the content unfiltered. Realized
     /// by the shell's two-pass renderer alongside [`backdrop_blur`](Self::backdrop_blur).
@@ -1131,6 +1137,7 @@ impl Default for Style {
             clip: false,
             path_trim: 1.0,
             backdrop_blur: None,
+            backdrop_saturate: 1.0,
             element_filter: None,
             custom_render: None,
             text: TextStyle::default(),
@@ -1958,6 +1965,13 @@ impl Style {
     /// [`Style::backdrop_blur`].
     pub fn backdrop_blur(mut self, radius: f32) -> Self {
         self.backdrop_blur = (radius > 0.0).then_some(radius);
+        self
+    }
+
+    /// Vibrancy on the frosted backdrop (floored at `0.0`). See
+    /// [`Style::backdrop_saturate`].
+    pub fn backdrop_saturate(mut self, m: f32) -> Self {
+        self.backdrop_saturate = m.max(0.0);
         self
     }
 

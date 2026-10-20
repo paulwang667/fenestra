@@ -2473,6 +2473,36 @@ impl Frame {
             .zip(backdrop)
             .and_then(|(tint, image)| adapt_fill(&node.style, tint, image));
         let style = adapted.as_ref().unwrap_or(&node.style);
+        // **The body is baked, not painted.** vello would round the tint and
+        // the sheen into 8-bit plateaus; `bake_body` composites them over the
+        // frosted backdrop in `f32` and quantizes once with dither. So the box
+        // that goes on to vello keeps everything else (shadow, border, rim)
+        // and loses what is now in the image — the solid fill, the sheen, and
+        // the adaptive tint, which `adapt_fill` has already spent.
+        let baked = backdrop.map(|image| {
+            let tint = match style.fill {
+                Some(Paint::Solid(c)) => Some(c),
+                _ => None,
+            };
+            let body = crate::glass::bake_body(
+                image,
+                node.rect,
+                tint,
+                style.sheen.as_ref(),
+                style.backdrop_saturate,
+            );
+            let mut rest = style.clone();
+            if tint.is_some() {
+                rest.fill = None;
+            }
+            rest.sheen = None;
+            rest.adaptive_tint = None;
+            (body, rest)
+        });
+        let (style, backdrop) = match &baked {
+            Some((body, rest)) => (rest, Some(body)),
+            None => (style, None),
+        };
         let layers = painter::push_box(scene, style, node.rect, self.canvas, self.scale, backdrop);
         if node.meta.focus_ring {
             let ring = if node.meta.invalid {
