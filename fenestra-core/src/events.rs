@@ -1442,7 +1442,16 @@ fn input_local<Msg>(
 ) -> Option<(f64, f64)> {
     let rect = frame.rect_of(id)?;
     let point = frame.to_layout_point(id, point)?;
-    let scroll_x = state.editors.get(&id).map_or(0.0, |e| e.scroll_x);
+    let editor = state.editors.get(&id);
+    let scroll_x = editor.map_or(0.0, |e| e.scroll_x);
     let pad = f64::from(el.style().padding.left);
-    Some((point.x - rect.x0 - pad + scroll_x, rect.height() * 0.5))
+    // **Where the pointer is, down the box, in a multiline editor**: its text is painted top-aligned
+    // under the top padding, so that is where a press lands. A single line has one line to land
+    // on, and its middle is as good as anywhere.
+    let y = if editor.is_some_and(|e| e.multiline) {
+        point.y - rect.y0 - f64::from(el.style().padding.top)
+    } else {
+        rect.height() * 0.5
+    };
+    Some((point.x - rect.x0 - pad + scroll_x, y))
 }
