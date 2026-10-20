@@ -3048,7 +3048,10 @@ fn apply_style(
                 if all_finite {
                     let blur = mat.blur.clamp(0.0, MAX_BLUR_PX);
                     let tint = Material::new(mat.fill_alpha, blur, mat.saturation).tint(base);
-                    el = el.bg(tint).backdrop_blur(blur);
+                    el = el
+                        .bg(tint)
+                        .backdrop_blur(blur)
+                        .backdrop_saturate(mat.saturation.clamp(0.0, 4.0));
                 }
             }
             Err(e) => errors.push(relocate(e, format!("{path}/style/material/tint"))),

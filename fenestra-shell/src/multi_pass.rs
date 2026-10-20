@@ -10,7 +10,7 @@ use image::RgbaImage;
 use kurbo::Rect;
 use vello::peniko;
 
-use crate::blur::{apply_element_filter, box_blur_rgba8, box_radius_for_std_dev, refract_edges};
+use crate::blur::{apply_element_filter, blur_linear, box_radius_for_std_dev, refract_edges};
 
 /// Filters each spec's region of the read-back `backdrop`, returning the image
 /// the final pass draws for that element (keyed by [`WidgetId`]). `scale` maps a
@@ -50,8 +50,21 @@ pub fn process_specs(
         };
         let image: peniko::ImageData = match spec.kind {
             PassKind::BackdropBlur { std_dev, radius } => {
-                let sub = image::imageops::crop_imm(backdrop, x, y, w, h).to_image();
-                let blurred = box_blur_rgba8(&sub, box_radius_for_std_dev(std_dev));
+                // **Blur what is around the pane, not just what is under it.**
+                // Cropping to the pane first and clamping at the crop made
+                // every rim repeat its own edge pixel, so content just outside
+                // a pane — which a real lens bleeds in — never reached it. The
+                // three-box kernel reaches `3r`, so that is the margin read.
+                let r = box_radius_for_std_dev(std_dev);
+                let pad = 3 * r + 1;
+                let (px0, py0) = (x.saturating_sub(pad), y.saturating_sub(pad));
+                let px1 = (x + w + pad).min(iw);
+                let py1 = (y + h + pad).min(ih);
+                let wide =
+                    image::imageops::crop_imm(backdrop, px0, py0, px1 - px0, py1 - py0).to_image();
+                let blurred =
+                    image::imageops::crop_imm(&blur_linear(&wide, r), x - px0, y - py0, w, h)
+                        .to_image();
                 // Bend the blurred backdrop at the rounded rim (the lensing
                 // pass) — but only when the crop spans the whole pane. A
                 // canvas-clamped (off-screen) crop is a truncated slice, and
@@ -168,6 +181,39 @@ fn to_image_data(img: &RgbaImage) -> peniko::ImageData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The rim sees past the pane.** A bright bar just outside the left
+    /// edge has to bleed into the pane's left side, as it would through real
+    /// frosted glass; a crop clamped at the pane edge repeated the pane's own
+    /// dark edge pixel instead and the bar never arrived.
+    #[test]
+    fn the_blur_reads_content_beyond_the_pane() {
+        let backdrop = RgbaImage::from_fn(200, 100, |x, _| {
+            if (40..50).contains(&x) {
+                image::Rgba([255, 255, 255, 255])
+            } else {
+                image::Rgba([0, 0, 0, 255])
+            }
+        });
+        let id = WidgetId(1);
+        let specs = [MultiPassSpec {
+            id,
+            rect: Rect::new(50.0, 20.0, 150.0, 80.0),
+            kind: PassKind::BackdropBlur {
+                std_dev: 8.0,
+                radius: 0.0,
+            },
+        }];
+        let out = process_specs(&backdrop, &specs, 1.0, &|_, _, _| None, &mut HashMap::new());
+        let img = out.get(&id).expect("glass produced an image");
+        let px = |x: u32| img.data.as_ref()[4 * (30 * img.width + x) as usize];
+        assert!(
+            px(10) > px(80) + 20,
+            "the bar beside the pane never reached it: rim {} vs middle {}",
+            px(10),
+            px(80)
+        );
+    }
 
     /// The lensing guard: a pane wholly within the backdrop is refracted; one
     /// that runs off any edge is not (its crop would be a truncated slice, and

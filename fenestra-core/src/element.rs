@@ -2141,6 +2141,15 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Vibrancy on the frosted backdrop behind this glass pane: a saturation
+    /// multiplier in linear light (see
+    /// [`Style::backdrop_saturate`](crate::Style::backdrop_saturate)).
+    /// [`Surface::Glass`](crate::Surface::Glass) sets it from its material.
+    pub fn backdrop_saturate(mut self, m: f32) -> Self {
+        self.style = self.style.backdrop_saturate(m);
+        self
+    }
+
     /// A foreground [`ElementFilter`](crate::ElementFilter) on this element's
     /// own content (blur / brightness / saturate).
     pub fn element_filter(mut self, filter: crate::ElementFilter) -> Self {

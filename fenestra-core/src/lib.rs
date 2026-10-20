@@ -19,6 +19,9 @@ mod events;
 mod frame;
 mod frame_state;
 mod ghost;
+/// CPU pixel helpers for the glass body, shared with the shell's blur.
+#[doc(hidden)]
+pub mod glass;
 mod grid;
 mod i18n;
 mod id;
