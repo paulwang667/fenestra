@@ -203,13 +203,11 @@ gate and records a `broken` note, which is the honest split: the user is
 not blocked by a rule nobody can satisfy, and the caller is told the rule
 isn't being enforced.
 
-Two gaps count as `broken`, not approximate, because the surface cannot do
-what the stream described: an `obscured` field renders unmasked — the
-pixels contain the value meant to be hidden — and a modal trigger that
-wraps its own interactive child never opens its dialog, because that child
-takes the press. A form with a password field will fail the `any_broken`
-check above until masking lands. That is deliberate: the alternative is a
-green check over a screenshot with the password in it.
+One gap counts as `broken`, not approximate, because the surface cannot do
+what the stream described: a modal trigger that wraps its own interactive
+child never opens its dialog, because that child takes the press. An
+`obscured` field is masked by the kit, so the pixels of a login form hold
+bullets and not the password.
 
 This is the same fidelity-or-report rule the JSON emitter follows. Nothing
 degrades quietly.

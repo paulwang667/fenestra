@@ -4489,3 +4489,38 @@ single-character boxes, and the missing piece was auto-advance.
   the reassembled code, cap rejects the next character) and the
   `gallery_controls` OTP row (filled, empty, disabled).
 
+## Masked input: the value stays out of the pixels and the tree (2026-10-21)
+
+The kit had no password field. The A2UI renderer said so out loud —
+`obscured` rendered in the clear and reported `SecretExposed` as a
+*broken* note, because a headless render hands its pixels to whoever
+asked for them, and a login form's pixels held the password.
+
+- **`Element::masked(bool)`** (and `text_input(value).masked(true)`) draws
+  one bullet per character instead of the value. The editor keeps the
+  *real* text: editing, undo, copy, paste, and the app's own value are
+  untouched, and only the painting differs.
+- **The bullets are laid out on their own.** Drawing a bullet over each
+  glyph of the value's own layout would space the bullets by the width of
+  each character — the spacing would say as much about the secret as the
+  glyphs did, and the caret and the selection would sit where the real
+  text was. Instead the mask is a separate string (one `•` per
+  character) with its own layout, and the value's byte offsets are
+  mapped into it: the n-th character of the value is the n-th bullet, so
+  a caret, a selection, and a pointer hit all cross between the two by
+  character index. The pointer handlers hit-test the bullets, because the
+  bullets are what is on screen.
+- **A masked field exposes no value in the accessibility tree**, the way
+  an HTML password input does not. The tree is read by screen readers and
+  written to snapshots; a password in it is a password on disk. The
+  value's *length* stays visible — as it does in a browser.
+- **The A2UI renderer's `obscured` TextField is now that field**, and
+  `NoteKind::SecretExposed` is gone: the note said "a value the stream
+  asked to be hidden was rendered in the clear", and nothing renders in
+  the clear any more. A kind that can never fire is a kind a caller
+  waits on forever.
+- **Verified** by dispatch-level tests (typing emits the real value; a
+  press lands on a character of the value, not on a byte of the bullet
+  text; the tree carries no value) and by a pixel test: two secrets of
+  the same length render to the same picture.
+

@@ -321,9 +321,8 @@ run on every push and once a week on top of that.
 
 Open work is kept as a ranked list in ARCHITECTURE.md's "Deferred" notes.
 The gaps worth knowing about up front: A2UI's `DateTimeInput` is an ISO text
-field rather than a calendar, obscured text fields render unmasked (the
-renderer reports this as a note rather than hiding it), and AccessKit on the
-web is waiting on an upstream adapter.
+field rather than a calendar, and AccessKit on the web is waiting on an
+upstream adapter.
 
 ## License
 

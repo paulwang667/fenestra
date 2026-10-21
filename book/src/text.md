@@ -79,6 +79,23 @@ Selection works the way fingers expect: drag selects, double-click
 selects the word, triple-click the line, shift-click extends from the
 caret, shift-arrows extend by character/word/line.
 
+## Masked input
+
+`text_input(&self.password).masked(true)` draws one bullet per character
+instead of the value — a password field. The app still owns the value and
+still receives every edit; only the pixels change. Editing, undo, copy,
+and paste behave exactly as they do in an ordinary field (copying a
+password out of a password field is what the user asked for).
+
+The bullets are laid out on their own, not drawn over the value's own
+glyphs: bullet-over-glyph would space the bullets by the width of each
+character, and the spacing would say as much about the secret as the
+glyphs did. The length of the value is visible — as it is in a browser.
+
+A masked field exposes **no value** in the accessibility tree, the way an
+HTML password input does not: the tree is read by screen readers and
+written to snapshots, so a password in it is a password on disk.
+
 ## Undo and redo
 
 Cmd/Ctrl+Z undoes, Shift+Cmd/Ctrl+Z (or Ctrl+Y) redoes — per field,
