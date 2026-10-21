@@ -235,3 +235,26 @@ fn dynamic_clips_receive_the_clip_relative_frame() {
         .unwrap();
     assert!((later.width() - 40.0).abs() < 1.0);
 }
+#[test]
+fn a_composition_reports_a_clip_span_and_its_keyframes() {
+    // The timeline draws the clip bar at the clip's span and the keyframe
+    // diamonds on the property rows, so it asks the composition.
+    use fenestra_motion::{Clip, Composition, EASE_CRISP, Frames, Prop, key};
+
+    let composition = Composition::new(1920, 1080, 30).clip(
+        Clip::new("title", 0u64..90)
+            .animate(
+                Prop::Opacity,
+                fenestra_motion::Track::new([key(0, 0.0f32).ease(EASE_CRISP), key(24, 1.0f32)]),
+            ),
+    );
+
+    let info = composition.clip_info("title").expect("知道这条片段");
+    assert_eq!((info.start, info.end), (0, 90), "片段的区间");
+    assert_eq!(info.keyframes.len(), 1, "一条轨道");
+    assert_eq!(info.keyframes[0].0, Prop::Opacity);
+    assert_eq!(info.keyframes[0].1, vec![0, 24], "关键帧的帧号");
+
+    assert!(composition.clip_info("nope").is_none(), "没有的片段就是没有");
+    let _ = Frames(0);
+}

@@ -7,6 +7,14 @@ expansion, and two checks that were narrower than the thing they guarded.
 
 ### Added
 
+- **\`\`Composition::clip_info()\`\` — a clip's span and keyframes, as an
+  editor needs them.** The composition could hand out clip ids and sample
+  a frame, but a timeline also needs to know where a clip *starts* and
+  where its keyframes are — the two things it draws the clip bar and
+  the keyframe diamonds from. \`\`clip_info\`\` answers both for one clip,
+  so the timeline keeps asking the composition rather than keeping its
+  own copy of where things are.
+
 - **``Clip::keyframes()`` — the frames a clip has keys at.** A clip's
   animation tracks were write-only: the clip kept its track list private,
   so a timeline could not read the keyframes back. A timeline draws the

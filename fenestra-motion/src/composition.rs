@@ -15,6 +15,17 @@ use crate::sample::SampledScene;
 /// forever. ~46 hours at 60fps; no real composition approaches this.
 const MAX_FRAMES: u64 = 10_000_000;
 
+/// A clip's span and keyframes, as an editor needs them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipInfo {
+    /// First active frame.
+    pub start: u64,
+    /// First frame past the span.
+    pub end: u64,
+    /// The keyframes: the animated property and its key frames
+    /// (clip-relative, ascending).
+    pub keyframes: Vec<(crate::clip::Prop, Vec<u64>)>,
+}
 /// A motion composition: `width × height` logical px at `fps`, holding
 /// clips. Sampling is pure — `sample(frame)` depends only on
 /// `(composition, frame)`.
@@ -143,6 +154,28 @@ impl Composition {
         self.background
     }
 
+    /// A clip's editing info: where it sits on the timeline and where its
+    /// keyframes are.
+    ///
+    /// A timeline draws the clip bar at the clip's span and the keyframe
+    /// diamonds on the property rows. Both questions are the clip's to
+    /// answer - asking the clip keeps the timeline an editing *view* of
+    /// it rather than a second structure that can drift.
+    #[must_use]
+    pub fn clip_info(&self, id: &str) -> Option<ClipInfo> {
+        self.clips
+            .iter()
+            .find(|clip| clip.id == id)
+            .map(|clip| ClipInfo {
+                start: clip.span.start.0,
+                end: clip.span.end.0,
+                keyframes: clip
+                    .keyframes()
+                    .into_iter()
+                    .map(|(prop, frames)| (prop, frames.into_iter().map(|f| f.0).collect()))
+                    .collect(),
+            })
+    }
     /// Every clip id, in insertion order.
     #[must_use]
     pub fn clip_ids(&self) -> Vec<&str> {
