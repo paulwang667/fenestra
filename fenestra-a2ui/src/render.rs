@@ -2169,21 +2169,20 @@ fn render_leaf(ctx: &Ctx, component: &Component, scope: Option<&str>) -> Element
                 ),
                 Some(other) => ctx.note_unknown_variant(id, "variant", other, "a short text field"),
             }
-            if variant.as_deref() == Some("obscured") {
-                ctx.note(
-                    id,
-                    NoteKind::SecretExposed,
-                    "obscured input renders unmasked (masking is a kit gap); the rendered pixels \
-                     contain the value the stream asked to hide",
-                );
-            }
             let failure = evaluate_checks(ctx, id, checks, scope)
                 .or_else(|| pattern_failure(ctx, id, validation_regexp.as_deref(), &current));
             let invalid = failure.is_some();
+            // An `obscured` field is a password: the kit masks it, so the
+            // pixels never carry the value the stream asked to hide.
+            let masked = variant.as_deref() == Some("obscured");
             let control: Element<A2uiMsg> = if variant.as_deref() == Some("longText") {
                 text_area(current).invalid(invalid).on_input(write).into()
             } else {
-                text_input(current).invalid(invalid).on_input(write).into()
+                text_input(current)
+                    .masked(masked)
+                    .invalid(invalid)
+                    .on_input(write)
+                    .into()
             };
             labeled_control(Some(label), control, failure, ctx.theme)
         }

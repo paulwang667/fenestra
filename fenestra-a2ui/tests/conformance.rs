@@ -72,12 +72,6 @@ fn official_examples_hold_the_fidelity_contract() {
     /// `None` means it is not.
     fn exemption_for(fixture: &str, kind: NoteKind) -> Option<&'static str> {
         match (fixture, kind) {
-            // The kit has no password masking, and the crate refuses to
-            // paint a value the stream asked to obscure: the field renders
-            // visible and the note says so. Closes when masking lands.
-            ("00_simple-login-form.json", NoteKind::SecretExposed) => {
-                Some("no password masking in the kit yet; the note is the honest state")
-            }
             // Nested function calls — `formatString` inside
             // `formatString` — are a documented gap in `functions.rs`.
             ("05_product-card.json", NoteKind::UnimplementedFunction) => {
@@ -126,7 +120,6 @@ fn official_examples_hold_the_fidelity_contract() {
     // stale. Re-render the three exempted fixtures and confirm the notes
     // they document are still there.
     for (name, kind) in [
-        ("00_simple-login-form.json", NoteKind::SecretExposed),
         ("05_product-card.json", NoteKind::UnimplementedFunction),
         ("07_task-card.json", NoteKind::UnknownIcon),
     ] {

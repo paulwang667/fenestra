@@ -15,6 +15,11 @@ use crate::text::{Fonts, LayoutBrush, ResolvedText};
 const BLINK_HALF_PERIOD: f64 = 0.53;
 /// Caret stroke width in logical px.
 const CARET_WIDTH: f64 = 1.5;
+/// The glyph a masked field draws in place of each character.
+const MASK_CHAR: char = '\u{2022}';
+/// The mask glyph's UTF-8 length. The mask is a run of them, so a byte
+/// offset in the mask is this many times its character index.
+const MASK_LEN: usize = MASK_CHAR.len_utf8();
 
 /// Retained editing state for one input widget.
 pub(crate) struct EditorState {
@@ -36,6 +41,17 @@ pub(crate) struct EditorState {
     /// Character cap on the value (OTP digit boxes cap at 1). Insertions
     /// past the cap are ignored; paste truncates.
     pub max_chars: Option<usize>,
+    /// Masked mode (a password field): the value is drawn as bullets. The
+    /// buffer still holds the real text — only the painting differs, so
+    /// editing, undo, copy, and the app's value are untouched.
+    pub masked: bool,
+    /// The resolved text style, kept so the pointer handlers can lay out the
+    /// bullets they hit-test against.
+    pub style: ResolvedText,
+    /// The bullets standing in for the value, and the character count they
+    /// were built for.
+    mask: String,
+    mask_count: usize,
     /// Undo/redo history (QUndoStack semantics: coalesced runs,
     /// boundaries on caret moves, redo cleared by new edits).
     pub undo: UndoStack,
@@ -111,6 +127,10 @@ impl EditorState {
             submit_on_enter: false,
             read_only: false,
             max_chars: None,
+            masked: false,
+            style: *style,
+            mask: String::new(),
+            mask_count: 0,
             undo: UndoStack::default(),
         }
     }
@@ -132,6 +152,9 @@ impl EditorState {
     /// one (`tests/otp.rs`). Moving that caret is a separate change that owes
     /// that widget a new answer.
     pub(crate) fn sync(&mut self, value: &str, style: &ResolvedText, fonts: &mut Fonts) {
+        // The style is kept for the masked path, which lays out the bullets
+        // the pointer handlers hit-test against.
+        self.style = *style;
         // **A composing editor is left alone.** Its text carries the preedit
         // and the app's value does not — a preedit raises no `on_input`, on
         // purpose, because half-typed pinyin is not the field's value. So the
@@ -180,6 +203,34 @@ impl EditorState {
         let (font_cx, layout_cx) = fonts.editor_contexts();
         self.editor.driver(font_cx, layout_cx).move_to_text_end();
     }
+}
+
+/// The bullet text standing in for `text`: one bullet per character.
+///
+/// Cached in the editor state — the mask depends only on the value's length,
+/// so the string is rebuilt on a length change and reused otherwise.
+fn mask_text<'a>(text: &str, cache: &'a mut String, count: &mut usize) -> &'a str {
+    let n = text.chars().count();
+    if n != *count {
+        cache.clear();
+        cache.extend(std::iter::repeat_n(MASK_CHAR, n));
+        *count = n;
+    }
+    cache
+}
+
+/// The byte offset in the mask text that stands for the value's byte offset
+/// `byte`: the n-th character of the value is the n-th bullet.
+fn mask_offset(text: &str, byte: usize) -> usize {
+    MASK_LEN * text.char_indices().take_while(|(i, _)| *i < byte).count()
+}
+
+/// The byte offset in the value that the mask's byte offset `mask_byte`
+/// stands for.
+fn value_offset(text: &str, mask_byte: usize) -> usize {
+    text.char_indices()
+        .nth(mask_byte / MASK_LEN)
+        .map_or(text.len(), |(byte, _)| byte)
 }
 
 fn apply_style(editor: &mut parley::PlainEditor<LayoutBrush>, style: &ResolvedText) {
@@ -590,6 +641,19 @@ pub(crate) fn pointer_down(
     shift: bool,
 ) {
     state.undo.break_run();
+    if state.masked {
+        let Some(offset) = masked_point(state, fonts, x, y) else {
+            return;
+        };
+        let (font_cx, layout_cx) = fonts.editor_contexts();
+        let mut drv = state.editor.driver(font_cx, layout_cx);
+        if shift {
+            drv.extend_selection_to_byte(offset);
+        } else {
+            drv.move_to_byte(offset);
+        }
+        return;
+    }
     let (font_cx, layout_cx) = fonts.editor_contexts();
     let mut drv = state.editor.driver(font_cx, layout_cx);
     #[expect(clippy::cast_possible_truncation, reason = "text coords fit in f32")]
@@ -603,6 +667,15 @@ pub(crate) fn pointer_down(
 /// Selects the word at a pointer position (double-click).
 pub(crate) fn select_word_at(state: &mut EditorState, fonts: &mut Fonts, x: f64, y: f64) {
     state.undo.break_run();
+    if state.masked {
+        let Some((start, end)) = masked_range(state, fonts, x, y, false) else {
+            return;
+        };
+        let (font_cx, layout_cx) = fonts.editor_contexts();
+        let mut drv = state.editor.driver(font_cx, layout_cx);
+        drv.select_byte_range(start, end);
+        return;
+    }
     let (font_cx, layout_cx) = fonts.editor_contexts();
     let mut drv = state.editor.driver(font_cx, layout_cx);
     #[expect(clippy::cast_possible_truncation, reason = "text coords fit in f32")]
@@ -612,6 +685,15 @@ pub(crate) fn select_word_at(state: &mut EditorState, fonts: &mut Fonts, x: f64,
 /// Selects the whole line at a pointer position (triple-click).
 pub(crate) fn select_line_at(state: &mut EditorState, fonts: &mut Fonts, x: f64, y: f64) {
     state.undo.break_run();
+    if state.masked {
+        let Some((start, end)) = masked_range(state, fonts, x, y, true) else {
+            return;
+        };
+        let (font_cx, layout_cx) = fonts.editor_contexts();
+        let mut drv = state.editor.driver(font_cx, layout_cx);
+        drv.select_byte_range(start, end);
+        return;
+    }
     let (font_cx, layout_cx) = fonts.editor_contexts();
     let mut drv = state.editor.driver(font_cx, layout_cx);
     #[expect(clippy::cast_possible_truncation, reason = "text coords fit in f32")]
@@ -621,10 +703,72 @@ pub(crate) fn select_line_at(state: &mut EditorState, fonts: &mut Fonts, x: f64,
 /// Extends the selection during a drag.
 pub(crate) fn pointer_drag(state: &mut EditorState, fonts: &mut Fonts, x: f64, y: f64) {
     state.undo.break_run();
+    if state.masked {
+        let Some(offset) = masked_point(state, fonts, x, y) else {
+            return;
+        };
+        let (font_cx, layout_cx) = fonts.editor_contexts();
+        let mut drv = state.editor.driver(font_cx, layout_cx);
+        drv.extend_selection_to_byte(offset);
+        return;
+    }
     let (font_cx, layout_cx) = fonts.editor_contexts();
     let mut drv = state.editor.driver(font_cx, layout_cx);
     #[expect(clippy::cast_possible_truncation, reason = "text coords fit in f32")]
     drv.extend_selection_to_point(x as f32, y as f32);
+}
+
+/// The value's byte offset for a pointer position in a masked field.
+///
+/// The pointer hits the bullets, and the n-th bullet stands for the n-th
+/// character of the value, so the bullet's byte offset maps straight back.
+fn masked_point(state: &mut EditorState, fonts: &mut Fonts, x: f64, y: f64) -> Option<usize> {
+    let EditorState {
+        editor,
+        mask,
+        mask_count,
+        style,
+        ..
+    } = state;
+    let value = editor.raw_text();
+    let mask_text = mask_text(value, mask, mask_count);
+    let layout = fonts.layout(mask_text, style, None);
+    #[expect(clippy::cast_possible_truncation, reason = "text coords fit in f32")]
+    let hit = parley::Selection::from_point(layout, x as f32, y as f32);
+    Some(value_offset(value, hit.focus().index()))
+}
+
+/// The value's byte range for the word (or the line) at a pointer position in
+/// a masked field: the word is chosen in the bullet text, and the bullets it
+/// covers stand for the same characters of the value.
+fn masked_range(
+    state: &mut EditorState,
+    fonts: &mut Fonts,
+    x: f64,
+    y: f64,
+    line: bool,
+) -> Option<(usize, usize)> {
+    let EditorState {
+        editor,
+        mask,
+        mask_count,
+        style,
+        ..
+    } = state;
+    let value = editor.raw_text();
+    let mask_text = mask_text(value, mask, mask_count);
+    let layout = fonts.layout(mask_text, style, None);
+    #[expect(clippy::cast_possible_truncation, reason = "text coords fit in f32")]
+    let hit = if line {
+        parley::Selection::line_from_point(layout, x as f32, y as f32)
+    } else {
+        parley::Selection::word_from_point(layout, x as f32, y as f32)
+    };
+    let range = hit.text_range();
+    Some((
+        value_offset(value, range.start),
+        value_offset(value, range.end),
+    ))
 }
 
 /// Everything the painter needs for one input, resolved at build time.
@@ -641,6 +785,8 @@ pub(crate) struct InputPaint {
     pub pad_y: f64,
     /// Multiline mode: wrapped, top-aligned, no horizontal follow-scroll.
     pub multiline: bool,
+    /// Masked mode: the value is drawn as one bullet per character.
+    pub masked: bool,
 }
 
 /// Paints an input's content (selection, text or placeholder, caret) inside
@@ -656,6 +802,11 @@ pub(crate) fn paint(
     reduced_motion: bool,
 ) -> Option<Rect> {
     let content = Rect::new(rect.x0 + data.pad_x, rect.y0, rect.x1 - data.pad_x, rect.y1);
+
+    // A masked field paints bullets, not the value.
+    if data.masked {
+        return paint_masked(scene, fonts, state, data, rect, now, reduced_motion);
+    }
 
     // Multiline editors wrap to the content width (set before layout).
     if data.multiline {
@@ -736,40 +887,10 @@ pub(crate) fn paint(
             fonts.paint(scene, &data.placeholder, &placeholder_style, ph_rect, None);
         }
     } else {
-        let transform = Affine::translate(text_origin);
         let color = data.style.color;
         let (font_cx, layout_cx) = fonts.editor_contexts();
         let layout = state.editor.layout(font_cx, layout_cx);
-        for line in layout.lines() {
-            for item in line.items() {
-                let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
-                    continue;
-                };
-                let mut x = glyph_run.offset();
-                let y = glyph_run.baseline();
-                let run = glyph_run.run();
-                scene
-                    .draw_glyphs(run.font())
-                    .brush(color)
-                    .hint(true)
-                    .transform(transform)
-                    .font_size(run.font_size())
-                    .normalized_coords(run.normalized_coords())
-                    .draw(
-                        Fill::NonZero,
-                        glyph_run.glyphs().map(|glyph| {
-                            let gx = x + glyph.x;
-                            let gy = y + glyph.y;
-                            x += glyph.advance;
-                            vello::Glyph {
-                                id: glyph.id,
-                                x: gx,
-                                y: gy,
-                            }
-                        }),
-                    );
-            }
-        }
+        draw_text(scene, layout, text_origin, color);
     }
 
     // The caret, blinking on a 530ms half-period. The rect is computed
@@ -801,6 +922,175 @@ pub(crate) fn paint(
 
     scene.pop_layer();
     caret_rect
+}
+
+/// Paints a masked field: the bullets that stand in for the value, with the
+/// selection and the caret over them.
+///
+/// The editor keeps the real text, so every offset here is a value offset
+/// mapped into the bullet text: the n-th character of the value is the n-th
+/// bullet, and a byte offset in the mask is three times its character index.
+/// The bullets are laid out on their own — laying out the value and drawing
+/// a bullet over each glyph would leak the width of every character, and the
+/// spacing of the bullets would say as much about the secret as the glyphs
+/// did.
+fn paint_masked(
+    scene: &mut Scene,
+    fonts: &mut Fonts,
+    state: &mut EditorState,
+    data: &InputPaint,
+    rect: Rect,
+    now: f64,
+    reduced_motion: bool,
+) -> Option<Rect> {
+    let content = Rect::new(rect.x0 + data.pad_x, rect.y0, rect.x1 - data.pad_x, rect.y1);
+    let EditorState {
+        editor,
+        scroll_x,
+        last_activity,
+        mask,
+        mask_count,
+        style,
+        ..
+    } = state;
+    let value = editor.raw_text();
+    let mask_text = mask_text(value, mask, mask_count);
+    let layout = fonts.layout(mask_text, style, None);
+
+    // The value's offsets, mapped into the bullet text.
+    let selection = editor.raw_selection().text_range();
+    let caret_byte = editor.raw_selection().focus().index();
+    let caret = parley::Cursor::from_byte_index(
+        layout,
+        mask_offset(value, caret_byte),
+        parley::Affinity::Downstream,
+    )
+    .geometry(layout, 1.0);
+
+    let layout_height = f64::from(layout.height());
+    let text_y = rect.y0 + (rect.height() - layout_height) * 0.5;
+
+    // Follow-scroll: keep the caret inside the content box.
+    let caret_x = caret.x0; // layout-local
+    let visible_w = content.width().max(0.0);
+    if caret_x - *scroll_x > visible_w {
+        *scroll_x = caret_x - visible_w;
+    }
+    if caret_x - *scroll_x < 0.0 {
+        *scroll_x = caret_x;
+    }
+    let max_scroll = (f64::from(layout.full_width()) - visible_w).max(0.0);
+    *scroll_x = scroll_x.clamp(0.0, max_scroll + CARET_WIDTH);
+
+    let text_origin = (content.x0 - *scroll_x, text_y);
+
+    scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
+
+    // Selection behind the bullets.
+    if data.focused {
+        let start = mask_offset(value, selection.start);
+        let end = mask_offset(value, selection.end);
+        let sel = parley::Selection::new(
+            parley::Cursor::from_byte_index(layout, start, parley::Affinity::Downstream),
+            parley::Cursor::from_byte_index(layout, end, parley::Affinity::Downstream),
+        );
+        for (bb, _) in sel.geometry(layout) {
+            let rect = Rect::new(
+                text_origin.0 + bb.x0,
+                text_origin.1 + bb.y0,
+                text_origin.0 + bb.x1,
+                text_origin.1 + bb.y1,
+            );
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                data.selection_color,
+                None,
+                &rect,
+            );
+        }
+    }
+
+    // The bullets, or the placeholder when the value is empty.
+    if value.is_empty() {
+        if !data.placeholder.is_empty() {
+            let mut placeholder_style = data.style;
+            placeholder_style.color = data.placeholder_color;
+            let ph_rect = Rect::new(content.x0, text_y, content.x1, text_y + layout_height);
+            fonts.paint(scene, &data.placeholder, &placeholder_style, ph_rect, None);
+        }
+    } else {
+        draw_text(scene, layout, text_origin, data.style.color);
+    }
+
+    // The caret, blinking on a 530ms half-period. The rect is computed
+    // whenever focused (even while blink-hidden) so the IME popup can
+    // anchor to it. A composing editor hides its caret, as an ordinary one
+    // does.
+    let mut caret_rect = None;
+    if data.focused && !editor.is_composing() {
+        let phase = ((now - *last_activity).max(0.0) / BLINK_HALF_PERIOD) as u64;
+        let visible = reduced_motion || phase.is_multiple_of(2);
+        let caret = Rect::new(
+            (text_origin.0 + caret.x0 - CARET_WIDTH * 0.5).max(rect.x0),
+            text_origin.1 + caret.y0 + 1.0,
+            (text_origin.0 + caret.x0 + CARET_WIDTH * 0.5).max(rect.x0 + CARET_WIDTH),
+            text_origin.1 + caret.y1 - 1.0,
+        );
+        caret_rect = Some(caret);
+        if visible {
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                data.caret_color,
+                None,
+                &caret,
+            );
+        }
+    }
+
+    scene.pop_layer();
+    caret_rect
+}
+
+/// Draws a laid-out text into the scene, its origin at `origin`.
+fn draw_text(
+    scene: &mut Scene,
+    layout: &parley::Layout<LayoutBrush>,
+    origin: (f64, f64),
+    color: Color,
+) {
+    let transform = Affine::translate(origin);
+    for line in layout.lines() {
+        for item in line.items() {
+            let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                continue;
+            };
+            let mut x = glyph_run.offset();
+            let y = glyph_run.baseline();
+            let run = glyph_run.run();
+            scene
+                .draw_glyphs(run.font())
+                .brush(color)
+                .hint(true)
+                .transform(transform)
+                .font_size(run.font_size())
+                .normalized_coords(run.normalized_coords())
+                .draw(
+                    Fill::NonZero,
+                    glyph_run.glyphs().map(|glyph| {
+                        let gx = x + glyph.x;
+                        let gy = y + glyph.y;
+                        x += glyph.advance;
+                        vello::Glyph {
+                            id: glyph.id,
+                            x: gx,
+                            y: gy,
+                        }
+                    }),
+                );
+        }
+    }
 }
 
 #[cfg(test)]

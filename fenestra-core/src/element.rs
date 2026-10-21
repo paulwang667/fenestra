@@ -128,6 +128,11 @@ pub struct InputData {
     /// editor has already handled the key and nothing arrives. Opt-in, so a
     /// textarea in a form keeps making paragraphs.
     pub submit_on_enter: bool,
+    /// Draw the value masked (a password field): one bullet per character on
+    /// screen, the value itself untouched. The editor still holds the real
+    /// text, so the app still owns the value and still receives every edit;
+    /// the accessibility tree carries no value for a masked field.
+    pub masked: bool,
 }
 
 /// Optical corrections for a [`Kind::Path`] (see [`crate::optical`]): geometric
@@ -1110,6 +1115,23 @@ impl<Msg> Element<Msg> {
     pub fn submit_on_enter(mut self, submit: bool) -> Self {
         if let Kind::Input(data) = &mut self.kind {
             data.submit_on_enter = submit;
+        }
+        self
+    }
+
+    /// Draws the value masked (a password field): one bullet per character
+    /// on screen, the value itself untouched.
+    ///
+    /// The editor still holds the real text, so editing, undo, copy, and the
+    /// app's own value behave exactly as they do in an ordinary field — only
+    /// the pixels and the accessibility tree change. A masked field exposes no
+    /// value to assistive technology, the way an HTML password input does not.
+    ///
+    /// A masked field is a single line: the bullets do not wrap, so a masked
+    /// text area is not a thing.
+    pub fn masked(mut self, masked: bool) -> Self {
+        if let Kind::Input(data) = &mut self.kind {
+            data.masked = masked;
         }
         self
     }
@@ -2488,6 +2510,7 @@ pub fn raw_input<Msg>(value: impl Into<String>, placeholder: impl Into<String>) 
         multiline: false,
         max_chars: None,
         submit_on_enter: false,
+        masked: false,
     }))
     .focusable(true)
     .cursor(Cursor::Text)
@@ -2509,6 +2532,7 @@ pub fn raw_text_area<Msg>(
         multiline: true,
         max_chars: None,
         submit_on_enter: false,
+        masked: false,
     }))
     .focusable(true)
     .cursor(Cursor::Text)

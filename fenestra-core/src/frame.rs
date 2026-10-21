@@ -912,6 +912,7 @@ fn build<Msg>(
             editor.submit_on_enter = data.submit_on_enter;
             editor.read_only = el.read_only;
             editor.max_chars = data.max_chars;
+            editor.masked = data.masked;
             editor.seen = frame_no;
             let focused = state.focused() == Some(id);
             if focused && !state.reduced_motion {
@@ -938,6 +939,7 @@ fn build<Msg>(
                     pad_x: f64::from(style.padding.left),
                     pad_y: f64::from(style.padding.top),
                     multiline: data.multiline,
+                    masked: data.masked,
                 }),
             )
         }
@@ -980,6 +982,10 @@ fn build<Msg>(
         _ => None,
     });
     let value = el.access_value.clone().or_else(|| match &el.kind {
+        // A masked field (a password) exposes no value: the pixels hide it,
+        // and an accessibility tree that carried it would hand the secret to
+        // whatever reads the tree — a screen reader, a snapshot on disk.
+        Kind::Input(data) if data.masked => None,
         Kind::Input(data) => Some(data.value.clone()),
         _ => None,
     });

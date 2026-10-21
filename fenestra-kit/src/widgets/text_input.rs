@@ -29,6 +29,7 @@ pub struct TextInput<Msg> {
     invalid: bool,
     disabled: bool,
     read_only: bool,
+    masked: bool,
     max_chars: Option<usize>,
     on_input: Option<std::rc::Rc<dyn Fn(String) -> Msg>>,
     key: Option<String>,
@@ -47,6 +48,7 @@ pub fn text_input<Msg>(value: impl Into<String>) -> TextInput<Msg> {
         invalid: false,
         read_only: false,
         disabled: false,
+        masked: false,
         max_chars: None,
         on_input: None,
         key: None,
@@ -99,6 +101,34 @@ impl<Msg> TextInput<Msg> {
     /// the field stays in the tab order).
     pub fn read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
+        self
+    }
+
+    /// Draws the value masked (a password field): one bullet per character
+    /// on screen, the value itself untouched.
+    ///
+    /// The app still owns the value and still receives every edit; only the
+    /// pixels and the accessibility tree change. A masked field exposes no
+    /// value to assistive technology, the way an HTML password input does
+    /// not.
+    ///
+    /// A masked field is a single line: the bullets do not wrap.
+    ///
+    /// ```
+    /// use fenestra_kit::text_input;
+    ///
+    /// #[derive(Clone)]
+    /// enum Msg {
+    ///     Password(String),
+    /// }
+    ///
+    /// let el: fenestra_core::Element<Msg> = text_input("")
+    ///     .masked(true)
+    ///     .on_input(Msg::Password)
+    ///     .into();
+    /// ```
+    pub fn masked(mut self, masked: bool) -> Self {
+        self.masked = masked;
         self
     }
 
@@ -179,6 +209,7 @@ impl<Msg: 'static> From<TextInput<Msg>> for Element<Msg> {
             .disabled(t.disabled)
             .invalid(invalid)
             .read_only(t.read_only)
+            .masked(t.masked)
             .max_chars(t.max_chars);
         // Reserve room for adornments so the text clears them.
         if prefix.is_some() {

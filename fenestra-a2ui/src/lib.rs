@@ -57,13 +57,11 @@
 //! surface stays usable and the caller still learns the rule is not being
 //! enforced.
 //!
-//! Two gaps are `broken` rather than inexact, because they leave the
-//! surface unable to do what the stream described: an `obscured` field
-//! renders unmasked, so the pixels a headless render hands back contain
-//! the value that was meant to be hidden; and a modal trigger wrapping its
-//! own interactive child cannot open its dialog at all. A login form will
-//! therefore fail [`any_broken`] until masking lands — which is the honest
-//! answer, not a false pass.
+//! One gap is `broken` rather than inexact, because it leaves the surface
+//! unable to do what the stream described: a modal trigger wrapping its own
+//! interactive child cannot open its dialog at all. An `obscured` field is
+//! masked by the kit, so the pixels a headless render hands back never carry
+//! the value the stream asked to hide.
 //!
 //! Each records its own note — an empty list really does mean full
 //! fidelity.
