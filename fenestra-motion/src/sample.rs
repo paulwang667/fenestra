@@ -5,7 +5,7 @@
 use std::cell::OnceCell;
 
 use fenestra_anim::Frames;
-use fenestra_core::{Element, Fonts, Frame, FrameState, Style, build_frame, by, div, stack};
+use fenestra_core::{Edges, Element, Fonts, Frame, FrameState, Style, build_frame, by, div, stack};
 
 use crate::clip::ResolvedProps;
 use crate::composition::Composition;
@@ -148,12 +148,32 @@ impl<'a> SampledScene<'a> {
                 content
             };
             let (fx, fy) = clip.anchor.fractions();
+            // The content's own margins move up to the wrapper, so the
+            // wrapper's rect is exactly the content's rect and the anchor
+            // pivots the transform about the CONTENT's corner — the clip's
+            // own bbox, which is what the anchor promises.
+            //
+            // Without this, the wrapper's rect was the content's *margin*
+            // box: a content positioned with `ml`/`mb` dragged the pivot
+            // out to the canvas corner, so a bar chart's bars grew out of the
+            // canvas edge instead of out of their own baseline. The layout
+            // does not move — the margins still offset the content by the
+            // same amount, they just sit one level up.
+            let margins = content.style().margin;
+            let content = content.themed(move |_, mut s| {
+                s.margin = Edges::default();
+                s
+            });
             // The transform wrapper shrink-wraps the content: its rect is
             // the clip bbox, so anchors pivot exactly where probes report.
             // Uniform scale folds into scale_xy (S·Sxy = diag(s·sx, s·sy));
             // `measure` composes the identical matrix.
             let inner = div()
                 .id(&clip.id)
+                .ml(margins.left)
+                .mt(margins.top)
+                .mr(margins.right)
+                .mb(margins.bottom)
                 .child(content)
                 .opacity(p.opacity)
                 .translate(p.translate.0, p.translate.1)

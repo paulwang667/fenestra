@@ -174,6 +174,32 @@ fn anchor_places_the_clip_and_pivots_its_transforms() {
 }
 
 #[test]
+fn the_anchor_pivots_about_the_content_box_not_the_margin_box() {
+    // A content positioned with its OWN margin must not drag the pivot out
+    // to the canvas corner: the transform is about the content's own
+    // bottom-left, so a bar grows upward out of its own baseline.
+    let comp = Composition::new(600, 400, 60).clip(
+        Clip::new("bar", 0..10)
+            .anchor(Anchor::BottomLeft)
+            .element(|| div().mb(100.0).w(40.0).h(200.0))
+            .animate(Prop::ScaleXY, Track::new([key(0, (1.0f32, 0.5f32))])),
+    );
+    let bar = comp
+        .sample(Frames(0))
+        .resolve("bar")
+        .unwrap()
+        .bbox
+        .unwrap();
+    // The content's box is 40x200 with its bottom 100px above the canvas
+    // bottom. Scaled to half height about its own bottom-left, the height
+    // halves and the bottom stays put.
+    assert!((bar.width() - 40.0).abs() < 1.0, "width {}", bar.width());
+    assert!((bar.height() - 100.0).abs() < 1.0, "height {}", bar.height());
+    assert!((bar.y1 - 300.0).abs() < 1.0, "bottom {} (want 300)", bar.y1);
+    assert!((bar.y0 - 200.0).abs() < 1.0, "top {} (want 200)", bar.y0);
+}
+
+#[test]
 fn text_clips_measure_a_real_bbox() {
     let comp =
         Composition::new(600, 400, 60).clip(Clip::new("word", 0..10).element(|| text("Hello")));

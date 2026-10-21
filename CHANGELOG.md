@@ -21,6 +21,17 @@ expansion, and two checks that were narrower than the thing they guarded.
 
 ### Fixed
 
+- **A clip's anchor pivots its transforms about the content's own box.**
+  The transform wrapper's rect was the content's *margin* box, so a
+  content positioned with `ml`/`mb`/`mt`/`mr` dragged the pivot out
+  to the canvas corner: a bar chart's bars grew out of the canvas edge
+  instead of out of their own baseline, and a clip's measured bbox
+  included the margin area it never painted. The content's margins now
+  sit on the wrapper — the layout does not move (the margins still
+  offset the content by the same amount, one level up), but the wrapper
+  shrink-wraps the content as documented, so the anchor pivots where it
+  says and the bbox is the content's painted box.
+
 - **Printable keys reach a focused element's `on_key`.** The runner sends
   Space, `+`, `-` and other printable keys as `Text`, so a focusable
   element's `on_key` never saw them, while arrows did. A focused
