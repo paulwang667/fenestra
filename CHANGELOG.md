@@ -21,6 +21,16 @@ expansion, and two checks that were narrower than the thing they guarded.
 
 ### Fixed
 
+- **`Fonts::missing_glyphs` — the characters a program cannot draw.**
+  A render that drops half its characters still renders: the missing ones
+  come out as blank boxes, and nothing says so. Deciding whether a
+  character is drawable needs the charmap, and the fontique collection
+  behind `Fonts` was private, so the question could not be asked from
+  outside. `Fonts::missing_glyphs` answers it over the same collection
+  the font matcher falls back through; `Fonts::has_glyph` answers it for
+  one character. A codepoint that maps to `.notdef` (glyph 0) counts as
+  missing — that is exactly what tofu is.
+
 - **A clip's anchor pivots its transforms about the content's own box.**
   The transform wrapper's rect was the content's *margin* box, so a
   content positioned with `ml`/`mb`/`mt`/`mr` dragged the pivot out

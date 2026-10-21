@@ -374,6 +374,66 @@ impl Fonts {
         }
     }
 
+    /// Which characters of this text have no glyph to draw.
+    ///
+    /// The test is "does any face in the collection draw this character" —
+    /// the same set the font matcher falls back through, so a character that
+    /// is covered here is one that will not be tofu.
+    ///
+    /// "Covered" means the character maps to a **non-zero** glyph: a codepoint
+    /// that is present but points at .notdef is missing, because that is
+    /// exactly what tofu is. This is the check that turns "the text rendered,
+    /// but half of it is blank boxes" from something you can only see into
+    /// something you can ask about.
+    ///
+    /// Whitespace is never reported: it has no glyph and never needs one.
+    #[must_use]
+    pub fn missing_glyphs(&mut self, text: &str) -> Vec<char> {
+        let mut seen: Vec<char> = Vec::new();
+        let mut missing: Vec<char> = Vec::new();
+        for ch in text.chars() {
+            if ch.is_whitespace() || seen.contains(&ch) {
+                continue;
+            }
+            seen.push(ch);
+            if !self.has_glyph(ch) {
+                missing.push(ch);
+            }
+        }
+        missing
+    }
+
+    /// Does any face in the collection draw this character?
+    pub fn has_glyph(&mut self, ch: char) -> bool {
+        // The names are collected first: querying the collection borrows it
+        // mutably, and the face data is loaded through the source cache.
+        let names: Vec<String> = self
+            .font_cx
+            .collection
+            .family_names()
+            .map(str::to_owned)
+            .collect();
+        for name in names {
+            let Some(family) = self.font_cx.collection.family_by_name(&name) else {
+                continue;
+            };
+            for info in family.fonts() {
+                let Some(blob) = info.load(Some(&mut self.font_cx.source_cache)) else {
+                    continue;
+                };
+                let Some(charmap) = info.charmap_index().charmap(blob.as_ref()) else {
+                    continue;
+                };
+                // Glyph 0 is .notdef: the codepoint is there, the drawing
+                // is not.
+                if charmap.map(ch).is_some_and(|glyph| glyph != 0) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// The family name a role resolves to, when one has been registered for it.
     ///
     /// Exists so the choice `register` makes is observable. It used not to be,
@@ -940,6 +1000,34 @@ impl Fonts {
 
 #[cfg(test)]
 mod tests {
+
+    /// The embedded collection cannot draw CJK, and says so.
+    ///
+    /// A render that silently drops half the characters looks fine to the
+    /// person who wrote it and wrong to everyone who reads it. This is the
+    /// question that catches it: not "did it render", but "could it".
+    #[test]
+    fn missing_glyphs_reports_what_the_embedded_fonts_cannot_draw() {
+        let mut fonts = super::Fonts::embedded();
+        assert!(
+            fonts.missing_glyphs("Hello, world 123").is_empty(),
+            "the embedded latin faces cover latin"
+        );
+        assert_eq!(
+            fonts.missing_glyphs("增长"),
+            vec!['增', '长'],
+            "the embedded faces have no CJK"
+        );
+        assert_eq!(
+            fonts.missing_glyphs("增长 growth"),
+            vec!['增', '长'],
+            "whitespace is never missing, and order is kept"
+        );
+        assert!(
+            fonts.missing_glyphs("  ").is_empty(),
+            "whitespace alone is never missing"
+        );
+    }
 
     /// The family a blob binds to depends on the set of names, not their order.
     ///
