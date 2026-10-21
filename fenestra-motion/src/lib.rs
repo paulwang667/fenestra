@@ -21,7 +21,7 @@ pub mod verify;
 
 pub use clip::{Anchor, AnyTrack, Clip, Prop, ResolvedProps};
 pub use color_track::{ColorSpace, ColorTrack};
-pub use composition::Composition;
+pub use composition::{ClipInfo, Composition};
 pub use data::{
     AnchorDoc, ClipDoc, DataError, EaseDoc, KeyDoc, MotionDoc, PropDoc, SpaceDoc, ThemeDoc,
     TrackDoc, ValueDoc,
