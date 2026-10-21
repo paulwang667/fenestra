@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::mpsc;
 
 use fenestra_anim::{FrameRange, Frames};
-use fenestra_core::{Color, Fonts, FrameState};
+use fenestra_core::{Color, FamilyRole, Fonts, FrameState};
 use fenestra_shell::{ShellError, render_element_over};
 use image::RgbaImage;
 use rayon::prelude::*;
@@ -83,6 +83,21 @@ thread_local! {
     static FONTS: RefCell<Fonts> = RefCell::new(Fonts::embedded());
 }
 
+/// Registers fonts in this thread's font table.
+///
+/// The motion renderer shapes text with the per-thread table above, and
+/// that table was embedded-only with no way in: a caller that registered
+/// a CJK font elsewhere still got tofu boxes here. A contact sheet of a
+/// Chinese project was therefore unreadable - the one artifact a human
+/// review depends on.
+///
+/// Per-thread by construction: rayon workers each have their own table,
+/// so a font registered here reaches only this thread.
+#[must_use]
+pub fn with_motion_fonts<R>(f: impl FnOnce(&mut Fonts) -> R) -> R {
+    FONTS.with_borrow_mut(f)
+}
+
 /// Kills and reaps the wrapped ffmpeg child on drop if it's still running.
 /// `std::process::Child` is not automatically waited on drop, so a panic
 /// unwinding out of `render_video_with` (e.g. a rayon worker panic mid
@@ -120,13 +135,27 @@ impl Composition {
     /// [`MotionError::Shell`] when no GPU adapter exists or the render
     /// fails.
     pub fn render_frame_at(&self, frame: Frames, scale: f64) -> Result<RgbaImage, MotionError> {
+        self.render_frame_at_with_fonts(frame, scale, &[])
+    }
+
+    /// Renders one frame, registering the given fonts in this thread's
+    /// font table first.
+    pub fn render_frame_at_with_fonts(
+        &self,
+        frame: Frames,
+        scale: f64,
+        fonts: &[(FamilyRole, Vec<u8>)],
+    ) -> Result<RgbaImage, MotionError> {
         let el = self.sample(frame).element();
         // `element()` already paints `self.background` as a root fill when
         // it has any alpha (SampledScene::element) — that rect IS the
         // background, so the base clear color stays transparent. Passing
         // `self.background` again here would composite it a second time,
         // darkening/increasing the opacity of any non-opaque background.
-        let mut img = FONTS.with_borrow_mut(|fonts| {
+        let mut img = FONTS.with_borrow_mut(|table| {
+        for (role, data) in fonts {
+            table.register(*role, data.clone());
+        }
             let mut state = FrameState::new();
             state.reduced_motion = true;
             render_element_over(
@@ -135,7 +164,7 @@ impl Composition {
                 (self.width, self.height),
                 scale,
                 Color::TRANSPARENT,
-                fonts,
+                table,
                 &mut state,
             )
         })?;

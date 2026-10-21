@@ -31,5 +31,5 @@ pub use fenestra_anim::{
     Ease, FrameRange, Frames, Interpolate, Key, Spring, Track, ease_in, ease_in_out, ease_out,
     hold, key, linear, spring,
 };
-pub use render::MotionError;
+pub use render::{MotionError, with_motion_fonts};
 pub use sample::{ResolvedClip, SampledScene};

@@ -5,7 +5,7 @@
 //! image an agent can review in a single look.
 
 use fenestra_anim::Frames;
-use fenestra_core::{Color, TextSize, image_rgba8, text};
+use fenestra_core::{Color, FamilyRole, TextSize, image_rgba8, text};
 use rayon::prelude::*;
 use serde::Serialize;
 
@@ -288,6 +288,7 @@ impl Composition {
         &self,
         every: u64,
         thumb_width: u32,
+        fonts: &[(FamilyRole, Vec<u8>)],
     ) -> Result<image::RgbaImage, MotionError> {
         const MAX_DIM: u64 = 8192;
         const GAP: u64 = 8;
@@ -321,7 +322,7 @@ impl Composition {
         // Thumbnails in parallel (the GPU serializes; layout doesn't).
         let mut thumbs: Vec<(u64, image::RgbaImage)> = frames
             .par_iter()
-            .map(|&f| Ok((f, self.render_frame_at(Frames(f), scale)?)))
+            .map(|&f| Ok((f, self.render_frame_at_with_fonts(Frames(f), scale, fonts)?)))
             .collect::<Result<_, MotionError>>()?;
         thumbs.sort_by_key(|(f, _)| *f);
 

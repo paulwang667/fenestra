@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use fenestra_core::FamilyRole;
 use fenestra_motion::verify::Direction;
 use fenestra_motion::{Composition, Frames, Prop, ResolvedClip};
 use serde_json::json;
@@ -103,6 +104,9 @@ enum Command {
         /// Where to write the sheet.
         #[arg(long)]
         out: PathBuf,
+        /// Font files to register before rendering (repeatable).
+        #[arg(long = "font")]
+        fonts: Vec<PathBuf>,
     },
 }
 
@@ -171,10 +175,16 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             every,
             thumb_width,
             out,
+            fonts,
         } => {
             let comp = load(comp.as_deref())?;
+            let mut registered: Vec<(FamilyRole, Vec<u8>)> = Vec::new();
+            for path in &fonts {
+                let data = std::fs::read(path).map_err(|e| e.to_string())?;
+                registered.push((FamilyRole::Sans, data));
+            }
             let sheet = comp
-                .contact_sheet(every, thumb_width)
+                .contact_sheet(every, thumb_width, &registered)
                 .map_err(|e| e.to_string())?;
             sheet
                 .save(&out)

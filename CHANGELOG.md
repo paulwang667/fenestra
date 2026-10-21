@@ -7,6 +7,19 @@ expansion, and two checks that were narrower than the thing they guarded.
 
 ### Added
 
+- **``Composition::contact_sheet(..., fonts)`` - a contact sheet that can
+  read Chinese.** The font table is per-thread, so a font registered on
+  the calling thread never reached the rayon workers that render the
+  thumbnails: a Chinese project produced a sheet full of tofu boxes, and
+  that sheet is the one artifact a human review depends on. The font
+  *data* now travels down into the workers, and
+  ``render_frame_at_with_fonts`` exposes the same path for a single
+  frame. ``with_motion_fonts`` registers into the calling thread's table
+  for work that stays on that thread.
+
+- **``motion sheet --font`` - the same fix from the command line.**
+
+
 - **\`\`Composition::clip_info()\`\` — a clip's span and keyframes, as an
   editor needs them.** The composition could hand out clip ids and sample
   a frame, but a timeline also needs to know where a clip *starts* and
@@ -350,6 +363,7 @@ further (all regression-tested):
   maps the catalog once instead of twice.
 
 ### Added
+
 
 - **`agent_dashboard`: the dogfood flagship example.** A live dashboard
   over a Claude Code session log: the agent's tool-call feed
