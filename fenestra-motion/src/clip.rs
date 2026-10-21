@@ -256,6 +256,28 @@ impl Clip {
         self
     }
 
+    /// This clip's keyframes: the animated property and the frames it has
+    /// keys at (clip-relative, ascending).
+    ///
+    /// A timeline draws the keyframe diamonds on the property rows, which
+    /// means it has to read the keyframes back. The timeline is an editing
+    /// *view* of a clip, not a second data model — so the frames come from
+    /// here rather than from a parallel structure that could drift.
+    #[must_use]
+    pub fn keyframes(&self) -> Vec<(Prop, Vec<Frames>)> {
+        self.tracks
+            .iter()
+            .map(|(prop, track)| {
+                let frames = match track {
+                    AnyTrack::Scalar(track) => track.key_frames().collect(),
+                    AnyTrack::Pair(track) => track.key_frames().collect(),
+                    AnyTrack::Color(track) => track.key_frames().collect(),
+                };
+                (*prop, frames)
+            })
+            .collect()
+    }
+
     /// Canvas placement and transform pivot (center by default).
     pub fn anchor(mut self, anchor: Anchor) -> Self {
         self.anchor = anchor;

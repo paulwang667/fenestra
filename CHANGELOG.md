@@ -7,6 +7,15 @@ expansion, and two checks that were narrower than the thing they guarded.
 
 ### Added
 
+- **``Clip::keyframes()`` — the frames a clip has keys at.** A clip's
+  animation tracks were write-only: the clip kept its track list private,
+  so a timeline could not read the keyframes back. A timeline draws the
+  keyframe diamonds on the property rows, so it has to read them — and
+  reading them off the clip is what keeps the timeline an editing *view*
+  of the clip rather than a second data model that can drift.
+  ``Clip::keyframes`` returns the animated property and its key frames
+  (clip-relative, ascending) for every track on the clip.
+
 - **`Slider::on_release(msg)` — one undo step per drag.** The slider
   emits `msg` once when a drag it captured ends on pointer release, after
   its value changes. Apps can close a gesture there rather than per value.

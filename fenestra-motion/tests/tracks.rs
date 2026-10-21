@@ -75,3 +75,29 @@ fn duplicate_key_frames_panic() {
 fn empty_track_panics() {
     let _ = ColorTrack::new([]);
 }
+#[test]
+fn a_clip_reports_its_own_keyframes() {
+    // A timeline draws the keyframe diamonds on the property rows, so it
+    // has to read the keyframes back off the clip.
+    use fenestra_motion::{Clip, EASE_CRISP, Prop, key};
+
+    let clip = Clip::new("title", 0..90)
+        .animate(
+            Prop::Opacity,
+            fenestra_motion::Track::new([key(0, 0.0f32).ease(EASE_CRISP), key(24, 1.0f32)]),
+        )
+        .animate(
+            Prop::TranslateX,
+            fenestra_motion::Track::new([key(0, -32.0f32), key(24, 0.0f32)]),
+        );
+
+    let keyframes = clip.keyframes();
+    assert_eq!(keyframes.len(), 2, "two animated properties");
+    assert_eq!(keyframes[0].0, Prop::Opacity);
+    assert_eq!(
+        keyframes[0].1.iter().map(|f| f.0).collect::<Vec<_>>(),
+        vec![0, 24],
+        "opacity keys at 0 and 24"
+    );
+    assert_eq!(keyframes[1].0, Prop::TranslateX);
+}
