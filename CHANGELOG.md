@@ -49,6 +49,17 @@ expansion, and two checks that were narrower than the thing they guarded.
   The harness, the embed API and both window runners call it; the
   dispatch result carries the key as `Dispatch::unhandled`.
 
+### Changed
+
+- **`Modal` is a frosted-glass card, not a flat white slab.** The dialog
+  was `.surface(Surface::Modal)` — a flat plate. It now sits on a
+  20px-rounded card with `ShadowToken::Lg`, filled with a translucent
+  material (`Material::new(0.5, 20.0, 1.6)`, tinted by `t.surface`) over
+  a 20px backdrop blur, plus the kit's glass `Sheen` and `AdaptiveTint`.
+  Header, body and actions compose over that blur instead of on a
+  solid plate, and the gaps between them widen to `SP6`. The `modal_open`
+  golden is refreshed.
+
 ### Fixed
 
 - **`Fonts::missing_glyphs` — the characters a program cannot draw.**

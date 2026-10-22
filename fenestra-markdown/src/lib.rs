@@ -1047,12 +1047,14 @@ impl<Msg: Clone + 'static> From<Markdown<Msg>> for Element<Msg> {
                         .themed(|t: &Theme, s| s.color(t.text_muted))
                         .selectable()
                 };
-                footnote_els.push(row().gap(6.0).items_start().children((
-                    sized(text(marker), base)
-                        .themed(|t: &Theme, s| s.color(t.text_muted))
-                        .selectable(),
-                    body,
-                )));
+                footnote_els.push(
+                    row().gap(6.0).items_start().children((
+                        sized(text(marker), base)
+                            .themed(|t: &Theme, s| s.color(t.text_muted))
+                            .selectable(),
+                        body,
+                    )),
+                );
             }
             blocks.push(col().gap(4.0).items_start().children(footnote_els));
         }
