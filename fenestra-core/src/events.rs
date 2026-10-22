@@ -721,6 +721,22 @@ pub fn dispatch<Msg: Clone>(
                 out.cursor = Some(cursor_of(&handlers, &chain));
                 return out;
             }
+            // An app-driven popover with no backdrop: a press outside it
+            // (and off its anchor, whose own press is its own) asks the app
+            // to close it, and is swallowed as a toggle menu's outside press
+            // is, so it does not also press whatever was under it.
+            if let Some(popover) = frame.top_popover()
+                && hit_overlay != Some(popover)
+                && !chain
+                    .iter()
+                    .any(|id| frame.overlay_anchored_at(*id) == Some(popover))
+                && let Some(msg) = handlers.get(popover).and_then(|el| el.on_close.as_ref())
+            {
+                out.msgs.push(msg.clone());
+                out.redraw = true;
+                out.cursor = Some(cursor_of(&handlers, &chain));
+                return out;
+            }
             if chain.is_empty()
                 && let Some(modal) = frame.top_overlay_is_modal()
             {
