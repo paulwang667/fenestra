@@ -739,13 +739,19 @@ pub fn dispatch<Msg: Clone>(
             if state.static_sel.take().is_some() {
                 out.redraw = true;
             }
-            let target = chain.iter().rev().copied().find(|id| {
-                handlers.get(*id).is_some_and(|el| {
+            let target = chain.iter().enumerate().rev().find(|(at, id)| {
+                handlers.get(**id).is_some_and(|el| {
                     // `takes_press` is the shared definition; the overlay
                     // anchor is the one part that needs the frame.
-                    el.takes_press() || (!el.disabled && frame.toggle_overlay_of(*id).is_some())
+                    let takes = el.takes_press() || (!el.disabled && frame.toggle_overlay_of(**id).is_some());
+                    // **A drag from a handle only**: the press has to be on a
+                    // handle inside this element, or it is a press on empty
+                    // space and not this element's to take.
+                    let from_handle = !el.drag_from_handle
+                        || chain[at + 1..].iter().any(|below| handlers.get(*below).is_some_and(|h| h.drag_handle));
+                    takes && from_handle
                 })
-            });
+            }).map(|(_, id)| *id);
             if let Some(id) = target {
                 state.active = Some(id);
                 // Remember where/when the press began, for swipe recognition.
@@ -1436,7 +1442,16 @@ fn input_local<Msg>(
 ) -> Option<(f64, f64)> {
     let rect = frame.rect_of(id)?;
     let point = frame.to_layout_point(id, point)?;
-    let scroll_x = state.editors.get(&id).map_or(0.0, |e| e.scroll_x);
+    let editor = state.editors.get(&id);
+    let scroll_x = editor.map_or(0.0, |e| e.scroll_x);
     let pad = f64::from(el.style().padding.left);
-    Some((point.x - rect.x0 - pad + scroll_x, rect.height() * 0.5))
+    // **Where the pointer is, down the box, in a multiline editor**: its text is painted top-aligned
+    // under the top padding, so that is where a press lands. A single line has one line to land
+    // on, and its middle is as good as anywhere.
+    let y = if editor.is_some_and(|e| e.multiline) {
+        point.y - rect.y0 - f64::from(el.style().padding.top)
+    } else {
+        rect.height() * 0.5
+    };
+    Some((point.x - rect.x0 - pad + scroll_x, y))
 }

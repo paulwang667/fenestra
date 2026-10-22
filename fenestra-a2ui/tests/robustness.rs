@@ -4,6 +4,7 @@
 
 use fenestra_a2ui::{A2uiMsg, A2uiSignal, Client, NoteKind, parse_stream};
 use fenestra_core::{Element, Theme};
+use fenestra_shell::render_element;
 
 fn apply(stream: &str) -> Client {
     let msgs = parse_stream(stream).expect("stream parses");
@@ -450,36 +451,40 @@ fn an_enforced_validation_rule_is_not_reported_as_a_gap() {
 
 // ── From the 2026-08-05 review of PR #19 ──────────────────────────────────
 
-/// An obscured field renders in cleartext, so the pixels handed back by a
-/// headless render contain the secret. That is not an inexactness, and
-/// `any_broken` — the check the book tells people to put in CI — has to say
-/// so.
+/// An obscured field is masked: the pixels a headless render hands back do
+/// not carry the value the stream asked to hide. Two secrets of the same
+/// length render to the same picture — the bullets are all the renderer has.
 #[test]
-fn an_unmasked_secret_is_broken_not_approximate() {
-    let stream = r#"[
-        {"version":"v0.9","createSurface":{"surfaceId":"s","catalogId":"basic"}},
-        {"version":"v0.9","updateDataModel":{"surfaceId":"s","value":{"pw":"hunter2"}}},
-        {"version":"v0.9","updateComponents":{"surfaceId":"s","components":[
-            {"id":"root","component":"TextField","label":"Password","variant":"obscured",
-             "value":{"path":"/pw"}}
-        ]}}
-    ]"#;
-    let rendered = apply(stream)
-        .surface("s")
-        .expect("surface")
-        .render(&Theme::light());
-    assert!(
-        rendered
-            .notes
-            .iter()
-            .any(|n| n.kind == NoteKind::SecretExposed),
-        "got: {:?}",
-        rendered.notes
-    );
-    assert!(
-        fenestra_a2ui::any_broken(&rendered.notes),
-        "a surface whose pixels leak a secret must not pass any_broken: {:?}",
-        rendered.notes
+fn an_obscured_field_is_masked() {
+    let render = |pw: &str| {
+        let stream = format!(
+            r#"[
+        {{"version":"v0.9","createSurface":{{"surfaceId":"s","catalogId":"basic"}}}},
+        {{"version":"v0.9","updateDataModel":{{"surfaceId":"s","value":{{"pw":"{pw}"}}}}}},
+        {{"version":"v0.9","updateComponents":{{"surfaceId":"s","components":[
+            {{"id":"root","component":"TextField","label":"Password","variant":"obscured",
+             "value":{{"path":"/pw"}}}}
+        ]}}}}
+    ]"#
+        );
+        let rendered = apply(&stream)
+            .surface("s")
+            .expect("surface")
+            .render(&Theme::light());
+        assert!(
+            !fenestra_a2ui::any_broken(&rendered.notes),
+            "a masked field is not a fidelity gap: {:?}",
+            rendered.notes
+        );
+        render_element(rendered.element, &Theme::light(), (420, 220))
+    };
+    let one = render("hunter2");
+    let two = render("abcdefg");
+    assert_eq!(
+        one.as_raw(),
+        two.as_raw(),
+        "two secrets of the same length must render to the same pixels — \
+         the value is not on screen"
     );
 }
 

@@ -128,6 +128,11 @@ pub struct InputData {
     /// editor has already handled the key and nothing arrives. Opt-in, so a
     /// textarea in a form keeps making paragraphs.
     pub submit_on_enter: bool,
+    /// Draw the value masked (a password field): one bullet per character on
+    /// screen, the value itself untouched. The editor still holds the real
+    /// text, so the app still owns the value and still receives every edit;
+    /// the accessibility tree carries no value for a masked field.
+    pub masked: bool,
 }
 
 /// Optical corrections for a [`Kind::Path`] (see [`crate::optical`]): geometric
@@ -725,6 +730,12 @@ pub struct Element<Msg> {
     pub(crate) stick_bottom: bool,
     pub(crate) cursor: Option<Cursor>,
     pub(crate) disabled: bool,
+    /// A press here starts the drag of the nearest ancestor that drags only from its handle.
+    /// See [`Element::drag_handle`].
+    pub(crate) drag_handle: bool,
+    /// This element's drag starts only from a press on a [`Element::drag_handle`] inside it.
+    /// See [`Element::drag_from_handle`].
+    pub(crate) drag_from_handle: bool,
     pub(crate) on_click: Option<Msg>,
     pub(crate) on_double_click: Option<Msg>,
     pub(crate) on_right_click: Option<Msg>,
@@ -844,6 +855,8 @@ impl<Msg> Element<Msg> {
             stick_bottom: false,
             cursor: None,
             disabled: false,
+            drag_handle: false,
+            drag_from_handle: false,
             on_click: None,
             on_double_click: None,
             on_right_click: None,
@@ -1106,6 +1119,23 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Draws the value masked (a password field): one bullet per character
+    /// on screen, the value itself untouched.
+    ///
+    /// The editor still holds the real text, so editing, undo, copy, and the
+    /// app's own value behave exactly as they do in an ordinary field — only
+    /// the pixels and the accessibility tree change. A masked field exposes no
+    /// value to assistive technology, the way an HTML password input does not.
+    ///
+    /// A masked field is a single line: the bullets do not wrap, so a masked
+    /// text area is not a thing.
+    pub fn masked(mut self, masked: bool) -> Self {
+        if let Kind::Input(data) = &mut self.kind {
+            data.masked = masked;
+        }
+        self
+    }
+
     /// Marks the control busy (ARIA `aria-busy`): assistive tech announces
     /// the change when it clears. A loading button sets this alongside its
     /// own disabled state.
@@ -1175,6 +1205,24 @@ impl<Msg> Element<Msg> {
     pub fn on_key(mut self, f: impl Fn(&KeyInput) -> Option<Msg> + 'static) -> Self {
         self.on_key = Some(Box::new(f));
         self.focusable = true;
+        self
+    }
+
+    /// Marks this element as a drag handle: a press on it starts the drag of the nearest
+    /// ancestor made [`Self::drag_from_handle`], whose `on_drag` then reports positions in that
+    /// ancestor's rect, as any captured drag does. The handle itself needs no handler.
+    #[must_use]
+    pub fn drag_handle(mut self) -> Self {
+        self.drag_handle = true;
+        self
+    }
+
+    /// Makes this element's drag start only from a press on a [`Self::drag_handle`] inside it.
+    /// Without it, a container with `on_drag` takes every press that nothing inside it takes —
+    /// a press on empty space anywhere in it is a drag to that point.
+    #[must_use]
+    pub fn drag_from_handle(mut self) -> Self {
+        self.drag_from_handle = true;
         self
     }
 
@@ -2462,6 +2510,7 @@ pub fn raw_input<Msg>(value: impl Into<String>, placeholder: impl Into<String>) 
         multiline: false,
         max_chars: None,
         submit_on_enter: false,
+        masked: false,
     }))
     .focusable(true)
     .cursor(Cursor::Text)
@@ -2483,6 +2532,7 @@ pub fn raw_text_area<Msg>(
         multiline: true,
         max_chars: None,
         submit_on_enter: false,
+        masked: false,
     }))
     .focusable(true)
     .cursor(Cursor::Text)
@@ -2613,6 +2663,8 @@ impl<Msg: 'static> Element<Msg> {
             stick_bottom: self.stick_bottom,
             cursor: self.cursor,
             disabled: self.disabled,
+            drag_handle: self.drag_handle,
+            drag_from_handle: self.drag_from_handle,
             on_click: self.on_click.map(&f),
             on_double_click: self.on_double_click.map(&f),
             on_right_click: self.on_right_click.map(&f),

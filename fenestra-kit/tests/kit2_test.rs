@@ -289,3 +289,22 @@ fn split_pane_drag_emits_the_new_fraction() {
         h.app().fraction
     );
 }
+
+/// A press on empty space in either pane is not a drag: only the divider moves the split. The
+/// container used to take every press nothing inside it took, so clicking a blank area jumped the
+/// divider to where the pointer was.
+#[test]
+fn split_pane_press_on_a_pane_does_not_move_the_divider() {
+    let mut h = Harness::new(Workbench { fraction: 0.5 }, Theme::light(), (400, 200));
+    for x in [50.0, 350.0] {
+        h.input(fenestra_core::InputEvent::PointerMove { x, y: 150.0 });
+        h.input(fenestra_core::InputEvent::PointerDown);
+        h.input(fenestra_core::InputEvent::PointerMove { x: x + 10.0, y: 150.0 });
+        h.input(fenestra_core::InputEvent::PointerUp);
+        assert!(
+            (h.app().fraction - 0.5).abs() < f32::EPSILON,
+            "a press at x={x} moved the divider to {}",
+            h.app().fraction
+        );
+    }
+}

@@ -57,10 +57,6 @@ pub enum NoteKind {
     /// A remote asset (image, video, audio) rendered as a labeled
     /// placeholder. Deterministic renders never touch the network.
     NetworkAsset,
-    /// A value the stream asked to be hidden was rendered in the clear.
-    /// The pixels contain a secret, and a headless render hands those
-    /// pixels to whoever asked for them.
-    SecretExposed,
     /// A control is on screen but cannot be operated — something else
     /// takes its press, so the interaction it exists for is dead.
     Unreachable,
@@ -103,8 +99,7 @@ impl NoteKind {
     /// image standing in as a grey box, a layout mode mapped to its
     /// nearest neighbour, a validation rule that parses without gating —
     /// the surface works, it is merely not exact. Anything that leaves the
-    /// user unable to do what the stream described, or that puts something
-    /// on screen the stream asked to hide, is broken.
+    /// user unable to do what the stream described is broken.
     #[must_use]
     pub fn severity(self) -> NoteSeverity {
         // Exhaustive on purpose. A catch-all would classify every future
@@ -129,7 +124,6 @@ impl NoteKind {
             | Self::Truncated
             | Self::RejectedWrite
             | Self::UnknownMessage
-            | Self::SecretExposed
             | Self::Unreachable
             // Broken, not approximate: the stream described a link and the
             // user gets something that does nothing when clicked. That the
@@ -257,12 +251,11 @@ mod tests {
         assert_eq!(n.to_string(), "btn: icon \"nope\" is not vendored");
     }
 
-    /// The two cases that motivated a `Broken` classification of their
-    /// own: a dialog nothing can open, and a secret on screen.
+    /// The case that motivated a `Broken` classification of its own: a
+    /// dialog nothing can open.
     #[test]
-    fn unusable_and_leaking_surfaces_are_broken() {
+    fn unusable_surfaces_are_broken() {
         assert_eq!(NoteKind::Unreachable.severity(), NoteSeverity::Broken);
-        assert_eq!(NoteKind::SecretExposed.severity(), NoteSeverity::Broken);
         assert_eq!(
             NoteKind::Unsupported.severity(),
             NoteSeverity::Approximate,

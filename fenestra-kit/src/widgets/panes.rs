@@ -62,6 +62,7 @@ impl<Msg: Clone + 'static> From<SplitPane<Msg>> for Element<Msg> {
                 .w_full()
                 .h(6.0)
                 .shrink0()
+                .drag_handle()
                 .cursor(Cursor::Pointer)
                 .themed(|t: &Theme, s| s.bg(t.border_subtle))
         } else {
@@ -69,6 +70,7 @@ impl<Msg: Clone + 'static> From<SplitPane<Msg>> for Element<Msg> {
                 .w(6.0)
                 .h_full()
                 .shrink0()
+                .drag_handle()
                 .cursor(Cursor::Pointer)
                 .themed(|t: &Theme, s| s.bg(t.border_subtle))
         };
@@ -86,7 +88,9 @@ impl<Msg: Clone + 'static> From<SplitPane<Msg>> for Element<Msg> {
             .h_full()
             .children((first, divider, second));
         if let Some(f) = p.on_resize {
-            container = container.on_drag(move |fx, fy| {
+            // **From the divider only**: the container reports where the pointer is across the
+            // whole split, so a press it took on empty space in a pane jumped the divider there.
+            container = container.drag_from_handle().on_drag(move |fx, fy| {
                 let raw = if vertical { fy } else { fx };
                 Some(f(raw.clamp(0.05, 0.95)))
             });

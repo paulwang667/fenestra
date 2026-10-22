@@ -37,6 +37,21 @@ expansion, and two checks that were narrower than the thing they guarded.
   ``Clip::keyframes`` returns the animated property and its key frames
   (clip-relative, ascending) for every track on the clip.
 
+- **A masked input: `text_input(value).masked(true)`.** One bullet per
+  character on screen, the value itself untouched — the app still owns it
+  and still receives every edit, and undo, copy, and paste behave exactly
+  as they do in an ordinary field. The bullets are laid out on their own
+  rather than drawn over the value's glyphs: bullet-over-glyph would space
+  the bullets by the width of each character, and the spacing would say as
+  much about the secret as the glyphs did. A masked field exposes no value
+  in the accessibility tree, the way an HTML password input does not —
+  the tree is read by screen readers and written to snapshots, so a
+  password in it is a password on disk. `raw_input(...).masked(true)` is
+  the core-level spelling, and the A2UI renderer's `obscured` TextField
+  uses it, so a login form's pixels hold bullets and not the password.
+  `InputData` gains a public `masked` field, so a struct literal that
+  builds one by hand needs it.
+
 - **`Slider::on_release(msg)` — one undo step per drag.** The slider
   emits `msg` once when a drag it captured ends on pointer release, after
   its value changes. Apps can close a gesture there rather than per value.
@@ -127,11 +142,20 @@ expansion, and two checks that were narrower than the thing they guarded.
 - **The official corpus's fidelity contract is now tested.**
   `official_examples_hold_the_fidelity_contract` runs `any_broken` over
   every vendored official example, against a named exemption table for
-  the three remaining known gaps — the kit's missing password masking,
-  nested function calls, and one off-spec icon name inside a fixture. A
-  new broken note, or a new fixture carrying one, fails until someone
-  reads the note and makes the call; an exemption that stops firing also
-  fails, because the gap it documented is closed and the entry is stale.
+  the known gaps — nested function calls and one off-spec icon name
+  inside a fixture. A new broken note, or a new fixture carrying one,
+  fails until someone reads the note and makes the call; an exemption that
+  stops firing also fails, because the gap it documented is closed and the
+  entry is stale.
+
+- **The A2UI renderer's password fields are masked.** An `obscured`
+  TextField is now a masked input, so the pixels a headless render hands
+  back hold bullets and not the value the stream asked to hide.
+  **Breaking:** `NoteKind::SecretExposed` is gone — the note said "a value
+  the stream asked to be hidden was rendered in the clear", and the
+  renderer no longer renders anything in the clear. The kind that reported
+  the gap would never fire again, and a caller matching on it would wait
+  for a signal that cannot come.
 
 ### Fixed
 

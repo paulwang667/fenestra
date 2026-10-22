@@ -136,7 +136,7 @@ Style: `.bg(paint) .border(w, color) .rounded(r) .rounded_full()
 Interaction: `.on_click(msg) .on_right_click(msg) .on_double_click(msg)
 .on_hover(msg) .on_key(f) .on_drag(f) .on_input(f) .on_close(msg)
 .on_file_drop(f) .drag_source(s) .on_drop(f) .focusable(true)
-.autofocus() .disabled(b) .cursor(..)`;
+.autofocus() .disabled(b) .read_only(b) .masked(b) .cursor(..)`;
 variants `.hover/.active/.focus(f)` (+ `_themed`); `.transition(Transition::colors())`
 or `Transition::spring()`; `.enter(t)` fade-in on first appearance;
 `.selectable()` copyable text; `.on_type_ahead(f)` buffered jumps;
