@@ -3245,6 +3245,24 @@ impl Frame {
         self.overlays.iter().rev().map(|o| (o.id, o.mode)).collect()
     }
 
+    /// The topmost overlay a press can reach, when it is one the app drives
+    /// ([`OverlayMode::Open`]) and paints no backdrop: a popover or a context
+    /// menu, which a press outside it asks to close. A backdrop's press is a
+    /// modal's ([`Frame::top_overlay_is_modal`]).
+    pub fn top_popover(&self) -> Option<WidgetId> {
+        self.overlays
+            .iter()
+            .rev()
+            .find(|o| o.hittable)
+            .filter(|o| o.mode == OverlayMode::Open && !o.backdrop)
+            .map(|o| o.id)
+    }
+
+    /// The overlay `anchor` is the anchor (parent) of, whatever its mode.
+    pub fn overlay_anchored_at(&self, anchor: WidgetId) -> Option<WidgetId> {
+        self.overlay_anchors.get(&anchor).map(|(id, _)| *id)
+    }
+
     /// Whether the topmost open overlay paints a backdrop (modal).
     pub fn top_overlay_is_modal(&self) -> Option<WidgetId> {
         self.overlays
