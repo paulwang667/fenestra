@@ -76,7 +76,9 @@ fn literal_styled_documents_round_trip_pixel_identically() {
               {"div":{"style":{"absolute":true,"left":10,"top":40,"w":40,"h":20,
                        "bg":{"oklch":[0.7,0.1,140]},"opacity":0.5,"rotate":10}}},
               {"div":{"style":{"border":{"width":2,"color":{"oklch":[0.4,0.1,300]}},
-                       "corners":[2,4,6,8],"h":30,"mt":50}}}
+                       "corners":[2,4,6,8],"h":30,"mt":50}}},
+              {"div":{"style":{"w":40,"h":24,"scale_xy":[1.25,0.8],
+                       "bg":{"oklch":[0.6,0.12,90]}}}}
             ]}}}"#,
     ] {
         let desc = parse_doc(doc);
@@ -98,6 +100,41 @@ fn literal_styled_documents_round_trip_pixel_identically() {
         assert_renders_match(&a, &b, doc);
         drop(el);
     }
+}
+
+/// A paint-time scale must survive the JSON projection: the emitter used to
+/// drop it with a warning, so a described UI and the built one rendered
+/// differently. Scale is expressible now, and the round trip is lossless.
+#[test]
+fn a_paint_time_scale_round_trips_without_warnings() {
+    let theme = Theme::light();
+    let view = || -> fenestra_core::Element<()> {
+        col().p(12.0).w(200.0).h(120.0).children((
+            div()
+                .w(80.0)
+                .h(40.0)
+                .rounded(4.0)
+                .bg(fenestra_core::oklch(0.7, 0.1, 60.0))
+                .scale_xy(1.3, 0.75),
+        ))
+    };
+    let (node, warnings) = emit_element(&view());
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.message.contains("scale")),
+        "the scale must be projected, not dropped, got: {warnings:?}"
+    );
+    let desc = Description {
+        schema: SCHEMA_V1.to_owned(),
+        root: node,
+        theme: None,
+        state: fenestra_describe::state::StateMap::default(),
+    };
+    let el = to_element(&desc, &theme).expect("the emitted doc parses");
+    let a = render_element(view(), &theme, (240, 160));
+    let b = render_element(el, &theme, (240, 160));
+    assert_renders_match(&a, &b, "scaled element");
 }
 
 /// The headline use case: a builder-authored UI imported as data. No

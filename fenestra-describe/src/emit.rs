@@ -623,11 +623,9 @@ fn style_spec(s: &CoreStyle, path: &str, warnings: &mut Vec<DescribeError>) -> S
         out.skew = Some([s.skew.0, s.skew.1]);
     }
     if s.scale != 1.0 || s.scale_xy != (1.0, 1.0) {
-        warn(
-            warnings,
-            path,
-            "scale transforms have no JSON projection; dropped",
-        );
+        // 均匀缩放与非均匀缩放都绕同一个原点、都是乘法 ✅，
+        // 所以折成一个字段 ✅（缩放之间可交换 ✅）。
+        out.scale_xy = Some([s.scale * s.scale_xy.0, s.scale * s.scale_xy.1]);
     }
     if s.path_trim != d.path_trim {
         warn(

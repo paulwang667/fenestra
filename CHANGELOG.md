@@ -5,6 +5,26 @@
 An adversarial pass over the A2UI renderer. One crash, one unbounded
 expansion, and two checks that were narrower than the thing they guarded.
 
+### Fixed
+
+- **The describe JSON projection dropped every paint-time scale.** The
+  emitter warned `"scale transforms have no JSON projection; dropped"`
+  and moved on, so a described element with a scale described something
+  *else*: the agent-facing description of a UI was not the UI. Scale is
+  expressible now (`style.scale_xy`, a uniform scale being
+  `[v, v]` — the uniform and the non-uniform scale pivot about the same
+  origin and compose multiplicatively, so one field carries both), and
+  the round trip is lossless: `a_paint_time_scale_round_trips_without_warnings`
+  renders the built element and the re-parsed one and compares pixels.
+
+### Fixed
+
+- **The workspace did not compile.** The commit that gave
+  ``Composition::contact_sheet`` a font table did not update the
+  call sites: three examples and two tests still called it with two
+  arguments, so ``cargo test --workspace`` failed to build. The call
+  sites pass an empty font table now.
+
 ### Added
 
 - **``Composition::contact_sheet(..., fonts)`` - a contact sheet that can

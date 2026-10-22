@@ -2983,13 +2983,23 @@ fn apply_style(
     {
         el = el.skew(x, y);
     }
+    if let Some([x, y]) = style.scale_xy
+        && finite_num(x, path, "scale_xy/0", errors)
+        && finite_num(y, path, "scale_xy/1", errors)
+    {
+        el = el.scale_xy(x, y);
+    }
     // ── Foreground filter + path trim ─────────────────────────────────────────
     if let Some(spec) = &style.element_filter {
         // A foreground filter samples the pre-transform layout rect, so it does not
         // compose with a paint transform on the same node (the filtered crop would
         // come from the wrong region). Reject the pair rather than emit a misaligned
         // render; apply them on separate nested nodes.
-        if style.translate.is_some() || style.rotate.is_some() || style.skew.is_some() {
+        if style.translate.is_some()
+            || style.rotate.is_some()
+            || style.skew.is_some()
+            || style.scale_xy.is_some()
+        {
             errors.push(DescribeError::new(
                 format!("{path}/style/element_filter"),
                 "element_filter does not compose with translate / rotate / skew on the \

@@ -1139,6 +1139,12 @@ pub struct Style {
     /// Paint-time skew `[x_deg, y_deg]` in degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skew: Option<[f32; 2]>,
+    /// Paint-time scale `[x, y]` (a uniform scale is `[v, v]`).
+    ///
+    /// The uniform and the non-uniform scale both pivot about the same
+    /// origin and compose multiplicatively, so one field carries both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_xy: Option<[f32; 2]>,
     /// A foreground filter on this element's own content (blur / brightness /
     /// saturate). Realized in the headless two-pass render. Cannot be combined with
     /// a paint transform (`translate` / `rotate` / `skew`) on the same node — the

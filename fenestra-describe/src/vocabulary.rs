@@ -494,6 +494,7 @@ const STYLE_REGISTRY: &[(&str, &str, &str)] = &[
     ("translate", "Paint-time translate [x, y], px.", "[4,0]"),
     ("rotate", "Paint-time rotation, degrees.", "15"),
     ("skew", "Paint-time skew [x_deg, y_deg].", "[6,0]"),
+    ("scale_xy", "Paint-time scale [x, y] (uniform = [v, v]).", "[1.2,1.2]"),
     (
         "element_filter",
         "Foreground filter: {blur | brightness | saturate: n}.",
