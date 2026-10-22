@@ -138,7 +138,7 @@ fn contact_sheet_tiles_every_nth_frame() {
         .duration(Frames(12))
         .background(fenestra_core::Color::new([0.1, 0.1, 0.12, 1.0]))
         .clip(box_clip("b", 0..12));
-    let sheet = comp.contact_sheet(4, 160).expect("sheet");
+    let sheet = comp.contact_sheet(4, 160, &[]).expect("sheet");
     // Frames 0, 4, 8 at 160px-wide thumbs: the sheet fits them plus labels.
     assert!(
         sheet.width() >= 160,
@@ -157,7 +157,7 @@ fn contact_sheet_refuses_to_exceed_the_texture_ceiling() {
         .duration(Frames(100_000))
         .clip(box_clip("b", 0..100_000));
     let err = comp
-        .contact_sheet(1, 1920)
+        .contact_sheet(1, 1920, &[])
         .expect_err("100k full-size thumbs cannot fit");
     assert!(
         err.to_string().contains("every"),

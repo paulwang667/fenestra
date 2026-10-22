@@ -41,7 +41,7 @@ fn lower_third_sentinel_goldens() {
 #[test]
 fn lower_third_contact_sheet_golden() {
     let comp = lower_third();
-    let sheet = comp.contact_sheet(30, 240).expect("sheet");
+    let sheet = comp.contact_sheet(30, 240, &[]).expect("sheet");
     assert_png_snapshot(snapshot_dir(), "lower_third_sheet", &sheet);
 }
 
