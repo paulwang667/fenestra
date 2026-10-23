@@ -189,8 +189,10 @@ impl Headless {
     /// frame with no filtered node produces an empty plan, so the backdrop scene
     /// *is* the final image and nothing is read back or reprocessed. Otherwise
     /// the backdrop scene (every glass subtree skipped) is rendered and read
-    /// back, each region is blurred/filtered on the CPU
-    /// ([`process_specs`](crate::multi_pass::process_specs)), and the final scene
+    /// back — only the part the glass reads
+    /// ([`backdrop_region`](crate::multi_pass::backdrop_region)) — each region
+    /// is blurred/filtered on the CPU
+    /// ([`process_specs_in`](crate::multi_pass::process_specs_in)), and the final scene
     /// composites those images. `width`/`height` are physical pixels.
     pub fn render_plan(
         &mut self,
@@ -213,9 +215,16 @@ impl Headless {
             // Fast path: one pass, identical to `render`.
             return self.render(&backdrop_scene, width, height, base_color);
         }
-        let backdrop = self.render(&backdrop_scene, width, height, base_color)?;
-        let injected = crate::multi_pass::process_specs(
+        // Only the part of the backdrop the glass reads is rendered and read
+        // back — the same path the windowed shell takes, so the goldens cover it.
+        let (width, height) = self.clamp_size(width, height);
+        let (region, shifted) =
+            crate::multi_pass::region_scene(&backdrop_scene, &specs, scale, (width, height));
+        let backdrop = self.render(&shifted, region.2, region.3, base_color)?;
+        let injected = crate::multi_pass::process_specs_in(
             &backdrop,
+            (region.0, region.1),
+            (width, height),
             &specs,
             scale,
             &|_, _, _| None, // no custom renderers registered in the headless path

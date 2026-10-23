@@ -305,10 +305,26 @@ struct WindowShell {
     /// function returns it once `run_app` unwinds. Runners with secondary
     /// windows funnel those failures into the main shell's slot too.
     fatal: Option<ShellError>,
+    /// The two-pass read-back's off-screen target and staging buffer, kept
+    /// while their size holds — a glass header reads the same strip every
+    /// frame, and allocating both per frame was part of what it cost.
+    readback: Option<Readback>,
     /// Completed async surface setup, parked until the next [`Self::pump`]
     /// (web only; the web is single-threaded so `Rc<RefCell>` suffices).
     #[cfg(target_arch = "wasm32")]
     ready: WasmReady,
+}
+
+/// A reusable read-back target: the texture the backdrop is rendered into and
+/// the mappable buffer it is copied to, for one device and size.
+struct Readback {
+    dev_id: usize,
+    width: u32,
+    height: u32,
+    view: wgpu::TextureView,
+    texture: wgpu::Texture,
+    buffer: wgpu::Buffer,
+    padded_byte_width: u32,
 }
 
 /// The handoff slot for the web's async surface creation: the setup result,
@@ -330,6 +346,7 @@ impl WindowShell {
             background,
             transparent,
             fatal: None,
+            readback: None,
             #[cfg(target_arch = "wasm32")]
             ready: WasmReady::default(),
         }
@@ -754,22 +771,54 @@ impl WindowShell {
             height,
             depth_or_array_layers: 1,
         };
-        let target = device.create_texture(&TextureDescriptor {
-            label: Some("fenestra windowed readback target"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: TextureFormat::Rgba8Unorm,
-            usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let dev_id = surface.dev_id;
+        let reusable = self
+            .readback
+            .as_ref()
+            .is_some_and(|r| (r.dev_id, r.width, r.height) == (dev_id, width, height));
+        if !reusable {
+            let texture = device.create_texture(&TextureDescriptor {
+                label: Some("fenestra windowed readback target"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            // wgpu requires copy rows padded to 256 bytes.
+            let padded_byte_width = (width * 4).next_multiple_of(256);
+            let buffer = device.create_buffer(&BufferDescriptor {
+                label: Some("fenestra windowed readback"),
+                size: u64::from(padded_byte_width) * u64::from(height),
+                usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.readback = Some(Readback {
+                dev_id,
+                width,
+                height,
+                view,
+                texture,
+                buffer,
+                padded_byte_width,
+            });
+        }
+        let Readback {
+            view,
+            texture: target,
+            buffer,
+            padded_byte_width,
+            ..
+        } = self.readback.as_ref()?;
+        let padded_byte_width = *padded_byte_width;
         if let Err(e) = renderer.render_to_texture(
             device,
             queue,
             scene,
-            &view,
+            view,
             &RenderParams {
                 base_color,
                 width,
@@ -780,21 +829,13 @@ impl WindowShell {
             return Some(Err(ShellError::Vello(e)));
         }
 
-        // wgpu requires copy rows padded to 256 bytes.
-        let padded_byte_width = (width * 4).next_multiple_of(256);
-        let buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("fenestra windowed readback"),
-            size: u64::from(padded_byte_width) * u64::from(height),
-            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("fenestra windowed readback copy"),
         });
         encoder.copy_texture_to_buffer(
             target.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
+                buffer,
                 layout: TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_byte_width),
@@ -1722,13 +1763,17 @@ impl<A: App> AppRunner<A> {
                 reason = "physical window size fits in u32"
             )]
             let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
+            let (region, origin_scene) =
+                crate::multi_pass::region_scene(&physical_backdrop, &specs, scale, (pw, ph));
             match self
                 .shell
-                .render_to_image(&physical_backdrop, pw, ph, theme.bg)
+                .render_to_image(&origin_scene, region.2, region.3, theme.bg)
             {
                 Some(Ok(backdrop_pixels)) => {
-                    let injected = crate::multi_pass::process_specs(
+                    let injected = crate::multi_pass::process_specs_in(
                         &backdrop_pixels,
+                        (region.0, region.1),
+                        (pw, ph),
                         &specs,
                         scale,
                         &custom_fn,
@@ -1995,16 +2040,20 @@ impl<A: App> AppRunner<A> {
                 reason = "physical window size fits in u32"
             )]
             let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
+            let (region, origin_scene) =
+                crate::multi_pass::region_scene(&physical_backdrop, &specs, scale, (pw, ph));
             match bundle
                 .shell
-                .render_to_image(&physical_backdrop, pw, ph, theme.bg)
+                .render_to_image(&origin_scene, region.2, region.3, theme.bg)
             {
                 Some(Ok(backdrop_pixels)) => WindowShell::at_scale(
                     frame.paint_final(
                         &mut self.fonts,
                         &mut bundle.state,
-                        &crate::multi_pass::process_specs(
+                        &crate::multi_pass::process_specs_in(
                             &backdrop_pixels,
+                            (region.0, region.1),
+                            (pw, ph),
                             &specs,
                             scale,
                             &custom_fn,

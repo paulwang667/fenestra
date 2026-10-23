@@ -42,8 +42,95 @@ pub fn process_specs(
     custom: &CustomRender,
     cache: &mut HashMap<(u64, u64), peniko::ImageData>,
 ) -> HashMap<WidgetId, peniko::ImageData> {
+    let frame = (backdrop.width(), backdrop.height());
+    process_specs_in(backdrop, (0, 0), frame, specs, scale, custom, cache)
+}
+
+/// How far past a glass pane its backdrop blur reads, in physical px: the
+/// three-box kernel reaches `3r`.
+fn blur_reach(std_dev: f32) -> u32 {
+    3 * box_radius_for_std_dev(std_dev) + 1
+}
+
+/// The physical-pixel box `(x, y, w, h)` of an `iw`×`ih` frame that `specs`
+/// read from the backdrop — each glass pane padded by its blur's reach, each
+/// foreground filter's own rect — or `None` when none of them reads it.
+///
+/// **Only this much of the backdrop needs to exist on the CPU.** The windowed
+/// shell rendered and read back the whole frame for a 56 px header: at 2x that
+/// is 16 MB copied off the GPU, every frame, to blur a strip. Rendering the
+/// scene shifted into a target this size makes the read-back — and the
+/// render feeding it — scale with the glass instead of the window.
+#[must_use]
+pub fn backdrop_region(
+    specs: &[MultiPassSpec],
+    scale: f64,
+    iw: u32,
+    ih: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let mut region: Option<(u32, u32, u32, u32)> = None;
+    for spec in specs {
+        let pad = match spec.kind {
+            PassKind::BackdropBlur { std_dev, .. } => blur_reach(std_dev),
+            PassKind::ElementFilter(_) => 0,
+            PassKind::Custom { .. } => continue,
+        };
+        let Some((x, y, w, h)) = physical_rect(spec.rect, scale, iw, ih) else {
+            continue;
+        };
+        let (x0, y0) = (x.saturating_sub(pad), y.saturating_sub(pad));
+        let (x1, y1) = ((x + w + pad).min(iw), (y + h + pad).min(ih));
+        region = Some(match region {
+            None => (x0, y0, x1, y1),
+            Some((a0, b0, a1, b1)) => (a0.min(x0), b0.min(y0), a1.max(x1), b1.max(y1)),
+        });
+    }
+    region.map(|(x0, y0, x1, y1)| (x0, y0, x1 - x0, y1 - y0))
+}
+
+/// The part of a `frame`-sized physical backdrop the two-pass `specs` read
+/// ([`backdrop_region`]), and `backdrop` (a physical-space scene) shifted so
+/// that part's top-left is the origin — ready to render into a target just
+/// that size and hand to [`process_specs_in`]. Falls back to a 1×1 corner
+/// when nothing reads the backdrop (custom renders only).
+#[must_use]
+pub fn region_scene(
+    backdrop: &vello::Scene,
+    specs: &[MultiPassSpec],
+    scale: f64,
+    (pw, ph): (u32, u32),
+) -> ((u32, u32, u32, u32), vello::Scene) {
+    let region = backdrop_region(specs, scale, pw, ph).unwrap_or((0, 0, 1.min(pw), 1.min(ph)));
+    let mut shifted = vello::Scene::new();
+    shifted.append(
+        backdrop,
+        Some(kurbo::Affine::translate((
+            -f64::from(region.0),
+            -f64::from(region.1),
+        ))),
+    );
+    (region, shifted)
+}
+
+/// [`process_specs`] over a backdrop that covers only part of the frame: the
+/// `backdrop` image's top-left sits at `origin` in a `frame`-sized physical
+/// frame, and must cover [`backdrop_region`] of `specs`.
+#[must_use]
+pub fn process_specs_in(
+    backdrop: &RgbaImage,
+    origin: (u32, u32),
+    frame: (u32, u32),
+    specs: &[MultiPassSpec],
+    scale: f64,
+    custom: &CustomRender,
+    cache: &mut HashMap<(u64, u64), peniko::ImageData>,
+) -> HashMap<WidgetId, peniko::ImageData> {
     let mut out = HashMap::with_capacity(specs.len());
-    let (iw, ih) = (backdrop.width(), backdrop.height());
+    let (iw, ih) = frame;
+    let (ox, oy) = origin;
+    let (bw, bh) = (backdrop.width(), backdrop.height());
+    // Frame coordinates → backdrop-image coordinates, clamped to the image.
+    let local = |x: u32, y: u32| (x.saturating_sub(ox).min(bw), y.saturating_sub(oy).min(bh));
     for spec in specs {
         let Some((x, y, w, h)) = physical_rect(spec.rect, scale, iw, ih) else {
             continue;
@@ -60,19 +147,21 @@ pub fn process_specs(
                 // a pane — which a real lens bleeds in — never reached it. The
                 // three-box kernel reaches `3r`, so that is the margin read.
                 let r = box_radius_for_std_dev(std_dev);
-                let pad = 3 * r + 1;
+                let pad = blur_reach(std_dev);
                 let (px0, py0) = (x.saturating_sub(pad), y.saturating_sub(pad));
                 let px1 = (x + w + pad).min(iw);
                 let py1 = (y + h + pad).min(ih);
+                let ((lx0, ly0), (lx1, ly1)) = (local(px0, py0), local(px1, py1));
                 let wide =
-                    image::imageops::crop_imm(backdrop, px0, py0, px1 - px0, py1 - py0).to_image();
+                    image::imageops::crop_imm(backdrop, lx0, ly0, lx1 - lx0, ly1 - ly0).to_image();
+                let lensed = fully_inside(spec.rect, scale, iw, ih);
                 let blurred = blur_linear_crop(&wide, r, saturation, (x - px0, y - py0, w, h));
                 // Bend the blurred backdrop at the rounded rim (the lensing
                 // pass) — but only when the crop spans the whole pane. A
                 // canvas-clamped (off-screen) crop is a truncated slice, and
                 // refraction would lens its straight cut edge as a fake rim;
                 // fall back to the blur there.
-                let result = if fully_inside(spec.rect, scale, iw, ih) {
+                let result = if lensed {
                     #[expect(
                         clippy::cast_possible_truncation,
                         reason = "physical corner radius fits in f32"
@@ -90,7 +179,8 @@ pub fn process_specs(
                 to_image_data(&result)
             }
             PassKind::ElementFilter(filter) => {
-                let sub = image::imageops::crop_imm(backdrop, x, y, w, h).to_image();
+                let (lx, ly) = local(x, y);
+                let sub = image::imageops::crop_imm(backdrop, lx, ly, w, h).to_image();
                 let filtered = apply_element_filter(&sub, scale_filter(filter, scale));
                 to_image_data(&filtered)
             }
@@ -183,6 +273,67 @@ fn to_image_data(img: &RgbaImage) -> peniko::ImageData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Reading back only the glass region changes nothing.** Two panes, a
+    /// foreground filter and a pane hanging off the frame edge, processed
+    /// against the whole frame and against just [`backdrop_region`] of it at
+    /// its origin, produce the same bytes.
+    #[test]
+    fn a_region_backdrop_matches_the_whole_frame() {
+        let frame = RgbaImage::from_fn(400, 260, |x, y| {
+            image::Rgba([
+                (x * 5 % 256) as u8,
+                (y * 9 % 256) as u8,
+                ((x ^ y) % 256) as u8,
+                255,
+            ])
+        });
+        let blur = |id, rect| MultiPassSpec {
+            id: WidgetId(id),
+            rect,
+            kind: PassKind::BackdropBlur {
+                std_dev: 10.0,
+                radius: 8.0,
+                saturation: 1.4,
+            },
+        };
+        let specs = [
+            blur(1, Rect::new(60.0, 40.0, 180.0, 90.0)),
+            blur(2, Rect::new(200.0, 150.0, 330.0, 210.0)),
+            blur(3, Rect::new(340.0, 200.0, 460.0, 300.0)),
+            MultiPassSpec {
+                id: WidgetId(4),
+                rect: Rect::new(120.0, 120.0, 170.0, 160.0),
+                kind: PassKind::ElementFilter(ElementFilter::Brightness(1.3)),
+            },
+        ];
+        let none = |_: u64, _: u32, _: u32| None;
+        let whole = process_specs(&frame, &specs, 1.0, &none, &mut HashMap::new());
+        let (x, y, w, h) =
+            backdrop_region(&specs, 1.0, 400, 260).expect("glass reads the backdrop");
+        assert!(
+            w < 400 || h < 260 || (x, y) != (0, 0),
+            "the region is the whole frame"
+        );
+        let part = image::imageops::crop_imm(&frame, x, y, w, h).to_image();
+        let region = process_specs_in(
+            &part,
+            (x, y),
+            (400, 260),
+            &specs,
+            1.0,
+            &none,
+            &mut HashMap::new(),
+        );
+        assert_eq!(whole.len(), region.len());
+        for (id, img) in &whole {
+            assert_eq!(
+                img.data.as_ref(),
+                region[id].data.as_ref(),
+                "{id:?} differs"
+            );
+        }
+    }
 
     /// **The rim sees past the pane.** A bright bar just outside the left
     /// edge has to bleed into the pane's left side, as it would through real
