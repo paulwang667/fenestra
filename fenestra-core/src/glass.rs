@@ -118,18 +118,23 @@ pub(crate) fn bake_body(
         for x in 0..w {
             let i = 4 * (y as usize * w as usize + x as usize);
             let px = &src[i..i + 4];
-            let mut lin = [
-                srgb_to_linear(px[0]),
-                srgb_to_linear(px[1]),
-                srgb_to_linear(px[2]),
-            ];
-            if (saturation - 1.0).abs() > f32::EPSILON {
+            // Without vibrancy the trip through linear light is the identity,
+            // and its three `powf`s per pixel were most of a glass frame's
+            // final paint — skip it.
+            let mut rgb = if (saturation - 1.0).abs() > f32::EPSILON {
+                let mut lin = [
+                    srgb_to_linear(px[0]),
+                    srgb_to_linear(px[1]),
+                    srgb_to_linear(px[2]),
+                ];
                 let l = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
                 for c in &mut lin {
                     *c = (l + saturation * (*c - l)).max(0.0);
                 }
-            }
-            let mut rgb = lin.map(linear_to_srgb);
+                lin.map(linear_to_srgb)
+            } else {
+                [px[0], px[1], px[2]].map(|v| f32::from(v) / 255.0)
+            };
             if let Some([tr, tg, tb, ta]) = tint {
                 let ta = ta.clamp(0.0, 1.0);
                 for (c, t) in rgb.iter_mut().zip([tr, tg, tb]) {

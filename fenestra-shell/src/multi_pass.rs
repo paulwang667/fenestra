@@ -10,7 +10,7 @@ use image::RgbaImage;
 use kurbo::Rect;
 use vello::peniko;
 
-use crate::blur::{apply_element_filter, blur_linear, box_radius_for_std_dev, refract_edges};
+use crate::blur::{apply_element_filter, blur_linear_crop, box_radius_for_std_dev, refract_edges};
 
 /// Filters each spec's region of the read-back `backdrop`, returning the image
 /// the final pass draws for that element (keyed by [`WidgetId`]). `scale` maps a
@@ -49,7 +49,11 @@ pub fn process_specs(
             continue;
         };
         let image: peniko::ImageData = match spec.kind {
-            PassKind::BackdropBlur { std_dev, radius } => {
+            PassKind::BackdropBlur {
+                std_dev,
+                radius,
+                saturation,
+            } => {
                 // **Blur what is around the pane, not just what is under it.**
                 // Cropping to the pane first and clamping at the crop made
                 // every rim repeat its own edge pixel, so content just outside
@@ -62,9 +66,7 @@ pub fn process_specs(
                 let py1 = (y + h + pad).min(ih);
                 let wide =
                     image::imageops::crop_imm(backdrop, px0, py0, px1 - px0, py1 - py0).to_image();
-                let blurred =
-                    image::imageops::crop_imm(&blur_linear(&wide, r), x - px0, y - py0, w, h)
-                        .to_image();
+                let blurred = blur_linear_crop(&wide, r, saturation, (x - px0, y - py0, w, h));
                 // Bend the blurred backdrop at the rounded rim (the lensing
                 // pass) — but only when the crop spans the whole pane. A
                 // canvas-clamped (off-screen) crop is a truncated slice, and
@@ -202,6 +204,7 @@ mod tests {
             kind: PassKind::BackdropBlur {
                 std_dev: 8.0,
                 radius: 0.0,
+                saturation: 1.0,
             },
         }];
         let out = process_specs(&backdrop, &specs, 1.0, &|_, _, _| None, &mut HashMap::new());

@@ -51,6 +51,10 @@ pub enum PassKind {
         /// it and uses it to bend the blurred backdrop inward along the rounded
         /// edge (the lensing pass). `0` degrades gracefully to a straight bevel.
         radius: f32,
+        /// [`Style::backdrop_saturate`](crate::Style::backdrop_saturate): the
+        /// vibrancy multiplier the shell applies in linear light while it
+        /// blurs, where the field is still at the blur's reduced resolution.
+        saturation: f32,
     },
     /// A foreground filter on the element's own content. Any blur radius it
     /// carries is in logical px (the shell scales it to physical).

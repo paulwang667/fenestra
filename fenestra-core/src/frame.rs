@@ -2409,6 +2409,7 @@ impl Frame {
                     kind: PassKind::BackdropBlur {
                         std_dev,
                         radius: corner,
+                        saturation: node.style.backdrop_saturate,
                     },
                 });
                 return;
@@ -2490,13 +2491,10 @@ impl Frame {
                 Some(Paint::Solid(c)) => Some(c),
                 _ => None,
             };
-            let body = crate::glass::bake_body(
-                image,
-                node.rect,
-                tint,
-                style.sheen.as_ref(),
-                style.backdrop_saturate,
-            );
+            // Vibrancy is already in the image: the shell applied it while
+            // blurring (`PassKind::BackdropBlur::saturation`), on a field a
+            // fraction of this size.
+            let body = crate::glass::bake_body(image, node.rect, tint, style.sheen.as_ref(), 1.0);
             let mut rest = style.clone();
             if tint.is_some() {
                 rest.fill = None;

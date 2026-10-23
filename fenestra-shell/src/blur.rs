@@ -37,9 +37,22 @@ pub fn box_blur_rgba8(img: &RgbaImage, radius: u32) -> RgbaImage {
     a
 }
 
-/// The backdrop blur: the same three-box Gaussian as [`box_blur_rgba8`], but
-/// averaged in **linear light** in `f32` and rounded back to bytes once, with
-/// dither.
+/// Vibrancy in linear light about Rec. 709 luminance: `l + s(c − l)`. The
+/// luminance is unchanged, so the result is the same whether it runs before or
+/// after a blur — which is what lets it run on the blur's small field.
+fn vibrance(p: &mut [f32; 4], saturation: f32) {
+    if (saturation - 1.0).abs() <= f32::EPSILON {
+        return;
+    }
+    let l = 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+    for c in &mut p[..3] {
+        *c = (l + saturation * (*c - l)).max(0.0);
+    }
+}
+
+/// The backdrop blur, at full resolution: the same three-box Gaussian as
+/// [`box_blur_rgba8`], but averaged in **linear light** in `f32` and rounded
+/// back to bytes once, with dither.
 ///
 /// **Two things the byte blur got wrong for glass.** Averaging sRGB code
 /// values darkens every edge between two colours — red and green blur to a
@@ -50,8 +63,9 @@ pub fn box_blur_rgba8(img: &RgbaImage, radius: u32) -> RgbaImage {
 /// a gentle wash comes back out as contour bands.
 ///
 /// Running sums are `f64`, so the slide does not drift across a wide row.
-#[must_use]
-pub fn blur_linear(img: &RgbaImage, radius: u32) -> RgbaImage {
+///
+/// [`vibrance`] is applied to the blurred field before it returns to sRGB.
+fn blur_linear_vibrant(img: &RgbaImage, radius: u32, saturation: f32) -> RgbaImage {
     use fenestra_core::glass::{dither_noise, dither_to_u8, linear_to_srgb, srgb_to_linear};
     let (w, h) = (img.width(), img.height());
     if w == 0 || h == 0 {
@@ -77,7 +91,8 @@ pub fn blur_linear(img: &RgbaImage, radius: u32) -> RgbaImage {
         }
     }
     RgbaImage::from_fn(w, h, |x, y| {
-        let p = a[(y * w + x) as usize];
+        let mut p = a[(y * w + x) as usize];
+        vibrance(&mut p, saturation);
         let n = dither_noise(x, y);
         image::Rgba([
             dither_to_u8(linear_to_srgb(p[0]), n),
@@ -86,6 +101,167 @@ pub fn blur_linear(img: &RgbaImage, radius: u32) -> RgbaImage {
             dither_to_u8(p[3], 0.0),
         ])
     })
+}
+
+/// The smallest box radius a downsampled blur may run at. Below this the
+/// three-box kernel is too coarse a stand-in for a Gaussian at the low
+/// resolution, and the bilinear upsample starts to show its grid.
+const MIN_LOW_RADIUS: u32 = 4;
+
+/// The largest downsample factor. At 4 a 2x-scale backdrop is blurred at half
+/// its logical resolution, which a σ ≥ 16 blur cannot tell from full.
+const MAX_DOWNSAMPLE: u32 = 4;
+
+/// The power-of-two factor [`blur_linear_crop`] downsamples by for a box
+/// `radius`: the largest one (up to [`MAX_DOWNSAMPLE`]) that still leaves a
+/// low-resolution radius of at least [`MIN_LOW_RADIUS`]. Small blurs get `1`
+/// and take the exact full-resolution path.
+#[must_use]
+pub(crate) fn downsample_factor(radius: u32) -> u32 {
+    let mut f = 1;
+    while f < MAX_DOWNSAMPLE && radius / (f * 2) >= MIN_LOW_RADIUS {
+        f *= 2;
+    }
+    f
+}
+
+/// [`blur_linear`] of `img`, returning only the `w`×`h` window at `(x, y)` —
+/// computed at reduced resolution when the radius allows it.
+///
+/// **The blur is the frame's cost, so it runs where the detail is not.** A
+/// backdrop blur of σ 32 physical px has no detail finer than a few pixels to
+/// keep, yet the full-resolution blur paid six passes over every physical
+/// pixel of the pane plus its `3r` margin — 24 ms for a 260 px sidebar at 2x,
+/// which was most of a frame. Here the image is box-averaged down by
+/// [`downsample_factor`] in linear light, blurred at the matching smaller
+/// radius, and bilinearly sampled back up for just the window the pane shows:
+/// the blur passes shrink by `f²` and the margin is never upsampled.
+///
+/// The low-resolution radius is solved so the total spread still matches: the
+/// `f`-wide averaging and the bilinear upsample add about `f²/4` px² of
+/// variance on their own, so the box radius is chosen for `σ²/f² − ¼`.
+///
+/// Vibrancy (`saturation`, see [`vibrance`]) and the conversion back to sRGB
+/// both happen on the low-resolution field — the blurred field is smooth, so
+/// interpolating it in sRGB is indistinguishable — and only the dither and
+/// rounding run per output pixel. Deterministic.
+#[must_use]
+pub fn blur_linear_crop(
+    img: &RgbaImage,
+    radius: u32,
+    saturation: f32,
+    (x, y, w, h): (u32, u32, u32, u32),
+) -> RgbaImage {
+    use fenestra_core::glass::{dither_noise, dither_to_u8, linear_to_srgb, srgb_to_linear};
+    let (iw, ih) = (img.width(), img.height());
+    let radius = radius.min(iw.max(ih));
+    let f = downsample_factor(radius);
+    if f == 1 || iw == 0 || ih == 0 {
+        let full = blur_linear_vibrant(img, radius, saturation);
+        return image::imageops::crop_imm(&full, x, y, w, h).to_image();
+    }
+    let (lw, lh) = (iw.div_ceil(f), ih.div_ceil(f));
+
+    // Box-average each f×f block (partial at the right/bottom edge) in linear light.
+    let mut low = vec![[0f32; 4]; (lw * lh) as usize];
+    for ly in 0..lh {
+        let (y0, y1) = (ly * f, ((ly + 1) * f).min(ih));
+        for lx in 0..lw {
+            let (x0, x1) = (lx * f, ((lx + 1) * f).min(iw));
+            let mut sum = [0f32; 4];
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let p = img.get_pixel(sx, sy).0;
+                    sum[0] += srgb_to_linear(p[0]);
+                    sum[1] += srgb_to_linear(p[1]);
+                    sum[2] += srgb_to_linear(p[2]);
+                    sum[3] += f32::from(p[3]) / 255.0;
+                }
+            }
+            let n = fl((y1 - y0) * (x1 - x0));
+            low[(ly * lw + lx) as usize] = sum.map(|s| s / n);
+        }
+    }
+
+    let sigma_sq = fl(radius) * fl(radius + 1);
+    let low_var = (sigma_sq / fl(f * f) - 0.25).max(0.0);
+    let mut b = low.clone();
+    for pass_radius in three_box_radii(low_var) {
+        let pass_radius = pass_radius.min(lw.max(lh));
+        if pass_radius > 0 {
+            box_pass_f32(&low, &mut b, lw, lh, pass_radius, true);
+            box_pass_f32(&b, &mut low, lw, lh, pass_radius, false);
+        }
+    }
+    for p in &mut low {
+        vibrance(p, saturation);
+        *p = [
+            linear_to_srgb(p[0]),
+            linear_to_srgb(p[1]),
+            linear_to_srgb(p[2]),
+            p[3],
+        ];
+    }
+
+    // Bilinear upsample of only the requested window; pixel centres map to
+    // `(c + 0.5) / f − 0.5` in the low-resolution grid, clamped at its edges.
+    let ff = fl(f);
+    let sample_axis = |c: u32, len: u32| -> (usize, usize, f32) {
+        let u = ((fl(c) + 0.5) / ff - 0.5).clamp(0.0, fl(len - 1));
+        let i0 = px_index(u.floor());
+        (i0 as usize, (i0 + 1).min(len - 1) as usize, u - u.floor())
+    };
+    let cols: Vec<_> = (x..x + w).map(|c| sample_axis(c, lw)).collect();
+    let lw = lw as usize;
+    let mut out = RgbaImage::new(w, h);
+    for oy in 0..h {
+        let (r0, r1, ty) = sample_axis(y + oy, lh);
+        for (ox, &(c0, c1, tx)) in (0..w).zip(&cols) {
+            let (p00, p10) = (low[r0 * lw + c0], low[r0 * lw + c1]);
+            let (p01, p11) = (low[r1 * lw + c0], low[r1 * lw + c1]);
+            let v: [f32; 4] = std::array::from_fn(|c| {
+                let top = p00[c] + (p10[c] - p00[c]) * tx;
+                let bot = p01[c] + (p11[c] - p01[c]) * tx;
+                top + (bot - top) * ty
+            });
+            let n = dither_noise(x + ox, y + oy);
+            out.put_pixel(
+                ox,
+                oy,
+                image::Rgba([
+                    dither_to_u8(v[0], n),
+                    dither_to_u8(v[1], n),
+                    dither_to_u8(v[2], n),
+                    dither_to_u8(v[3], 0.0),
+                ]),
+            );
+        }
+    }
+    out
+}
+
+/// Radii for three box passes whose combined variance best matches `var`
+/// (px²). A box of radius `k` contributes `k(k+1)/3`, so a single integer
+/// radius for all three only hits `var` to within `2(k+1)/3` — at the small
+/// radii a downsampled blur runs at, a tenth of the spread. Mixing `k` and
+/// `k + 1` across the passes cuts that step to a third.
+fn three_box_radii(var: f32) -> [u32; 3] {
+    let k = box_radius_for_std_dev(var.sqrt());
+    // `box_radius_for_std_dev` rounds; step back to the radius at or below.
+    let k = if fl(k) * fl(k + 1) > var {
+        k.saturating_sub(1)
+    } else {
+        k
+    };
+    let step = 2.0 * fl(k + 1) / 3.0;
+    let base = fl(k) * fl(k + 1);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "rounded and clamped to 0..=3"
+    )]
+    let up = ((var - base) / step).round().clamp(0.0, 3.0) as usize;
+    std::array::from_fn(|i| if i < up { k + 1 } else { k })
 }
 
 /// One box pass over a `w`×`h` float image, horizontal or vertical, clamping
@@ -179,45 +355,61 @@ pub(crate) fn refract_edges(img: &RgbaImage, radius_px: f32, band_px: f32) -> Rg
     let band = band_px.max(1.0).min(hw.min(hh));
     let max_disp = band * 0.55;
     let (ex, ey) = (hw - r, hh - r); // inner box half-extents
-    let mut out = RgbaImage::new(w, h);
+    let lens = |x: u32, y: u32| -> Option<image::Rgba<u8>> {
+        let (px, py) = (fl(x) + 0.5, fl(y) + 0.5);
+        let (rx, ry) = (px - hw, py - hh); // relative to center
+        // Rounded-box signed distance (negative inside the silhouette).
+        let (qx, qy) = (rx.abs() - ex, ry.abs() - ey);
+        let (ax, ay) = (qx.max(0.0), qy.max(0.0));
+        let outside = (ax * ax + ay * ay).sqrt() + qx.max(qy).min(0.0) - r;
+        let d = -outside; // inside-distance, positive inside the silhouette
+        if !(d > 0.0 && d < band) {
+            return None;
+        }
+        let (nx, ny) = sdf_normal(rx, ry, ex, ey);
+        // Strongest at the very edge, easing (quadratically) to zero at
+        // the band's inner boundary; sample `disp` px further inside.
+        let t = d / band;
+        let disp = max_disp * (1.0 - t) * (1.0 - t);
+        // **Three samples, because glass disperses.** A real pane
+        // bends short wavelengths further than long ones, which is why
+        // the rim of a thick edge fringes. One displacement for all
+        // three channels is a lens made of something that does not
+        // exist; the split is small — a few percent of a displacement
+        // that is itself only a few px — and what it buys is the
+        // colour at the rim rather than a grey smear.
+        let r_px = bilinear(
+            img,
+            px - nx * disp * DISPERSION.0,
+            py - ny * disp * DISPERSION.0,
+        );
+        let g_px = bilinear(img, px - nx * disp, py - ny * disp);
+        let b_px = bilinear(
+            img,
+            px - nx * disp * DISPERSION.1,
+            py - ny * disp * DISPERSION.1,
+        );
+        Some(image::Rgba([r_px[0], g_px[1], b_px[2], g_px[3]]))
+    };
+    // **Only the rim is computed.** Off the band a pixel-centre bilinear
+    // sample is the pixel itself, so the body is a copy — and every band
+    // pixel, the corner arcs included, lies within `reach` of the pane's
+    // outer box on at least one axis. The middle rows need only their two
+    // edge strips; that was a per-pixel SDF and a bilinear sample across the
+    // whole pane, as much as the blur itself.
+    let reach = band.max(r) + 1.0;
+    let strip = px_index(reach.ceil()).min(w);
+    let mut out = img.clone();
     for y in 0..h {
-        for x in 0..w {
-            let (px, py) = (fl(x) + 0.5, fl(y) + 0.5);
-            let (rx, ry) = (px - hw, py - hh); // relative to center
-            // Rounded-box signed distance (negative inside the silhouette).
-            let (qx, qy) = (rx.abs() - ex, ry.abs() - ey);
-            let (ax, ay) = (qx.max(0.0), qy.max(0.0));
-            let outside = (ax * ax + ay * ay).sqrt() + qx.max(qy).min(0.0) - r;
-            let d = -outside; // inside-distance, positive inside the silhouette
-            if d > 0.0 && d < band {
-                let (nx, ny) = sdf_normal(rx, ry, ex, ey);
-                // Strongest at the very edge, easing (quadratically) to zero at
-                // the band's inner boundary; sample `disp` px further inside.
-                let t = d / band;
-                let disp = max_disp * (1.0 - t) * (1.0 - t);
-                // **Three samples, because glass disperses.** A real pane
-                // bends short wavelengths further than long ones, which is why
-                // the rim of a thick edge fringes. One displacement for all
-                // three channels is a lens made of something that does not
-                // exist; the split is small — a few percent of a displacement
-                // that is itself only a few px — and what it buys is the
-                // colour at the rim rather than a grey smear.
-                //
-                // Paid only inside the band, which is a fraction of the pane.
-                let r_px = bilinear(
-                    img,
-                    px - nx * disp * DISPERSION.0,
-                    py - ny * disp * DISPERSION.0,
-                );
-                let g_px = bilinear(img, px - nx * disp, py - ny * disp);
-                let b_px = bilinear(
-                    img,
-                    px - nx * disp * DISPERSION.1,
-                    py - ny * disp * DISPERSION.1,
-                );
-                out.put_pixel(x, y, image::Rgba([r_px[0], g_px[1], b_px[2], g_px[3]]));
-            } else {
-                out.put_pixel(x, y, bilinear(img, px, py));
+        let full_row = (fl(y) + 0.5 - hh).abs() > hh - reach;
+        let xs: Box<dyn Iterator<Item = u32>> = if full_row {
+            Box::new(0..w)
+        } else {
+            Box::new((0..strip).chain(w.saturating_sub(strip)..w))
+        };
+        for x in xs {
+            if let Some(p) = lens(x, y) {
+                out.put_pixel(x, y, p);
             }
         }
     }
@@ -410,6 +602,11 @@ fn f32_to_u8(v: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    /// The plain full-resolution linear blur: the reference the cropped,
+    /// downsampled path is held to.
+    fn blur_linear(img: &RgbaImage, radius: u32) -> RgbaImage {
+        super::blur_linear_vibrant(img, radius, 1.0)
+    }
 
     /// **Thickness is the glass, not the outline.**
     ///
@@ -608,6 +805,223 @@ mod tests {
         for p in a.pixels() {
             assert!(p[0].abs_diff(77) <= 1 && p[1].abs_diff(88) <= 1 && p[2].abs_diff(99) <= 1);
             assert_eq!(p[3], 255);
+        }
+    }
+
+    /// The original whole-pane refraction, kept as the reference the rim-only
+    /// one must reproduce exactly.
+    fn refract_edges_reference(img: &RgbaImage, radius_px: f32, band_px: f32) -> RgbaImage {
+        let (w, h) = (img.width(), img.height());
+        if w < 4 || h < 4 {
+            return img.clone();
+        }
+        let (wf, hf) = (fl(w), fl(h));
+        let (hw, hh) = (wf * 0.5, hf * 0.5);
+        let r = radius_px.clamp(0.0, hw.min(hh));
+        // **The bevel band is a thickness, not a shape.** It was the corner radius
+        // — so a pill, whose radius is half its height, was bevel all the way
+        // through and every pixel of it was lensed, while a big rounded card got a
+        // narrow rim. Backwards: a 2mm pane has a 2mm edge whether it is cut round
+        // or square, and the two read as different materials when the edge follows
+        // the outline instead of the glass.
+        //
+        // Clamped to the pane's own half-extent, which is all the room there is.
+        let band = band_px.max(1.0).min(hw.min(hh));
+        let max_disp = band * 0.55;
+        let (ex, ey) = (hw - r, hh - r); // inner box half-extents
+        let mut out = RgbaImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let (px, py) = (fl(x) + 0.5, fl(y) + 0.5);
+                let (rx, ry) = (px - hw, py - hh); // relative to center
+                // Rounded-box signed distance (negative inside the silhouette).
+                let (qx, qy) = (rx.abs() - ex, ry.abs() - ey);
+                let (ax, ay) = (qx.max(0.0), qy.max(0.0));
+                let outside = (ax * ax + ay * ay).sqrt() + qx.max(qy).min(0.0) - r;
+                let d = -outside; // inside-distance, positive inside the silhouette
+                if d > 0.0 && d < band {
+                    let (nx, ny) = sdf_normal(rx, ry, ex, ey);
+                    // Strongest at the very edge, easing (quadratically) to zero at
+                    // the band's inner boundary; sample `disp` px further inside.
+                    let t = d / band;
+                    let disp = max_disp * (1.0 - t) * (1.0 - t);
+                    // **Three samples, because glass disperses.** A real pane
+                    // bends short wavelengths further than long ones, which is why
+                    // the rim of a thick edge fringes. One displacement for all
+                    // three channels is a lens made of something that does not
+                    // exist; the split is small — a few percent of a displacement
+                    // that is itself only a few px — and what it buys is the
+                    // colour at the rim rather than a grey smear.
+                    //
+                    // Paid only inside the band, which is a fraction of the pane.
+                    let r_px = bilinear(
+                        img,
+                        px - nx * disp * DISPERSION.0,
+                        py - ny * disp * DISPERSION.0,
+                    );
+                    let g_px = bilinear(img, px - nx * disp, py - ny * disp);
+                    let b_px = bilinear(
+                        img,
+                        px - nx * disp * DISPERSION.1,
+                        py - ny * disp * DISPERSION.1,
+                    );
+                    out.put_pixel(x, y, image::Rgba([r_px[0], g_px[1], b_px[2], g_px[3]]));
+                } else {
+                    out.put_pixel(x, y, bilinear(img, px, py));
+                }
+            }
+        }
+        out
+    }
+
+    /// **Rim-only refraction is the same image.** Panes of every shape the
+    /// policy meets — square, pill, large radius, radius past the band, tiny —
+    /// over content with structure everywhere, compared byte for byte.
+    #[test]
+    fn rim_only_refraction_matches_the_whole_pane_pass() {
+        let img = RgbaImage::from_fn(240, 140, |x, y| {
+            Rgba([
+                (x * 7 % 256) as u8,
+                (y * 11 % 256) as u8,
+                ((x + y) * 3 % 256) as u8,
+                255,
+            ])
+        });
+        for (w, h, radius, band) in [
+            (240, 140, 0.0, 14.0),
+            (240, 140, 20.0, 14.0),
+            (240, 140, 70.0, 14.0),
+            (240, 60, 30.0, 14.0),
+            (200, 140, 48.0, 7.0),
+            (12, 9, 3.0, 14.0),
+        ] {
+            let pane = image::imageops::crop_imm(&img, 0, 0, w, h).to_image();
+            assert_eq!(
+                refract_edges(&pane, radius, band),
+                refract_edges_reference(&pane, radius, band),
+                "{w}x{h} radius {radius} band {band}"
+            );
+        }
+    }
+
+    /// **Vibrancy rides the blur, at either resolution.** It spreads the
+    /// channels apart and leaves luminance where it was, on both the exact and
+    /// the downsampled path.
+    #[test]
+    fn vibrancy_resaturates_inside_the_blur() {
+        let img = RgbaImage::from_pixel(120, 80, Rgba([120, 150, 130, 255]));
+        for r in [4, 24] {
+            let plain = blur_linear_crop(&img, r, 1.0, (10, 10, 60, 40));
+            let vivid = blur_linear_crop(&img, r, 1.5, (10, 10, 60, 40));
+            let (p, v) = (plain.get_pixel(30, 20), vivid.get_pixel(30, 20));
+            let spread = |q: &Rgba<u8>| i32::from(q[1]) - i32::from(q[0]);
+            assert!(spread(v) > spread(p) + 4, "r {r}: {p:?} → {v:?}");
+            let luma = |q: &Rgba<u8>| {
+                use fenestra_core::glass::srgb_to_linear;
+                0.2126 * srgb_to_linear(q[0])
+                    + 0.7152 * srgb_to_linear(q[1])
+                    + 0.0722 * srgb_to_linear(q[2])
+            };
+            assert!((luma(v) - luma(p)).abs() < 0.01, "r {r}: luminance moved");
+        }
+    }
+
+    /// Small blurs stay exact; wide ones downsample, never past the cap.
+    #[test]
+    fn the_downsample_factor_keeps_the_low_radius_useful() {
+        assert_eq!(downsample_factor(0), 1);
+        assert_eq!(
+            downsample_factor(7),
+            1,
+            "below 2 × MIN_LOW_RADIUS stays full resolution"
+        );
+        assert_eq!(downsample_factor(8), 2);
+        assert_eq!(downsample_factor(16), 4);
+        assert_eq!(downsample_factor(200), MAX_DOWNSAMPLE);
+        for r in 0..200 {
+            let f = downsample_factor(r);
+            assert!(f == 1 || r / f >= MIN_LOW_RADIUS, "r {r} at factor {f}");
+        }
+    }
+
+    /// The small-radius path is exactly the full-resolution blur, cropped.
+    #[test]
+    fn a_small_radius_crop_is_the_exact_blur() {
+        let img = RgbaImage::from_fn(60, 40, |x, y| Rgba([(x * 4) as u8, (y * 6) as u8, 90, 255]));
+        let full = blur_linear(&img, 5);
+        let crop = blur_linear_crop(&img, 5, 1.0, (10, 7, 30, 20));
+        assert_eq!(
+            crop,
+            image::imageops::crop_imm(&full, 10, 7, 30, 20).to_image()
+        );
+    }
+
+    /// A flat field stays flat through the downsample, blur and upsample.
+    #[test]
+    fn a_downsampled_flat_field_stays_flat() {
+        let img = RgbaImage::from_pixel(300, 200, Rgba([77, 88, 99, 255]));
+        let out = blur_linear_crop(&img, 32, 1.0, (50, 40, 200, 120));
+        assert_eq!((out.width(), out.height()), (200, 120));
+        assert_eq!(
+            out,
+            blur_linear_crop(&img, 32, 1.0, (50, 40, 200, 120)),
+            "deterministic"
+        );
+        for p in out.pixels() {
+            assert!(p[0].abs_diff(77) <= 1 && p[1].abs_diff(88) <= 1 && p[2].abs_diff(99) <= 1);
+            assert_eq!(p[3], 255);
+        }
+    }
+
+    /// The downsampled blur still mixes light, not code values.
+    #[test]
+    fn a_downsampled_blur_still_mixes_light() {
+        let img = RgbaImage::from_fn(200, 60, |x, _| {
+            if x % 2 == 0 {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 255, 0, 255])
+            }
+        });
+        let out = blur_linear_crop(&img, 24, 1.0, (0, 0, 200, 60));
+        let p = out.get_pixel(100, 30);
+        assert!(p[0] > 175 && p[1] > 175, "red and green mixed to {p:?}");
+    }
+
+    /// **Downsampling is invisible at the radii it is used for.** Hard-edged
+    /// stripes and blocks — the worst case for a reduced-resolution blur —
+    /// blurred both ways must agree to within a couple of code values on
+    /// average and a handful at worst, for every factor the policy picks.
+    #[test]
+    fn the_downsampled_blur_matches_the_full_resolution_one() {
+        let img = RgbaImage::from_fn(420, 260, |x, y| {
+            let stripe = (x / 13) % 3;
+            let block = ((x / 40) + (y / 40)) % 2;
+            match (stripe, block) {
+                (0, 0) => Rgba([240, 40, 40, 255]),
+                (1, 0) => Rgba([30, 200, 90, 255]),
+                (2, 0) => Rgba([250, 250, 250, 255]),
+                (_, _) => Rgba([20, 30, 60, 255]),
+            }
+        });
+        for r in [8, 12, 16, 28, 40] {
+            let (x, y, w, h) = (3 * r + 1, 3 * r + 1, 420 - 6 * r - 2, 260 - 6 * r - 2);
+            let reference = image::imageops::crop_imm(&blur_linear(&img, r), x, y, w, h).to_image();
+            let fast = blur_linear_crop(&img, r, 1.0, (x, y, w, h));
+            let (mut sum, mut worst) = (0u64, 0u8);
+            for (a, b) in reference.pixels().zip(fast.pixels()) {
+                for c in 0..3 {
+                    let d = a[c].abs_diff(b[c]);
+                    sum += u64::from(d);
+                    worst = worst.max(d);
+                }
+            }
+            let mean = sum as f64 / f64::from(w * h * 3);
+            assert!(
+                mean <= 1.0 && worst <= 5,
+                "r {r} (factor {}): mean diff {mean:.2}, worst {worst}",
+                downsample_factor(r)
+            );
         }
     }
 
