@@ -43,7 +43,88 @@ pub fn process_specs(
     cache: &mut HashMap<(u64, u64), peniko::ImageData>,
 ) -> HashMap<WidgetId, peniko::ImageData> {
     let frame = (backdrop.width(), backdrop.height());
-    process_specs_in(backdrop, (0, 0), frame, specs, scale, custom, cache)
+    let mut glass = GlassCache::default();
+    process_specs_in(
+        backdrop,
+        (0, 0),
+        frame,
+        specs,
+        scale,
+        custom,
+        cache,
+        &mut glass,
+    )
+}
+
+/// Each glass pane's last backdrop blur, kept so a frame whose backdrop under
+/// the pane has not changed reuses it instead of blurring it again.
+///
+/// **Most glass frames repaint for something that is not behind the glass** —
+/// a spinner elsewhere, a hover inside a menu, a caret in a field on the pane.
+/// The read-back still has to happen to know, but comparing the crop is a
+/// fraction of the blur and the lensing it saves; and handing back the same
+/// image keeps its id, so the final pass's bake cache hits too. One per
+/// window; panes that leave the frame leave the cache.
+#[derive(Default)]
+pub struct GlassCache {
+    panes: HashMap<WidgetId, GlassMemo>,
+}
+
+/// Whether `now` differs from the `then` a pane was blurred from by too little
+/// to show through a blur of `std_dev` physical px.
+///
+/// **Byte equality never held.** The GPU rasterizer is not bit-stable frame to
+/// frame: a backdrop that has not moved comes back with one to three pixels a
+/// level or two off, so an exact compare missed on most still frames. What
+/// matters is whether the blurred image would change, and that has a bound: a
+/// blurred pixel is a weighted mean whose largest weight is about
+/// `1 / (2πσ²)`, so it can move by at most the summed absolute input change
+/// times that. Under half a level, the old image is the new one. The compare
+/// is against the input the image was made from, so drift cannot creep past
+/// the bound a frame at a time.
+fn unchanged_under_blur(then: &[u8], now: &[u8], std_dev: f32) -> bool {
+    if then.len() != now.len() {
+        return false;
+    }
+    if then == now {
+        return true;
+    }
+    let peak = 1.0 / (std::f64::consts::TAU * f64::from(std_dev).powi(2).max(1.0));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a small positive budget"
+    )]
+    let budget = (0.5 / peak) as u64;
+    let mut sum = 0u64;
+    for (a, b) in then.as_chunks::<4>().0.iter().zip(now.as_chunks::<4>().0) {
+        if a != b {
+            sum += (0..3).map(|c| u64::from(a[c].abs_diff(b[c]))).sum::<u64>();
+            if sum > budget {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// What a pane's blur was computed from, and what it produced.
+struct GlassMemo {
+    key: GlassKey,
+    input: Vec<u8>,
+    image: peniko::ImageData,
+}
+
+/// Every parameter besides the backdrop bytes that the pane's image depends on.
+#[derive(PartialEq)]
+struct GlassKey {
+    wide: (u32, u32),
+    crop: (u32, u32, u32, u32),
+    radius: u32,
+    saturation: u32,
+    corner: u32,
+    scale: u64,
+    lensed: bool,
 }
 
 /// How far past a glass pane its backdrop blur reads, in physical px: the
@@ -116,6 +197,10 @@ pub fn region_scene(
 /// `backdrop` image's top-left sits at `origin` in a `frame`-sized physical
 /// frame, and must cover [`backdrop_region`] of `specs`.
 #[must_use]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the frame geometry and both caches"
+)]
 pub fn process_specs_in(
     backdrop: &RgbaImage,
     origin: (u32, u32),
@@ -124,7 +209,11 @@ pub fn process_specs_in(
     scale: f64,
     custom: &CustomRender,
     cache: &mut HashMap<(u64, u64), peniko::ImageData>,
+    glass: &mut GlassCache,
 ) -> HashMap<WidgetId, peniko::ImageData> {
+    glass
+        .panes
+        .retain(|id, _| specs.iter().any(|s| s.id == *id));
     let mut out = HashMap::with_capacity(specs.len());
     let (iw, ih) = frame;
     let (ox, oy) = origin;
@@ -155,6 +244,22 @@ pub fn process_specs_in(
                 let wide =
                     image::imageops::crop_imm(backdrop, lx0, ly0, lx1 - lx0, ly1 - ly0).to_image();
                 let lensed = fully_inside(spec.rect, scale, iw, ih);
+                let key = GlassKey {
+                    wide: wide.dimensions(),
+                    crop: (x - px0, y - py0, w, h),
+                    radius: r,
+                    saturation: saturation.to_bits(),
+                    corner: radius.to_bits(),
+                    scale: scale.to_bits(),
+                    lensed,
+                };
+                if let Some(memo) = glass.panes.get(&spec.id)
+                    && memo.key == key
+                    && unchanged_under_blur(&memo.input, wide.as_raw(), std_dev)
+                {
+                    out.insert(spec.id, memo.image.clone());
+                    continue;
+                }
                 let blurred = blur_linear_crop(&wide, r, saturation, (x - px0, y - py0, w, h));
                 // Bend the blurred backdrop at the rounded rim (the lensing
                 // pass) — but only when the crop spans the whole pane. A
@@ -176,7 +281,16 @@ pub fn process_specs_in(
                 } else {
                     blurred
                 };
-                to_image_data(&result)
+                let image = to_image_data(&result);
+                glass.panes.insert(
+                    spec.id,
+                    GlassMemo {
+                        key,
+                        input: wide.into_raw(),
+                        image: image.clone(),
+                    },
+                );
+                image
             }
             PassKind::ElementFilter(filter) => {
                 let (lx, ly) = local(x, y);
@@ -324,6 +438,7 @@ mod tests {
             1.0,
             &none,
             &mut HashMap::new(),
+            &mut GlassCache::default(),
         );
         assert_eq!(whole.len(), region.len());
         for (id, img) in &whole {
@@ -333,6 +448,76 @@ mod tests {
                 "{id:?} differs"
             );
         }
+    }
+
+    fn one_pane() -> [MultiPassSpec; 1] {
+        [MultiPassSpec {
+            id: WidgetId(7),
+            rect: Rect::new(40.0, 30.0, 160.0, 90.0),
+            kind: PassKind::BackdropBlur {
+                std_dev: 16.0,
+                radius: 10.0,
+                saturation: 1.0,
+            },
+        }]
+    }
+
+    fn run(frame: &RgbaImage, glass: &mut GlassCache) -> peniko::ImageData {
+        let specs = one_pane();
+        let mut out = process_specs_in(
+            frame,
+            (0, 0),
+            frame.dimensions(),
+            &specs,
+            1.0,
+            &|_, _, _| None,
+            &mut HashMap::new(),
+            glass,
+        );
+        out.remove(&WidgetId(7)).expect("the pane has an image")
+    }
+
+    /// **A still backdrop is blurred once.** The GPU's frame-to-frame jitter —
+    /// a few pixels a level off — comes back as the very same image, id and
+    /// all, so nothing downstream redoes its work either.
+    #[test]
+    fn a_still_backdrop_reuses_its_blur() {
+        let a = RgbaImage::from_fn(200, 120, |x, y| {
+            image::Rgba([(x % 256) as u8, (y * 2 % 256) as u8, 90, 255])
+        });
+        let mut b = a.clone();
+        for (x, y) in [(60, 50), (100, 70), (130, 40)] {
+            let p = b.get_pixel_mut(x, y);
+            p[0] = p[0].wrapping_add(2);
+        }
+        let mut glass = GlassCache::default();
+        let first = run(&a, &mut glass);
+        let again = run(&b, &mut glass);
+        assert_eq!(
+            first.data.id(),
+            again.data.id(),
+            "jitter re-blurred the pane"
+        );
+    }
+
+    /// **A backdrop that moved is blurred again** — a bright bar sliding under
+    /// the pane is a change the blur shows, and the cache must not hide it.
+    #[test]
+    fn a_moved_backdrop_is_blurred_again() {
+        let bar = |at: u32| {
+            RgbaImage::from_fn(200, 120, |x, _| {
+                if (at..at + 12).contains(&x) {
+                    image::Rgba([250, 250, 250, 255])
+                } else {
+                    image::Rgba([20, 20, 30, 255])
+                }
+            })
+        };
+        let mut glass = GlassCache::default();
+        let first = run(&bar(70), &mut glass);
+        let moved = run(&bar(90), &mut glass);
+        assert_ne!(first.data.id(), moved.data.id());
+        assert_ne!(first.data.as_ref(), moved.data.as_ref());
     }
 
     /// **The rim sees past the pane.** A bright bar just outside the left

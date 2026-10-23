@@ -309,6 +309,8 @@ struct WindowShell {
     /// while their size holds — a glass header reads the same strip every
     /// frame, and allocating both per frame was part of what it cost.
     readback: Option<Readback>,
+    /// This window's glass panes' last blurs ([`crate::multi_pass::GlassCache`]).
+    glass_cache: crate::multi_pass::GlassCache,
     /// Completed async surface setup, parked until the next [`Self::pump`]
     /// (web only; the web is single-threaded so `Rc<RefCell>` suffices).
     #[cfg(target_arch = "wasm32")]
@@ -347,6 +349,7 @@ impl WindowShell {
             transparent,
             fatal: None,
             readback: None,
+            glass_cache: crate::multi_pass::GlassCache::default(),
             #[cfg(target_arch = "wasm32")]
             ready: WasmReady::default(),
         }
@@ -1778,6 +1781,7 @@ impl<A: App> AppRunner<A> {
                         scale,
                         &custom_fn,
                         &mut self.custom_cache,
+                        &mut self.shell.glass_cache,
                     );
                     WindowShell::at_scale(
                         frame.paint_final(&mut self.fonts, &mut self.state, &injected),
@@ -2058,6 +2062,7 @@ impl<A: App> AppRunner<A> {
                             scale,
                             &custom_fn,
                             &mut self.custom_cache,
+                            &mut bundle.shell.glass_cache,
                         ),
                     ),
                     scale,

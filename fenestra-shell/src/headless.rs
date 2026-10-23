@@ -229,6 +229,7 @@ impl Headless {
             scale,
             &|_, _, _| None, // no custom renderers registered in the headless path
             &mut std::collections::HashMap::new(),
+            &mut crate::multi_pass::GlassCache::default(),
         );
         let final_scene = Self::at_scale(frame.paint_final(fonts, state, &injected), scale);
         self.render(&final_scene, width, height, base_color)

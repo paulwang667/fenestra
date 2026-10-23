@@ -126,6 +126,22 @@ pub struct FrameState {
     /// Pointer position captured when a pointer-placed overlay opened, so
     /// context menus stay pinned while the mouse moves.
     pub(crate) pointer_pins: std::collections::HashMap<WidgetId, (f32, f32)>,
+    /// Each glass pane's last baked body, so a pane whose blurred backdrop came
+    /// back unchanged — the shell hands back the same image — skips the bake.
+    pub(crate) glass_bakes: HashMap<WidgetId, GlassBake>,
+}
+
+/// A glass pane's cached body: what it was baked from, when it was last used,
+/// and its pixels.
+pub(crate) struct GlassBake {
+    /// Hash of the backdrop image id, rect, tint and sheen it was baked from.
+    pub(crate) key: u64,
+    /// The frame it was last painted in.
+    pub(crate) used: u64,
+    /// The baked RGBA8 pixels, shared with every image handed out for them.
+    pub(crate) pixels: std::sync::Arc<Vec<u8>>,
+    /// The baked image's metadata; its blob is never handed out again.
+    pub(crate) image: peniko::ImageData,
 }
 
 impl Default for FrameState {
@@ -161,6 +177,7 @@ impl Default for FrameState {
             dragging: None,
             ime_caret: None,
             pointer_pins: std::collections::HashMap::new(),
+            glass_bakes: HashMap::new(),
         }
     }
 }

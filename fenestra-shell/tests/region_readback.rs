@@ -10,7 +10,9 @@ use fenestra_core::{
     text,
 };
 use fenestra_shell::vello::{Scene, kurbo::Affine};
-use fenestra_shell::{process_specs, region_scene, with_fonts, with_headless};
+use fenestra_shell::{
+    GlassCache, process_specs, process_specs_in, region_scene, with_fonts, with_headless,
+};
 
 const LOGICAL: (f32, f32) = (480.0, 300.0);
 const SCALE: f64 = 2.0;
@@ -189,4 +191,70 @@ fn the_region_two_pass_render_matches_the_whole_frame_one() {
             "{differing} pixels differ (budget {budget}), worst by {worst}"
         );
     }
+}
+
+/// Stripes and glass only — no image anywhere in the backdrop.
+fn imageless(t: &Theme) -> Element<()> {
+    stack().w_full().h_full().bg(t.bg).children([
+        row().w_full().h_full().children(
+            (0..24_usize)
+                .map(|i| col().w(20.0).h_full().bg(t.accents.step(2 + i % 9)))
+                .collect::<Vec<_>>(),
+        ),
+        pane(t, "glass").top(60.0).left(120.0).w(200.0).h(100.0),
+    ])
+}
+
+/// **The second frame has its glass too.** A live window keeps its frame state
+/// and renderer from frame to frame, so a still pane's baked body comes back
+/// from the cache. vello 0.9 swaps its persistent image atlas for a fresh
+/// texture whenever a render draws no image — which the glass-free backdrop
+/// pass is — while still counting the body as uploaded; a body reused under
+/// its old image id drew from an empty atlas and the pane vanished.
+#[test]
+fn a_still_pane_survives_the_next_frame() {
+    let theme = Theme::dark();
+    let (pw, ph) = physical();
+    // The windowed shell's per-frame sequence, with what it keeps between
+    // frames kept here too: frame state, glass cache and the one renderer.
+    let (first, second) = with_fonts(|fonts| {
+        let mut state = FrameState::new();
+        state.reduced_motion = true;
+        let mut glass = GlassCache::default();
+        let mut render = |state: &mut FrameState, glass: &mut GlassCache| {
+            let frame = build_frame(&imageless(&theme), &theme, fonts, state, LOGICAL, SCALE);
+            let (backdrop, specs) = frame.paint_backdrop(fonts, state);
+            let (rect, shifted) = region_scene(&at_scale(&backdrop), &specs, SCALE, (pw, ph));
+            with_headless(|h| {
+                let part = h
+                    .render(&shifted, rect.2, rect.3, theme.bg)
+                    .expect("backdrop");
+                let injected = process_specs_in(
+                    &part,
+                    (rect.0, rect.1),
+                    (pw, ph),
+                    &specs,
+                    SCALE,
+                    &|_, _, _| None,
+                    &mut Default::default(),
+                    glass,
+                );
+                let final_scene = at_scale(&frame.paint_final(fonts, state, &injected));
+                h.render(&final_scene, pw, ph, theme.bg).expect("final")
+            })
+            .expect("a GPU adapter")
+        };
+        let first = render(&mut state, &mut glass);
+        let second = render(&mut state, &mut glass);
+        (first, second)
+    });
+    let differing = first
+        .pixels()
+        .zip(second.pixels())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(
+        differing < 50,
+        "{differing} pixels changed on a still second frame"
+    );
 }

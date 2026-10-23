@@ -2098,6 +2098,64 @@ fn node_transform(node: &FrameNode) -> Option<kurbo::Affine> {
 ///
 /// Returns `None` when there is nothing to shift (no solid fill, or an empty
 /// image), so the caller keeps the style it had.
+/// [`crate::glass::bake_body`] through the per-pane cache in
+/// [`FrameState::glass_bakes`]: the same backdrop image (by id) under the same
+/// rect, tint and sheen is the same body, so it is baked once.
+///
+/// **The pixels are reused; the image id is not.** vello 0.9 keeps images
+/// resident in an atlas across renders and uploads only new ones — but a
+/// render that draws no image at all (the glass-free backdrop pass usually is
+/// one) swaps the atlas for a fresh, empty texture while the cache still counts
+/// every resident image as uploaded. A body handed back under its old id then
+/// drew from that empty atlas, and a still pane vanished on its second frame.
+/// Each frame gets a new id over the same shared bytes, so it is uploaded
+/// like any new image; what the cache saves is the bake.
+fn bake_cached(
+    state: &mut FrameState,
+    id: WidgetId,
+    image: &peniko::ImageData,
+    rect: Rect,
+    tint: Option<crate::Color>,
+    sheen: Option<&crate::style::Sheen>,
+) -> peniko::ImageData {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    image.data.id().hash(&mut h);
+    [rect.x0, rect.y0, rect.x1, rect.y1]
+        .map(f64::to_bits)
+        .hash(&mut h);
+    tint.map(|c| c.components.map(f32::to_bits)).hash(&mut h);
+    sheen
+        .map(|s| [s.light_deg, s.top, s.bottom].map(f32::to_bits))
+        .hash(&mut h);
+    let key = h.finish();
+    let now = state.frame_no;
+    let fresh = |bake: &crate::frame_state::GlassBake| peniko::ImageData {
+        data: peniko::Blob::new(bake.pixels.clone()),
+        ..bake.image.clone()
+    };
+    if let Some(bake) = state.glass_bakes.get_mut(&id)
+        && bake.key == key
+    {
+        bake.used = now;
+        return fresh(bake);
+    }
+    let body = crate::glass::bake_body(image, rect, tint, sheen, 1.0);
+    let bake = crate::frame_state::GlassBake {
+        key,
+        used: now,
+        pixels: std::sync::Arc::new(body.data.as_ref().to_vec()),
+        image: body,
+    };
+    let out = fresh(&bake);
+    // Panes not painted for a couple of frames have left the view.
+    state
+        .glass_bakes
+        .retain(|_, b| b.used.saturating_add(2) >= now);
+    state.glass_bakes.insert(id, bake);
+    out
+}
+
 fn adapt_fill(
     style: &Style,
     tint: crate::style::AdaptiveTint,
@@ -2494,7 +2552,7 @@ impl Frame {
             // Vibrancy is already in the image: the shell applied it while
             // blurring (`PassKind::BackdropBlur::saturation`), on a field a
             // fraction of this size.
-            let body = crate::glass::bake_body(image, node.rect, tint, style.sheen.as_ref(), 1.0);
+            let body = bake_cached(state, node.id, image, node.rect, tint, style.sheen.as_ref());
             let mut rest = style.clone();
             if tint.is_some() {
                 rest.fill = None;
