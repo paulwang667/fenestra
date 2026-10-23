@@ -128,6 +128,10 @@ struct NodeMeta {
     read_only: bool,
     busy: bool,
     roving: Option<RovingAxis>,
+    /// Whether a press on this element is the element's own: it is
+    /// focusable, has a click / drag handler, is a window control, or is
+    /// selectable text or an input. A window drag region yields to it.
+    takes_press: bool,
 }
 
 /// Scroll geometry of one scrollable container, resolved for this frame.
@@ -410,6 +414,8 @@ struct BuiltNode {
     drag_region: bool,
     /// Window control on a borderless title bar (minimize/close).
     window_control: Option<WindowControl>,
+    /// See [`NodeMeta::takes_press`].
+    takes_press: bool,
     children: Vec<BuiltNode>,
 }
 
@@ -1023,6 +1029,18 @@ fn build<Msg>(
         live: el.live,
         drag_region: el.drag_region,
         window_control: el.window_control,
+        takes_press: el.focusable
+            || el.on_click.is_some()
+            || el.on_double_click.is_some()
+            || el.on_right_click.is_some()
+            || el.on_right_click_at.is_some()
+            || el.on_drag.is_some()
+            || el.on_drag_event.is_some()
+            || el.drag_source.is_some()
+            || el.drag_handle
+            || el.selectable
+            || el.window_control.is_some()
+            || matches!(el.kind, Kind::Input(_)),
         selection: match &el.kind {
             Kind::Input(_) => state.editors.get(&id).map(|editor| {
                 let range = editor.editor.raw_selection().text_range();
@@ -1386,6 +1404,7 @@ impl Realize<'_> {
             read_only: node.read_only,
             busy: node.busy,
             roving: node.roving,
+            takes_press: node.takes_press,
         };
         let frame_node = FrameNode {
             id: node.id,
@@ -3072,11 +3091,11 @@ impl Frame {
             if !overlay.hittable {
                 continue;
             }
-            if Self::walk_drag_region(&overlay.node, point) {
-                return true;
+            if let Some(drag) = Self::walk_drag_region(&overlay.node, point) {
+                return drag;
             }
         }
-        Self::walk_drag_region(&self.root, point)
+        Self::walk_drag_region(&self.root, point).unwrap_or(false)
     }
 
     /// The borderless-title-bar window control containing `point`, if any
@@ -3115,27 +3134,41 @@ impl Frame {
         node.window_control
     }
 
-    fn walk_drag_region(node: &FrameNode, point: Point) -> bool {
+    /// The deepest decision under `point`: `Some(true)` for a drag region,
+    /// `Some(false)` for an element that takes the press itself, `None` when
+    /// nothing under `point` here decides.
+    ///
+    /// **A control in a title bar is a control.** This used to return the
+    /// region's flag whenever no deeper *region* was hit, so a button on a
+    /// borderless title bar — which is not a region — fell through to the bar
+    /// and every press on it dragged the window. The deepest element that
+    /// either drags or takes presses now decides, topmost sibling first, as
+    /// the hit chain does.
+    fn walk_drag_region(node: &FrameNode, point: Point) -> Option<bool> {
         if node.style.display == Display::None {
-            return false;
+            return None;
         }
         // `visible: None` means unclipped — only reject on a clip miss.
         if let Some(v) = node.visible
             && !v.contains(point)
         {
-            return false;
+            return None;
         }
         if !node.rect.contains(point) {
-            return false;
+            return None;
         }
-        // Deepest interactive child wins over an ancestor region (a button
-        // inside a title bar must not drag the window).
-        for child in &node.children {
-            if Self::walk_drag_region(child, point) {
-                return true;
+        for child in node.children.iter().rev() {
+            if let Some(drag) = Self::walk_drag_region(child, point) {
+                return Some(drag);
             }
         }
-        node.drag_region
+        if node.drag_region {
+            Some(true)
+        } else if node.meta.takes_press {
+            Some(false)
+        } else {
+            None
+        }
     }
 
     pub fn hit_chain(&self, point: Point) -> Vec<WidgetId> {
