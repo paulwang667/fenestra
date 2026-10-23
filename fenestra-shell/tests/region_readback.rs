@@ -147,7 +147,12 @@ fn a_shifted_region_render_is_the_whole_render_cropped() {
 ///
 /// Not byte-for-byte: the GPU rasterizer is not bit-stable run to run — the
 /// whole-frame path compared with itself differs in a handful of pixels by a
-/// level — so this holds the two to that jitter, and no further.
+/// level — so this holds the two to that jitter, and no further. The guard
+/// is the size of the difference: a region read back from the wrong place
+/// moves a blurred edge by tens of levels, while jitter stays within one or
+/// two. How many pixels jitter is not: it grows with how busy the GPU is (a
+/// few under a lone run, some 700 beside the rest of the suite), so the count
+/// is held only to a loose 1%.
 #[test]
 fn the_region_two_pass_render_matches_the_whole_frame_one() {
     for theme in [Theme::light(), Theme::dark()] {
@@ -185,7 +190,7 @@ fn the_region_two_pass_render_matches_the_whole_frame_one() {
             differing += usize::from(d > 0);
             worst = worst.max(d);
         }
-        let budget = (pw * ph) as usize / 2000; // 0.05%
+        let budget = (pw * ph) as usize / 100; // 1%
         assert!(
             worst <= 2 && differing <= budget,
             "{differing} pixels differ (budget {budget}), worst by {worst}"
