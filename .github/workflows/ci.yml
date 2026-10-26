@@ -108,6 +108,33 @@ jobs:
           FENESTRA_SNAPSHOT_BUDGET: "0.010"
         run: cargo test --workspace
 
+  check-mobile:
+    # Compile-only: there is no device or emulator here, so this guards the
+    # cfg gating (a macOS-only dependency used outside `cfg(target_os =
+    # "macos")` broke every non-macOS target once), not runtime behaviour.
+    # Libraries only; tests and examples assume a desktop host.
+    name: check (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The Ubuntu image ships the Android NDK (ANDROID_NDK_HOME).
+          - target: aarch64-linux-android
+            os: ubuntu-latest
+          - target: aarch64-apple-ios
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo check --workspace --target ${{ matrix.target }}
+
   test-windows:
     # GPU-less Windows runners only have DX12 WARP, whose software
     # rasterizer crashes nondeterministically (STATUS_ACCESS_VIOLATION)

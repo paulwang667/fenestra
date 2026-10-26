@@ -4,9 +4,11 @@
 //! Android has no arboard backend: fall back to the in-memory clipboard so
 //! in-app copy/paste still works (system-clipboard bridge is a no-op).
 
+#[cfg(not(target_os = "android"))]
+use fenestra_core::ClipImage;
+use fenestra_core::Clipboard;
 #[cfg(target_os = "android")]
 use fenestra_core::MemoryClipboard;
-use fenestra_core::{ClipImage, Clipboard};
 
 #[cfg(target_os = "android")]
 #[derive(Default)]

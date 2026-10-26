@@ -1333,6 +1333,8 @@ where
         let cmd = runner.app.init_cmd();
         runner.run_cmd(cmd);
         runner.reconcile_subs();
+        // muda is a macOS-only dependency (Cargo.toml), so this block is too.
+        #[cfg(target_os = "macos")]
         {
             let menu_proxy = event_loop.create_proxy();
             muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
