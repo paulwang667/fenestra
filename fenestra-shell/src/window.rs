@@ -442,6 +442,20 @@ fn needs_new_target(current: Option<(u32, u32)>, surface: (u32, u32)) -> bool {
     current != Some(surface)
 }
 
+/// Whether a clean frame is presented again from the raster target instead
+/// of repainted: nothing changed since it was rendered for `rendered` (the
+/// logical size and scale), and the target still holds it at the
+/// surface's size (a renderer rebuilt for a new device has no target).
+fn reuses_raster_frame(
+    dirty: bool,
+    rendered: Option<(f64, f64, f64)>,
+    now: (f64, f64, f64),
+    target: Option<(u32, u32)>,
+    surface: (u32, u32),
+) -> bool {
+    !dirty && rendered == Some(now) && !needs_new_target(target, surface)
+}
+
 /// The handoff slot for the web's async surface creation: the setup result,
 /// carrying the error when WebGPU is unavailable.
 #[cfg(target_arch = "wasm32")]
@@ -1152,6 +1166,16 @@ impl WindowShell {
     /// Whether this window draws through the raster backend.
     fn uses_raster(&self) -> bool {
         self.raster.is_some()
+    }
+
+    /// The raster target's size (if built) and the surface's, while a
+    /// surface is active.
+    fn raster_sizes(&self) -> Option<(Option<(u32, u32)>, (u32, u32))> {
+        let RenderState::Active { surface, .. } = &self.state else {
+            return None;
+        };
+        let target = self.raster.as_ref()?.target.as_ref().map(|t| t.size);
+        Some((target, (surface.config.width, surface.config.height)))
     }
 
     /// The active surface's size in physical pixels.
@@ -2093,7 +2117,15 @@ impl<A: App> AppRunner<A> {
         };
         // Clean frame at the same size: present the last frame again and
         // skip build/layout/paint entirely (expose/un-occlude redraws).
-        if !self.dirty && self.shell.uses_raster() && self.raster_key == Some((lw, lh, scale)) {
+        if self.shell.raster_sizes().is_some_and(|(target, surface)| {
+            reuses_raster_frame(
+                self.dirty,
+                self.raster_key,
+                (lw, lh, scale),
+                target,
+                surface,
+            )
+        }) {
             if let Err(e) = self.shell.raster_present() {
                 self.shell.fail(event_loop, e);
             }
@@ -3524,7 +3556,7 @@ mod tests {
 
 #[cfg(test)]
 mod raster_target_tests {
-    use super::needs_new_target;
+    use super::{needs_new_target, reuses_raster_frame};
 
     /// The raster target follows the surface: built on first use, rebuilt
     /// when a resize or rotation changes its size, kept otherwise.
@@ -3533,6 +3565,24 @@ mod raster_target_tests {
         assert!(needs_new_target(None, (800, 600)));
         assert!(!needs_new_target(Some((800, 600)), (800, 600)));
         assert!(needs_new_target(Some((800, 600)), (600, 800)));
+    }
+
+    /// A clean frame is presented again only while the target still holds
+    /// it: after a device change the new renderer has no target yet.
+    #[test]
+    fn a_clean_frame_is_reused_only_from_a_kept_target() {
+        let key = (400.0, 300.0, 2.0);
+        let (target, surface) = (Some((800, 600)), (800, 600));
+        assert!(reuses_raster_frame(false, Some(key), key, target, surface));
+        assert!(!reuses_raster_frame(false, Some(key), key, None, surface));
+        assert!(!reuses_raster_frame(true, Some(key), key, target, surface));
+        assert!(!reuses_raster_frame(
+            false,
+            Some(key),
+            (300.0, 400.0, 2.0),
+            target,
+            surface
+        ));
     }
 }
 
