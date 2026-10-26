@@ -206,10 +206,7 @@ pub(crate) mod recorder {
 
     /// One recorded op; every transform already includes the stack.
     #[derive(Clone, Debug)]
-    #[allow(
-        dead_code,
-        reason = "fields are read selectively by tests and in Debug output"
-    )]
+    #[expect(dead_code, reason = "`bbox` is only read through Debug output")]
     pub(crate) enum Op {
         Fill {
             transform: Affine,
@@ -420,6 +417,12 @@ mod tests {
     /// A container rotated 30° holding a shadowed half-opacity card, an image,
     /// synthesized italic text, and an input field.
     fn rotated_fixture() -> (Frame, Fonts, FrameState) {
+        rotated_fixture_with(|_, _| {})
+    }
+
+    /// [`rotated_fixture`], built a second time after `setup` (e.g. focus)
+    /// has run on the first build.
+    fn rotated_fixture_with(setup: impl Fn(&Frame, &mut FrameState)) -> (Frame, Fonts, FrameState) {
         let root = col::<()>().w(300.0).h(400.0).rotate(30.0).children([
             col::<()>()
                 .w(200.0)
@@ -434,14 +437,19 @@ mod tests {
         ]);
         let mut fonts = Fonts::embedded();
         let mut state = FrameState::new();
-        let frame = build_frame(
-            &root,
-            &Theme::light(),
-            &mut fonts,
-            &mut state,
-            (400.0, 500.0),
-            1.0,
-        );
+        let mut build = |state: &mut FrameState| {
+            build_frame(
+                &root,
+                &Theme::light(),
+                &mut fonts,
+                state,
+                (400.0, 500.0),
+                1.0,
+            )
+        };
+        let first = build(&mut state);
+        setup(&first, &mut state);
+        let frame = build(&mut state);
         (frame, fonts, state)
     }
 
@@ -548,6 +556,9 @@ mod tests {
             .iter()
             .position(|o| matches!(o, Op::PushLayer { alpha, .. } if *alpha < 1.0))
             .expect("the ghost fades in a layer");
+        // The fade layer clips in screen space: it is pushed before the
+        // ghost's scale, so the scale must not reach its clip.
+        assert_eq!(r.ops[layer].transform(), Some(Affine::IDENTITY));
         let scaled = r.ops[layer + 1..]
             .iter()
             .find_map(Op::transform)
@@ -557,5 +568,64 @@ mod tests {
             "mid-exit scale between 1 and 0.5"
         );
         assert_eq!(r.depth(), 0);
+    }
+
+    /// The focused field's caret paints inside the field's clip and turns
+    /// with its rotated container, like the rest of the field.
+    #[test]
+    fn a_focused_fields_caret_turns_with_its_node() {
+        let (frame, mut fonts, mut state) = rotated_fixture();
+        let mut unfocused = Recorder::default();
+        frame.paint_into(&mut unfocused, &mut fonts, &mut state);
+        let (frame, mut fonts, mut state) = rotated_fixture_with(|frame, state| {
+            state.set_focus(Some(frame.get(&crate::by::id("field")).id));
+        });
+        let mut focused = Recorder::default();
+        frame.paint_into(&mut focused, &mut fonts, &mut state);
+        let fills = |r: &Recorder| {
+            r.ops
+                .iter()
+                .filter(|o| matches!(o, Op::Fill { .. }))
+                .count()
+        };
+        assert!(fills(&focused) > fills(&unfocused), "the caret paints");
+        for op in &focused.ops {
+            if let Some(t) = op.transform() {
+                assert!((angle_deg(t) - 30.0).abs() < 1e-3, "{op:?} not rotated");
+            }
+        }
+        assert!(state.ime_caret().is_some());
+    }
+
+    /// A transformed node that is `display: none` paints nothing and leaves
+    /// no transform behind for its siblings.
+    #[test]
+    fn a_hidden_transformed_node_leaves_its_siblings_untransformed() {
+        let mut hidden = div::<()>().w(50.0).h(50.0).bg(Color::BLACK).rotate(30.0);
+        hidden.style.display = crate::style::Display::None;
+        let root = col::<()>()
+            .w(200.0)
+            .h(200.0)
+            .children([hidden, div::<()>().w(50.0).h(50.0).bg(Color::WHITE)]);
+        let mut fonts = Fonts::embedded();
+        let mut state = FrameState::new();
+        let frame = build_frame(
+            &root,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (200.0, 200.0),
+            1.0,
+        );
+        let mut r = Recorder::default();
+        frame.paint_into(&mut r, &mut fonts, &mut state);
+        assert_eq!(r.depth(), 0);
+        let fills: Vec<_> = r
+            .ops
+            .iter()
+            .filter(|o| matches!(o, Op::Fill { .. }))
+            .collect();
+        assert_eq!(fills.len(), 1, "only the visible sibling paints");
+        assert_eq!(angle_deg(fills[0].transform().unwrap()), 0.0);
     }
 }
