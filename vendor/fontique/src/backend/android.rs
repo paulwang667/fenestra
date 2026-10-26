@@ -161,12 +161,11 @@ impl SystemFonts {
                                                     {
                                                         // Also fallback for the script on its own
                                                         script_fallback.push((scr, *family));
-                                                        if Script::from_bytes(*b"Hant") == scr {
-                                                            // This works around ambiguous han char­
-                                                            // acters going unmapped with current
-                                                            // fallback code. This should be done in
-                                                            // a locale-dependent manner, since that
-                                                            // is the norm.
+                                                        if Script::from_bytes(*b"Hans") == scr {
+                                                            // Han text with no locale (or one
+                                                            // fonts.xml lacks) takes the face for
+                                                            // `FallbackKey`'s default Han locale,
+                                                            // zh-CN.
                                                             script_fallback.push((
                                                                 Script::from_bytes(*b"Hani"),
                                                                 *family,
@@ -218,7 +217,11 @@ impl SystemFonts {
             .and_then(|locale| {
                 self.locale_fallback
                     .iter()
-                    .find(|(other, _)| locale == *other)
+                    // Compare in `FallbackKey`'s canonical form: the key
+                    // holds zh-CN for zh-Hans, zh-TW for zh-Hant, and so on.
+                    .find(|(other, _)| {
+                        FallbackKey::new(script, Some(other)).locale() == Some(locale)
+                    })
                     .map(|(_, fid)| *fid)
             })
             .or_else(|| {
