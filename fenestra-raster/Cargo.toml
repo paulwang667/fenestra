@@ -1,0 +1,26 @@
+[package]
+name = "fenestra-raster"
+description = "A conventional GPU rasterizer (tessellated triangles, MSAA, stencil clips, glyph atlas) for fenestra's DrawTarget"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fenestra-core.workspace = true
+wgpu.workspace = true
+kurbo.workspace = true
+peniko.workspace = true
+lyon_tessellation.workspace = true
+bytemuck.workspace = true
+
+[dev-dependencies]
+vello.workspace = true
+pollster.workspace = true
+image.workspace = true
