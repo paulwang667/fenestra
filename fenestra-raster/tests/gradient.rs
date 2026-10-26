@@ -163,3 +163,33 @@ fn the_sweep_seam_is_exact_far_from_the_centre() {
         );
     }
 }
+
+/// Two fills share one set of stops; a third has its own.
+struct SharedStops;
+impl Paint for SharedStops {
+    fn paint<T: DrawTarget>(&self, t: &mut T) {
+        let a = Gradient::new_linear((0.0, 0.0), (100.0, 0.0)).with_stops(stops());
+        let b = Gradient::new_radial((150.0, 50.0), 40.0).with_stops(stops());
+        let c = Gradient::new_linear((0.0, 0.0), (0.0, 100.0)).with_stops([
+            ColorStop::from((0.0, Color::BLACK)),
+            ColorStop::from((1.0, Color::WHITE)),
+        ]);
+        for (g, x) in [(&a, 0.0), (&b, 100.0), (&c, 200.0)] {
+            t.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                g,
+                None,
+                &Rect::new(x, 0.0, x + 100.0, 100.0),
+            );
+        }
+    }
+}
+
+#[test]
+fn a_ramp_is_built_once_per_set_of_stops() {
+    let mut r = support::renderer();
+    let (_, first) = support::render_raster(&mut r, &SharedStops, (300, 100));
+    let (_, second) = support::render_raster(&mut r, &SharedStops, (300, 100));
+    assert_eq!((first.ramps_built, second.ramps_built), (2, 0));
+}

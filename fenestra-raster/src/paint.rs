@@ -24,6 +24,8 @@ const KIND_SWEEP: f32 = 3.0;
 type Ramp = Vec<[u8; 4]>;
 
 struct Row {
+    /// What the ramp is built from: [`stops_key`].
+    key: Vec<u32>,
     ramp: Ramp,
     last_used: u64,
 }
@@ -36,6 +38,8 @@ pub(crate) struct Ramps {
     texture: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// Rows changed since the last upload.
     dirty: bool,
+    /// Ramps built this frame.
+    pub built: u32,
 }
 
 /// vello_encoding 0.9.0 `ramp_cache.rs` `make_ramp` (MIT OR Apache-2.0):
@@ -74,6 +78,18 @@ fn make_ramp(stops: &[ColorStop]) -> Ramp {
         .collect()
 }
 
+/// `stops` as bits (offsets and sRGB components), to find a ramp built
+/// before without building it again.
+fn stops_key(stops: &[ColorStop]) -> Vec<u32> {
+    stops
+        .iter()
+        .flat_map(|s| {
+            let c = s.color.to_alpha_color::<Srgb>().components;
+            [s.offset, c[0], c[1], c[2], c[3]].map(f32::to_bits)
+        })
+        .collect()
+}
+
 fn extend_code(extend: Extend) -> f32 {
     match extend {
         Extend::Pad => 0.0,
@@ -100,6 +116,7 @@ impl Ramps {
     /// use are dropped (row numbers are only meaningful within a frame).
     pub fn begin_frame(&mut self) {
         self.frame += 1;
+        self.built = 0;
         if self.rows.len() > RETAINED_ROWS {
             let last = self.frame - 1;
             self.rows.retain(|r| r.last_used == last);
@@ -112,15 +129,18 @@ impl Ramps {
         self.rows.len()
     }
 
-    /// The row holding `ramp`, adding it if new.
-    fn row(&mut self, ramp: Ramp) -> usize {
+    /// The row holding the ramp of `stops`, building it if new.
+    fn row(&mut self, stops: &[ColorStop]) -> usize {
         let frame = self.frame;
-        if let Some(i) = self.rows.iter().position(|r| r.ramp == ramp) {
+        let key = stops_key(stops);
+        if let Some(i) = self.rows.iter().position(|r| r.key == key) {
             self.rows[i].last_used = frame;
             return i;
         }
+        self.built += 1;
         self.rows.push(Row {
-            ramp,
+            key,
+            ramp: make_ramp(stops),
             last_used: frame,
         });
         self.dirty = true;
@@ -185,7 +205,7 @@ impl Ramps {
                 return Some(solid(g.stops[0].color.to_alpha_color::<Srgb>()));
             }
         };
-        let row = self.row(make_ramp(&g.stops));
+        let row = self.row(&g.stops);
         #[expect(clippy::cast_precision_loss, reason = "row numbers are small")]
         Some(PaintParams {
             color: [1.0; 4],

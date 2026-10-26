@@ -45,6 +45,8 @@ pub struct RenderStats {
     pub images_uploaded: u32,
     /// Glyphs rasterized into the atlas (not found in it).
     pub glyphs_rasterized: u32,
+    /// Gradient ramps built (not found among the rows held).
+    pub ramps_built: u32,
 }
 
 /// What the renderer keeps between frames.
@@ -403,6 +405,7 @@ impl RasterFrame<'_> {
         if renderer.root.as_ref().is_none_or(|a| a.size != size) {
             renderer.root = Some(Attachments::new(device, renderer.format, size));
         }
+        stats.ramps_built = renderer.ramps.built;
         let ramps = renderer.ramps.upload(device, queue);
         renderer.atlas.upload(device, queue);
         stats.glyphs_rasterized = renderer.atlas.rasterized;
