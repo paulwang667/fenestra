@@ -2249,9 +2249,24 @@ impl Frame {
         fonts: &mut Fonts,
         state: &mut FrameState,
     ) -> (Scene, Vec<MultiPassSpec>) {
-        let mut specs = Vec::new();
-        let scene = self.paint_with(fonts, state, &mut PaintMode::Backdrop(&mut specs));
+        let mut scene = Scene::new();
+        let mut target = SceneTarget::new(&mut scene);
+        let specs = self.paint_backdrop_into(&mut target, fonts, state);
+        target.finish();
         (scene, specs)
+    }
+
+    /// [`paint_backdrop`](Self::paint_backdrop) into any [`DrawTarget`]:
+    /// every filtered subtree skipped, its spec returned.
+    pub fn paint_backdrop_into<T: DrawTarget>(
+        &self,
+        target: &mut T,
+        fonts: &mut Fonts,
+        state: &mut FrameState,
+    ) -> Vec<MultiPassSpec> {
+        let mut specs = Vec::new();
+        self.paint_walk(target, fonts, state, &mut PaintMode::Backdrop(&mut specs));
+        specs
     }
 
     /// The second backdrop-blur pass: the composited scene, with each filtered
@@ -2266,7 +2281,23 @@ impl Frame {
         state: &mut FrameState,
         injected: &std::collections::HashMap<WidgetId, peniko::ImageData>,
     ) -> Scene {
-        self.paint_with(fonts, state, &mut PaintMode::Final(injected))
+        let mut scene = Scene::new();
+        let mut target = SceneTarget::new(&mut scene);
+        self.paint_final_into(&mut target, fonts, state, injected);
+        target.finish();
+        scene
+    }
+
+    /// [`paint_final`](Self::paint_final) into any [`DrawTarget`],
+    /// compositing each injected image in place of its node.
+    pub fn paint_final_into<T: DrawTarget>(
+        &self,
+        target: &mut T,
+        fonts: &mut Fonts,
+        state: &mut FrameState,
+        injected: &std::collections::HashMap<WidgetId, peniko::ImageData>,
+    ) {
+        self.paint_walk(target, fonts, state, &mut PaintMode::Final(injected));
     }
 
     /// The frame's device scale factor (logical → physical). The shell uses it
@@ -2279,20 +2310,6 @@ impl Frame {
     /// The root, overlays, and exit ghosts are painted identically in every
     /// mode; only filtered nodes (glass / `element_filter`) read `mode`, so a
     /// frame with none renders byte-for-byte the same in all three.
-    fn paint_with(
-        &self,
-        fonts: &mut Fonts,
-        state: &mut FrameState,
-        mode: &mut PaintMode<'_>,
-    ) -> Scene {
-        let mut scene = Scene::new();
-        let mut target = SceneTarget::new(&mut scene);
-        self.paint_walk(&mut target, fonts, state, mode);
-        target.finish();
-        scene
-    }
-
-    /// The body of [`Self::paint_with`], generic over the target.
     fn paint_walk<T: DrawTarget>(
         &self,
         target: &mut T,

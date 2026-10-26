@@ -77,7 +77,7 @@ pub enum PassKind {
     },
 }
 
-/// How [`Frame::paint_with`](crate::Frame) threads the multi-pass plan through
+/// How the frame's paint walk threads the multi-pass plan through
 /// one tree walk. The non-glass, non-filtered walk is identical in all three
 /// modes, so a frame with no filtered node renders byte-for-byte as it always
 /// has.

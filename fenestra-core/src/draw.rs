@@ -641,4 +641,64 @@ mod tests {
         assert_eq!(fills.len(), 1, "only the visible sibling paints");
         assert_eq!(angle_deg(fills[0].transform().unwrap()), 0.0);
     }
+
+    /// A glass card over a plain one, both painted in red.
+    fn glass_fixture() -> (Frame, Fonts, FrameState) {
+        let root = col::<()>().w(200.0).h(200.0).children([
+            div::<()>()
+                .id("glass")
+                .w(100.0)
+                .h(40.0)
+                .bg(Color::from_rgb8(255, 0, 0))
+                .backdrop_blur(12.0),
+            div::<()>().w(100.0).h(40.0).bg(Color::from_rgb8(255, 0, 0)),
+        ]);
+        let mut fonts = Fonts::embedded();
+        let mut state = FrameState::new();
+        let frame = build_frame(
+            &root,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (200.0, 200.0),
+            1.0,
+        );
+        (frame, fonts, state)
+    }
+
+    #[test]
+    fn backdrop_into_skips_glass_and_reports_it() {
+        let (frame, mut fonts, mut state) = glass_fixture();
+        let mut r = Recorder::default();
+        let specs = frame.paint_backdrop_into(&mut r, &mut fonts, &mut state);
+        assert_eq!(specs.len(), 1);
+        assert!(matches!(
+            specs[0].kind,
+            crate::PassKind::BackdropBlur { .. }
+        ));
+        let fills = r
+            .ops
+            .iter()
+            .filter(|o| matches!(o, Op::Fill { .. }))
+            .count();
+        // Only the plain card paints; the glass subtree is left for pass two.
+        assert_eq!(fills, 1);
+    }
+
+    #[test]
+    fn final_into_draws_the_injected_image() {
+        let (frame, mut fonts, mut state) = glass_fixture();
+        let glass = frame.get(&crate::by::id("glass")).id;
+        let image = peniko::ImageData {
+            data: peniko::Blob::from(vec![255u8; 64]),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: 4,
+            height: 4,
+        };
+        let injected = std::collections::HashMap::from([(glass, image)]);
+        let mut r = Recorder::default();
+        frame.paint_final_into(&mut r, &mut fonts, &mut state, &injected);
+        assert!(r.ops.iter().any(|o| matches!(o, Op::Image { .. })));
+    }
 }
