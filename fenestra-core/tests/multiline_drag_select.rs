@@ -5,7 +5,10 @@
 //! first line to the last selected along one line only, and a click on any line put the caret on
 //! the middle one.
 
-use fenestra_core::{Element, Fonts, FrameState, InputEvent, Key, KeyInput, Theme, build_frame, col, dispatch, raw_text_area};
+use fenestra_core::{
+    Element, Fonts, FrameState, InputEvent, Key, KeyInput, Theme, build_frame, col, dispatch,
+    raw_text_area,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Msg {
@@ -28,7 +31,10 @@ fn delete_dragged(value: &str, from: (f32, f32), to: (f32, f32)) -> Option<Strin
     let v = area(value);
     let mut changed = None;
     for event in [
-        InputEvent::PointerMove { x: from.0, y: from.1 },
+        InputEvent::PointerMove {
+            x: from.0,
+            y: from.1,
+        },
         InputEvent::PointerDown,
         InputEvent::PointerMove { x: to.0, y: to.1 },
         InputEvent::PointerUp,
@@ -47,12 +53,20 @@ fn delete_dragged(value: &str, from: (f32, f32), to: (f32, f32)) -> Option<Strin
 #[test]
 fn a_drag_from_the_first_line_to_the_last_selects_all_three() {
     let left = delete_dragged("one\ntwo\nthree", (3.0, 6.0), (199.0, 88.0));
-    assert_eq!(left.as_deref(), Some(""), "the drag did not select across the lines");
+    assert_eq!(
+        left.as_deref(),
+        Some(""),
+        "the drag did not select across the lines"
+    );
 }
 
 #[test]
 fn a_press_on_the_first_line_puts_the_caret_there() {
     // A press at the start of the first line and a drag to its end selects "one".
     let left = delete_dragged("one\ntwo\nthree", (3.0, 6.0), (199.0, 6.0));
-    assert_eq!(left.as_deref(), Some("\ntwo\nthree"), "the press did not land on the first line");
+    assert_eq!(
+        left.as_deref(),
+        Some("\ntwo\nthree"),
+        "the press did not land on the first line"
+    );
 }

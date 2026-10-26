@@ -88,10 +88,17 @@ impl App for Popover {
 }
 
 fn opened() -> Harness<Popover> {
-    let mut h = Harness::new(Popover::default(), fenestra_core::Theme::light(), (480, 240));
+    let mut h = Harness::new(
+        Popover::default(),
+        fenestra_core::Theme::light(),
+        (480, 240),
+    );
     h.click(&by::id("anchor"));
     assert!(h.app().open, "the anchor did not open it");
-    assert!(h.query(&by::id("panel")).is_some(), "the panel is not drawn");
+    assert!(
+        h.query(&by::id("panel")).is_some(),
+        "the panel is not drawn"
+    );
     h
 }
 
@@ -101,7 +108,11 @@ fn a_press_outside_closes_it_and_goes_no_further() {
     h.click(&by::id("elsewhere"));
     assert_eq!(h.app().closed, 1, "a press outside did not emit on_close");
     assert!(!h.app().open, "it is still open");
-    assert_eq!(h.app().elsewhere, 0, "the press that closed it also pressed what was under it");
+    assert_eq!(
+        h.app().elsewhere,
+        0,
+        "the press that closed it also pressed what was under it"
+    );
 }
 
 #[test]
@@ -116,6 +127,10 @@ fn a_press_inside_does_not_close_it() {
 fn a_press_on_its_anchor_is_the_anchors_own() {
     let mut h = opened();
     h.click(&by::id("anchor"));
-    assert_eq!(h.app().closed, 0, "the anchor's press also emitted on_close");
+    assert_eq!(
+        h.app().closed,
+        0,
+        "the anchor's press also emitted on_close"
+    );
     assert!(!h.app().open, "the anchor's own toggle did not close it");
 }

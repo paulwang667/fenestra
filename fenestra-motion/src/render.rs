@@ -153,9 +153,9 @@ impl Composition {
         // `self.background` again here would composite it a second time,
         // darkening/increasing the opacity of any non-opaque background.
         let mut img = FONTS.with_borrow_mut(|table| {
-        for (role, data) in fonts {
-            table.register(*role, data.clone());
-        }
+            for (role, data) in fonts {
+                table.register(*role, data.clone());
+            }
             let mut state = FrameState::new();
             state.reduced_motion = true;
             render_element_over(

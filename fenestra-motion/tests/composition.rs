@@ -184,17 +184,16 @@ fn the_anchor_pivots_about_the_content_box_not_the_margin_box() {
             .element(|| div().mb(100.0).w(40.0).h(200.0))
             .animate(Prop::ScaleXY, Track::new([key(0, (1.0f32, 0.5f32))])),
     );
-    let bar = comp
-        .sample(Frames(0))
-        .resolve("bar")
-        .unwrap()
-        .bbox
-        .unwrap();
+    let bar = comp.sample(Frames(0)).resolve("bar").unwrap().bbox.unwrap();
     // The content's box is 40x200 with its bottom 100px above the canvas
     // bottom. Scaled to half height about its own bottom-left, the height
     // halves and the bottom stays put.
     assert!((bar.width() - 40.0).abs() < 1.0, "width {}", bar.width());
-    assert!((bar.height() - 100.0).abs() < 1.0, "height {}", bar.height());
+    assert!(
+        (bar.height() - 100.0).abs() < 1.0,
+        "height {}",
+        bar.height()
+    );
     assert!((bar.y1 - 300.0).abs() < 1.0, "bottom {} (want 300)", bar.y1);
     assert!((bar.y0 - 200.0).abs() < 1.0, "top {} (want 200)", bar.y0);
 }
@@ -241,13 +240,10 @@ fn a_composition_reports_a_clip_span_and_its_keyframes() {
     // diamonds on the property rows, so it asks the composition.
     use fenestra_motion::{Clip, Composition, EASE_CRISP, Frames, Prop, key};
 
-    let composition = Composition::new(1920, 1080, 30).clip(
-        Clip::new("title", 0u64..90)
-            .animate(
-                Prop::Opacity,
-                fenestra_motion::Track::new([key(0, 0.0f32).ease(EASE_CRISP), key(24, 1.0f32)]),
-            ),
-    );
+    let composition = Composition::new(1920, 1080, 30).clip(Clip::new("title", 0u64..90).animate(
+        Prop::Opacity,
+        fenestra_motion::Track::new([key(0, 0.0f32).ease(EASE_CRISP), key(24, 1.0f32)]),
+    ));
 
     let info = composition.clip_info("title").expect("知道这条片段");
     assert_eq!((info.start, info.end), (0, 90), "片段的区间");
@@ -255,6 +251,9 @@ fn a_composition_reports_a_clip_span_and_its_keyframes() {
     assert_eq!(info.keyframes[0].0, Prop::Opacity);
     assert_eq!(info.keyframes[0].1, vec![0, 24], "关键帧的帧号");
 
-    assert!(composition.clip_info("nope").is_none(), "没有的片段就是没有");
+    assert!(
+        composition.clip_info("nope").is_none(),
+        "没有的片段就是没有"
+    );
     let _ = Frames(0);
 }

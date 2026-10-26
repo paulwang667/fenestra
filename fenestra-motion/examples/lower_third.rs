@@ -18,7 +18,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let dir = std::path::Path::new("target/motion-demos/lower_third");
     comp.render_png_sequence(0..comp.total_frames().0, dir)?;
-    comp.contact_sheet(24, 240, &[])?.save(dir.join("sheet.png"))?;
+    comp.contact_sheet(24, 240, &[])?
+        .save(dir.join("sheet.png"))?;
 
     println!(
         "wrote {} straight-alpha frames + sheet.png to {}",

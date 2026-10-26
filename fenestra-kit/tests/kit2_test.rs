@@ -299,7 +299,10 @@ fn split_pane_press_on_a_pane_does_not_move_the_divider() {
     for x in [50.0, 350.0] {
         h.input(fenestra_core::InputEvent::PointerMove { x, y: 150.0 });
         h.input(fenestra_core::InputEvent::PointerDown);
-        h.input(fenestra_core::InputEvent::PointerMove { x: x + 10.0, y: 150.0 });
+        h.input(fenestra_core::InputEvent::PointerMove {
+            x: x + 10.0,
+            y: 150.0,
+        });
         h.input(fenestra_core::InputEvent::PointerUp);
         assert!(
             (h.app().fraction - 0.5).abs() < f32::EPSILON,

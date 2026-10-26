@@ -18,7 +18,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let dir = std::path::Path::new("target/motion-demos/chart_race");
     std::fs::create_dir_all(dir)?;
-    comp.contact_sheet(15, 240, &[])?.save(dir.join("sheet.png"))?;
+    comp.contact_sheet(15, 240, &[])?
+        .save(dir.join("sheet.png"))?;
     println!(
         "{first} leads at the start; {last} takes it. sheet.png in {}",
         dir.display()

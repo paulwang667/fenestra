@@ -23,9 +23,7 @@ fn sheet() -> Composition {
     Composition::new(320, 180, 30)
         .duration(Frames(12))
         .background(Color::new([0.1, 0.1, 0.12, 1.0]))
-        .clip(
-            Clip::new("title", 0..12).element(|| text("前三季度用户增长")),
-        )
+        .clip(Clip::new("title", 0..12).element(|| text("前三季度用户增长")))
 }
 
 #[test]

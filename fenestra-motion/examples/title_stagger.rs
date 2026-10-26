@@ -16,7 +16,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let dir = std::path::Path::new("target/motion-demos/title_stagger");
     std::fs::create_dir_all(dir)?;
-    comp.contact_sheet(10, 240, &[])?.save(dir.join("sheet.png"))?;
+    comp.contact_sheet(10, 240, &[])?
+        .save(dir.join("sheet.png"))?;
     for frame in [4u64, 12, 24, 60] {
         comp.render_frame_png(Frames(frame), dir.join(format!("f{frame:05}.png")))?;
     }

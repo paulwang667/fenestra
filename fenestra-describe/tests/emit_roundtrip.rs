@@ -109,14 +109,12 @@ fn literal_styled_documents_round_trip_pixel_identically() {
 fn a_paint_time_scale_round_trips_without_warnings() {
     let theme = Theme::light();
     let view = || -> fenestra_core::Element<()> {
-        col().p(12.0).w(200.0).h(120.0).children((
-            div()
-                .w(80.0)
-                .h(40.0)
-                .rounded(4.0)
-                .bg(fenestra_core::oklch(0.7, 0.1, 60.0))
-                .scale_xy(1.3, 0.75),
-        ))
+        col().p(12.0).w(200.0).h(120.0).children((div()
+            .w(80.0)
+            .h(40.0)
+            .rounded(4.0)
+            .bg(fenestra_core::oklch(0.7, 0.1, 60.0))
+            .scale_xy(1.3, 0.75),))
     };
     let (node, warnings) = emit_element(&view());
     assert!(
