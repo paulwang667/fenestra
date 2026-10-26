@@ -291,12 +291,16 @@ impl FrameState {
     /// The focused text field as a platform IME sees it, for runners whose
     /// IME mirrors the field (Android); `None` without a focused field.
     pub fn ime_text_state(&self) -> Option<crate::events::ImeTextState> {
-        let editor = &self.editors.get(&self.focus?)?.editor;
+        let focus = self.focus?;
+        let field = self.editors.get(&focus)?;
+        let editor = &field.editor;
         let selection = editor.raw_selection().text_range();
         Some(crate::events::ImeTextState {
             text: editor.raw_text().to_owned(),
             selection: (selection.start, selection.end),
             compose: editor.raw_compose().as_ref().map(|c| (c.start, c.end)),
+            field: Some(focus),
+            masked: field.masked,
         })
     }
 

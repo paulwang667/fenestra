@@ -95,6 +95,23 @@ pub(crate) fn touch_pointer(
     Some((at, events))
 }
 
+/// How far a finger may travel (logical px) and still count as a tap.
+#[cfg(any(target_os = "android", test))]
+const TAP_SLOP: f64 = 10.0;
+
+/// Whether a finger that went down at `down` and lifted at `up` tapped the
+/// focused field — the one gesture that brings back a soft keyboard the user
+/// dismissed. A scroll, or a tap anywhere else, leaves it down.
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn tap_on_focus(
+    frame: &fenestra_core::Frame,
+    focus: Option<fenestra_core::WidgetId>,
+    down: Point,
+    up: Point,
+) -> bool {
+    focus.is_some_and(|f| down.distance(up) <= TAP_SLOP && frame.hit_chain(up).contains(&f))
+}
+
 /// A winit magnification delta as a finite `f32`, or `None`. winit documents
 /// this value as possibly NaN, and a NaN would poison an app's zoom for the
 /// rest of the session.
@@ -1405,8 +1422,10 @@ where
         keyboard_shown: false,
         #[cfg(target_os = "android")]
         keyboard_tap: false,
+        #[cfg(target_os = "android")]
+        touch_down: None,
         #[cfg(all(target_os = "android", feature = "android-game-activity"))]
-        ime_synced: None,
+        ime: crate::ime_sync::ImeSync::default(),
         started: Instant::now(),
         last: None,
         dirty: true,
@@ -1480,14 +1499,19 @@ struct AppRunner<A: App> {
     /// Whether the soft keyboard was last asked to show (Android).
     #[cfg(target_os = "android")]
     keyboard_shown: bool,
-    /// A finger lifted since the last frame: a tap on the focused field
-    /// re-shows a keyboard the user dismissed (Android).
+    /// The focused field was tapped since the last frame: re-shows a
+    /// keyboard the user dismissed (Android).
     #[cfg(target_os = "android")]
     keyboard_tap: bool,
+    /// Where the current touch went down (logical px), to tell a tap from a
+    /// scroll when it lifts.
+    #[cfg(target_os = "android")]
+    touch_down: Option<Point>,
     /// The focused field as the IME last knew it (GameActivity mirrors the
-    /// field; a difference after a frame is sent back to it).
+    /// field; a difference after a frame is sent back to it), and which of
+    /// its reports to believe while it moves to another field.
     #[cfg(all(target_os = "android", feature = "android-game-activity"))]
-    ime_synced: Option<fenestra_core::ImeTextState>,
+    ime: crate::ime_sync::ImeSync,
     started: Instant,
     /// View and frame from the last redraw, for input routing.
     last: Option<(Element<A::Msg>, fenestra_core::Frame)>,
@@ -1980,14 +2004,33 @@ impl<A: App> AppRunner<A> {
     /// restarts the IME's input session, which would drop a composition.
     #[cfg(all(target_os = "android", feature = "android-game-activity"))]
     fn sync_ime_text(&mut self) {
-        use winit::platform::android::activity::input::{TextInputState, TextSpan};
+        use winit::platform::android::activity::input::{
+            ImeOptions, InputType, TextInputAction, TextInputState, TextSpan,
+        };
         let now = self.state.ime_text_state();
-        if now == self.ime_synced {
+        if now.as_ref() == self.ime.synced() {
             return;
         }
         if let Some(ime) = &now
             && let Some(app) = &self.shell.options.android_app
         {
+            let was_masked = self.ime.synced().is_some_and(|s| s.masked);
+            if ime.masked != was_masked {
+                // GameActivity's own default: text, action Done, no fullscreen.
+                let options = ImeOptions::from_bits_retain(6) | ImeOptions::IME_FLAG_NO_FULLSCREEN;
+                let (input_type, options) = if ime.masked {
+                    // A password: no suggestions, nothing learned from it.
+                    (
+                        InputType::TYPE_CLASS_TEXT
+                            | InputType::TYPE_TEXT_VARIATION_PASSWORD
+                            | InputType::TYPE_TEXT_FLAG_NO_SUGGESTIONS,
+                        options | ImeOptions::IME_FLAG_NO_PERSONALIZED_LEARNING,
+                    )
+                } else {
+                    (InputType::TYPE_CLASS_TEXT, options)
+                };
+                app.set_ime_editor_info(input_type, TextInputAction::Done, options);
+            }
             // Java indexes UTF-16 code units.
             let units = |byte: usize| ime.text[..byte].encode_utf16().count();
             app.set_text_input_state(TextInputState {
@@ -2002,7 +2045,7 @@ impl<A: App> AppRunner<A> {
                 }),
             });
         }
-        self.ime_synced = now;
+        self.ime.pushed(now, self.started.elapsed().as_secs_f64());
     }
 
     /// Android types only through the soft keyboard, so it follows focus:
@@ -2815,10 +2858,6 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
             }
             WindowEvent::CursorLeft { .. } => self.input_main(event_loop, InputEvent::PointerLeave),
             WindowEvent::Touch(touch) => {
-                #[cfg(target_os = "android")]
-                if touch.phase == TouchPhase::Ended {
-                    self.keyboard_tap = true;
-                }
                 let scale = self.shell.window().map_or(1.0, |w| w.scale_factor());
                 let (x, y) = (touch.location.x, touch.location.y);
                 if let Some((at, events)) =
@@ -2827,6 +2866,21 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                     self.cursor = at;
                     for event in events {
                         self.input_main(event_loop, event);
+                    }
+                    // Judged after dispatch, so a tap that moves focus to
+                    // another field counts as a tap on it.
+                    #[cfg(target_os = "android")]
+                    match touch.phase {
+                        TouchPhase::Started => self.touch_down = Some(at),
+                        TouchPhase::Ended => {
+                            if let Some(down) = self.touch_down.take()
+                                && let Some((_, frame)) = &self.last
+                                && tap_on_focus(frame, self.state.focused(), down, at)
+                            {
+                                self.keyboard_tap = true;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -2978,15 +3032,12 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                     selection,
                     compose,
                 } => {
-                    let ime = fenestra_core::ImeTextState {
-                        text,
-                        selection,
-                        compose,
-                    };
-                    // The IME already holds this state: only differences
-                    // the field makes from here on go back to it.
-                    self.ime_synced = Some(ime.clone());
-                    self.input_main(event_loop, InputEvent::ImeState(ime));
+                    // Attributed to the field the IME was last synced for;
+                    // a stale echo of the previous field is dropped.
+                    let now = self.started.elapsed().as_secs_f64();
+                    if let Some(ime) = self.ime.received(text, selection, compose, now) {
+                        self.input_main(event_loop, InputEvent::ImeState(ime));
+                    }
                 }
                 // Enabled/Disabled (and `TextState` when a patched winit
                 // is in the build without GameActivity).
@@ -3100,6 +3151,49 @@ mod tests {
             *got.lock().expect("lock"),
             vec![7],
             "delivered exactly once"
+        );
+    }
+}
+
+#[cfg(test)]
+mod keyboard_tap_tests {
+    use super::tap_on_focus;
+    use fenestra_core::{Fonts, FrameState, Theme, build_frame, by, col, div, raw_input};
+    use kurbo::Point;
+
+    /// A lift re-shows a dismissed keyboard only when it is a tap (not a
+    /// scroll) that lands on the field holding focus.
+    #[test]
+    fn only_a_tap_on_the_focused_field_counts() {
+        let root = col::<()>().w(200.0).children([
+            raw_input("", "").id("field").w(200.0).h(40.0),
+            div::<()>().id("list").w(200.0).h(300.0),
+        ]);
+        let mut fonts = Fonts::embedded();
+        let mut state = FrameState::new();
+        let frame = build_frame(
+            &root,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (200.0, 400.0),
+            1.0,
+        );
+        let field = Some(frame.get(&by::id("field")).id);
+        let on_field = Point::new(100.0, 20.0);
+        let on_list = Point::new(100.0, 200.0);
+        assert!(tap_on_focus(&frame, field, on_field, on_field));
+        assert!(
+            !tap_on_focus(&frame, field, on_list, on_list),
+            "a tap elsewhere"
+        );
+        assert!(
+            !tap_on_focus(&frame, field, Point::new(100.0, 300.0), on_field),
+            "a scroll that ends on the field"
+        );
+        assert!(
+            !tap_on_focus(&frame, None, on_field, on_field),
+            "nothing focused"
         );
     }
 }

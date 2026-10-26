@@ -710,40 +710,55 @@ pub(crate) fn apply_ime_state(
         None => text.to_owned(),
     };
     let current = state.editor.text().to_string();
-    let changed = value != current;
+    // The edit as one replaced range: the longest common prefix and suffix
+    // (per char, so they never overlap) stay.
+    let prefix: usize = current
+        .chars()
+        .zip(value.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(c, _)| c.len_utf8())
+        .sum();
+    let suffix: usize = current[prefix..]
+        .chars()
+        .rev()
+        .zip(value[prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(c, _)| c.len_utf8())
+        .sum();
+    let removed = prefix..current.len() - suffix;
+    let raw = &value[prefix..value.len() - suffix];
+    // Held to the same rules as typed text: no control characters (no line
+    // break in a single line), and growth capped at `max_chars` — a value the
+    // app set past the cap can still be deleted from.
+    let mut inserted = sanitize(raw, state.multiline);
+    if let Some(max) = state.max_chars {
+        let kept = current.chars().count() - current[removed.clone()].chars().count();
+        inserted = inserted.chars().take(max.saturating_sub(kept)).collect();
+    }
+    let changed = !removed.is_empty() || !inserted.is_empty();
     if changed {
-        let cap = state
-            .max_chars
-            .is_some_and(|max| value.chars().count() > max);
-        if cap || (!state.multiline && value.contains('\n')) {
-            return IGNORED;
-        }
         state.undo.begin(&state.editor, EditRun::Insert);
     }
     let (font_cx, layout_cx) = fonts.editor_contexts();
     let mut drv = state.editor.driver(font_cx, layout_cx);
     drv.clear_compose();
     if changed {
-        let prefix: usize = current
-            .chars()
-            .zip(value.chars())
-            .take_while(|(a, b)| a == b)
-            .map(|(c, _)| c.len_utf8())
-            .sum();
-        let suffix: usize = current[prefix..]
-            .chars()
-            .rev()
-            .zip(value[prefix..].chars().rev())
-            .take_while(|(a, b)| a == b)
-            .map(|(c, _)| c.len_utf8())
-            .sum();
-        drv.select_byte_range(prefix, current.len() - suffix);
-        let inserted = &value[prefix..value.len() - suffix];
+        drv.select_byte_range(removed.start, removed.end);
         if inserted.is_empty() {
             drv.delete_selection();
         } else {
-            drv.insert_or_replace_selection(inserted);
+            drv.insert_or_replace_selection(&inserted);
         }
+    }
+    if inserted != raw {
+        // The IME's offsets describe text the field refused: put the caret
+        // after what was kept; the runner resyncs the IME to the field.
+        let caret = removed.start + inserted.len();
+        drv.select_byte_range(caret, caret);
+        return EditOutcome {
+            changed,
+            consumed: true,
+        };
     }
     let (sa, sb) = (clamp(ime.selection.0), clamp(ime.selection.1));
     match compose {

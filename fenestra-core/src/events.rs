@@ -277,6 +277,13 @@ pub struct ImeTextState {
     pub selection: (usize, usize),
     /// The composition, while one is in progress.
     pub compose: Option<(usize, usize)>,
+    /// The field this mirrors. A state coming back from the IME carries the
+    /// field it was last synced for; one for a field that no longer holds
+    /// focus is dropped. `None` applies to whichever field holds focus.
+    pub field: Option<crate::WidgetId>,
+    /// Whether the field is a password: the runner tells the IME not to
+    /// suggest or learn from it.
+    pub masked: bool,
 }
 
 /// The result of dispatching one event.
@@ -1473,7 +1480,10 @@ fn dispatch_inner<Msg: Clone>(
         }
         InputEvent::ImeState(ime) => {
             let now = state.now();
+            // Computed against another field's mirror (focus moved before
+            // the runner resynced): applying it here would overwrite this one.
             if let Some(focus) = state.focus
+                && ime.field.is_none_or(|f| f == focus)
                 && let Some(el) = handlers.get(focus)
                 && !el.disabled
                 && matches!(el.kind, Kind::Input(_))
@@ -1571,7 +1581,7 @@ fn input_local<Msg>(
 #[cfg(test)]
 mod blur_tests {
     use super::*;
-    use crate::{Theme, build_frame, by, col, raw_input, raw_text_area};
+    use crate::{Element, Frame, Theme, WidgetId, build_frame, by, col, raw_input, raw_text_area};
 
     #[test]
     fn pointer_blur_follows_the_cancel_click_and_tab_blurs_immediately() {
@@ -1736,12 +1746,15 @@ mod blur_tests {
             (240.0, 100.0),
             1.0,
         );
-        state.set_focus(Some(frame.get(&by::id("field")).id));
+        let field = frame.get(&by::id("field")).id;
+        state.set_focus(Some(field));
         let mut send = |text: &str, selection, compose| {
             let ime = ImeTextState {
                 text: text.into(),
                 selection,
                 compose,
+                field: Some(field),
+                masked: false,
             };
             let msgs = dispatch(
                 &root,
@@ -1767,5 +1780,104 @@ mod blur_tests {
         assert_eq!(send("你好我朋友", (9, 9), Some((6, 9))), vec!["你好朋友"]);
         // A deletion before the caret.
         assert_eq!(send("你朋友", (3, 3), None), vec!["你朋友"]);
+    }
+
+    /// Builds `root`, focuses `#field` (and returns `#other` if present).
+    fn ime_fixture(root: &Element<String>) -> (Frame, FrameState, Fonts, WidgetId) {
+        let mut state = FrameState::new();
+        let mut fonts = Fonts::embedded();
+        let frame = build_frame(
+            root,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (240.0, 200.0),
+            1.0,
+        );
+        let field = frame.get(&by::id("field")).id;
+        state.set_focus(Some(field));
+        (frame, state, fonts, field)
+    }
+
+    /// Sends the IME `text` (caret at its end, no composition) for `field`.
+    fn ime_send(
+        root: &Element<String>,
+        frame: &Frame,
+        state: &mut FrameState,
+        fonts: &mut Fonts,
+        field: WidgetId,
+        text: &str,
+    ) -> Vec<String> {
+        let ime = ImeTextState {
+            text: text.into(),
+            selection: (text.len(), text.len()),
+            compose: None,
+            field: Some(field),
+            masked: false,
+        };
+        dispatch(root, frame, state, fonts, InputEvent::ImeState(ime)).msgs
+    }
+
+    fn input(value: &str) -> Element<String> {
+        raw_input(value, "")
+            .id("field")
+            .w(200.0)
+            .h(32.0)
+            .on_input(|v| v.to_owned())
+    }
+
+    #[test]
+    fn ime_state_names_its_field_and_whether_it_is_masked() {
+        let root = col().w(200.0).children([input("secret").masked(true)]);
+        let (_frame, state, _fonts, field) = ime_fixture(&root);
+        let ime = state.ime_text_state().expect("a focused field");
+        assert_eq!(ime.field, Some(field));
+        assert!(ime.masked);
+    }
+
+    #[test]
+    fn ime_state_for_another_field_is_dropped() {
+        let root = col().w(200.0).children([
+            input("first"),
+            raw_input("second", "")
+                .id("other")
+                .w(200.0)
+                .h(32.0)
+                .on_input(|v| v.to_owned()),
+        ]);
+        let (frame, mut state, mut fonts, field) = ime_fixture(&root);
+        let other = frame.get(&by::id("other")).id;
+        state.set_focus(Some(other));
+        // The IME still mirrors `#field` and edits it before the runner resyncs.
+        let msgs = ime_send(&root, &frame, &mut state, &mut fonts, field, "firstX");
+        assert!(msgs.is_empty());
+        assert_eq!(state.ime_text_state().unwrap().text, "second");
+    }
+
+    #[test]
+    fn ime_state_drops_control_characters_from_a_single_line() {
+        let root = col().w(200.0).children([input("ab")]);
+        let (frame, mut state, mut fonts, field) = ime_fixture(&root);
+        let msgs = ime_send(&root, &frame, &mut state, &mut fonts, field, "ab\ncd");
+        assert_eq!(msgs, vec!["abcd"]);
+    }
+
+    #[test]
+    fn ime_state_truncates_growth_at_max_chars() {
+        let root = col().w(200.0).children([input("abc").max_chars(Some(5))]);
+        let (frame, mut state, mut fonts, field) = ime_fixture(&root);
+        let msgs = ime_send(&root, &frame, &mut state, &mut fonts, field, "abcdefg");
+        assert_eq!(msgs, vec!["abcde"]);
+    }
+
+    #[test]
+    fn ime_state_deletes_from_a_value_over_max_chars() {
+        // Set by the app, past the cap: the user can still delete.
+        let root = col()
+            .w(200.0)
+            .children([input("abcdef").max_chars(Some(3))]);
+        let (frame, mut state, mut fonts, field) = ime_fixture(&root);
+        let msgs = ime_send(&root, &frame, &mut state, &mut fonts, field, "abcde");
+        assert_eq!(msgs, vec!["abcde"]);
     }
 }

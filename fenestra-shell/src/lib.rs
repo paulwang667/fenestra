@@ -21,6 +21,8 @@ mod frame_stats;
 mod harness;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
+#[cfg(any(all(target_os = "android", feature = "android-game-activity"), test))]
+mod ime_sync;
 #[cfg(not(target_arch = "wasm32"))]
 mod multi_pass;
 #[cfg(not(target_arch = "wasm32"))]
