@@ -169,3 +169,37 @@ impl<P: Paint> PaintDyn for P {
         render_raster(r, self, (64, 64))
     }
 }
+
+struct Translucent;
+impl Paint for Translucent {
+    fn paint<T: DrawTarget>(&self, t: &mut T) {
+        let half_blue = Color::from_rgba8(40, 90, 220, 128);
+        t.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            half_blue,
+            None,
+            &Rect::new(10.0, 10.0, 110.0, 70.0),
+        );
+    }
+}
+
+/// Over a transparent base, vello writes straight (unpremultiplied) color:
+/// a frame meant to be composited (a transparent window, a motion render
+/// with alpha) must come out the same.
+#[test]
+fn translucent_frames_are_written_unpremultiplied_like_vello() {
+    let size = (120, 80);
+    let vello = support::render_vello_on(&Translucent, size, Color::TRANSPARENT);
+    let (raster, _) =
+        support::render_raster_on(&mut renderer(), &Translucent, size, Color::TRANSPARENT);
+    assert_eq!(vello.pixel(60, 40)[3], 128);
+    let frac = support::diff_frac(&vello, &raster, 3);
+    assert!(
+        frac < 0.02,
+        "{:.2}% of pixels differ; vello {:?} raster {:?}",
+        frac * 100.0,
+        vello.pixel(60, 40),
+        raster.pixel(60, 40)
+    );
+}

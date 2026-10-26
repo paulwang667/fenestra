@@ -131,16 +131,30 @@ pub(crate) fn lyon_path(elements: impl Iterator<Item = PathEl>) -> Path {
     b.build()
 }
 
-fn vertex(transform: Affine, params: PaintParams, local: lyon_tessellation::math::Point) -> PaintV {
+/// A paint vertex at `local`. Its `local` attribute is the shape-space
+/// point of the device position less half a pixel: vello evaluates paints
+/// at each pixel's integer (top-left) coordinate, a fragment is shaded at
+/// its center, and a steep gradient shows the difference.
+fn vertex(
+    transform: Affine,
+    inverse: Affine,
+    params: PaintParams,
+    local: lyon_tessellation::math::Point,
+) -> PaintV {
     let device = transform * Point::new(f64::from(local.x), f64::from(local.y));
+    let sample = inverse * (device - kurbo::Vec2::new(0.5, 0.5));
     #[expect(
         clippy::cast_possible_truncation,
         reason = "device coordinates fit in f32"
     )]
     let pos = [device.x as f32, device.y as f32];
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "shape coordinates fit in f32"
+    )]
     PaintV {
         pos,
-        local: [local.x, local.y],
+        local: [sample.x as f32, sample.y as f32],
         color: params.color,
         grad: params.grad,
         grad2: params.grad2,
@@ -164,12 +178,13 @@ pub(crate) fn fill(
         Fill::EvenOdd => FillRule::EvenOdd,
     };
     let options = FillOptions::tolerance(tol).with_fill_rule(rule);
+    let inverse = transform.inverse();
     let mark = (mesh.vertices.len(), mesh.indices.len());
     let result = tess.tessellate_path(
         &path,
         &options,
         &mut BuffersBuilder::new(mesh, |v: FillVertex| {
-            vertex(transform, params, v.position())
+            vertex(transform, inverse, params, v.position())
         }),
     );
     if result.is_err() {
@@ -221,12 +236,13 @@ pub(crate) fn stroke(
         .with_end_cap(cap(style.end_cap))
         .with_line_join(join)
         .with_miter_limit((style.miter_limit as f32).max(StrokeOptions::MINIMUM_MITER_LIMIT));
+    let inverse = transform.inverse();
     let mark = (mesh.vertices.len(), mesh.indices.len());
     let result = tess.tessellate_path(
         &path,
         &options,
         &mut BuffersBuilder::new(mesh, |v: StrokeVertex| {
-            vertex(transform, params, v.position())
+            vertex(transform, inverse, params, v.position())
         }),
     );
     if result.is_err() {

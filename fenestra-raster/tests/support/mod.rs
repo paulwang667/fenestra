@@ -154,6 +154,11 @@ pub fn read(texture: &wgpu::Texture) -> Image {
 
 /// `scene` rendered by vello over white.
 pub fn render_vello(scene: &impl Paint, size: (u32, u32)) -> Image {
+    render_vello_on(scene, size, Color::WHITE)
+}
+
+/// `scene` rendered by vello over `base`.
+pub fn render_vello_on(scene: &impl Paint, size: (u32, u32), base: Color) -> Image {
     let mut s = vello::Scene::new();
     let mut t = SceneTarget::new(&mut s);
     scene.paint(&mut t);
@@ -180,7 +185,7 @@ pub fn render_vello(scene: &impl Paint, size: (u32, u32)) -> Image {
             &s,
             &view,
             &vello::RenderParams {
-                base_color: Color::WHITE,
+                base_color: base,
                 width: size.0,
                 height: size.1,
                 antialiasing_method: vello::AaConfig::Area,
@@ -188,6 +193,24 @@ pub fn render_vello(scene: &impl Paint, size: (u32, u32)) -> Image {
         )
         .expect("vello render");
     read(&texture)
+}
+
+/// `scene` rendered by the raster backend over `base`.
+pub fn render_raster_on(
+    renderer: &mut RasterRenderer,
+    scene: &impl Paint,
+    size: (u32, u32),
+    base: Color,
+) -> (Image, RenderStats) {
+    let texture = target(
+        size,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+    );
+    let view = texture.create_view(&Default::default());
+    let mut frame = renderer.frame(size.0, size.1);
+    scene.paint(&mut frame);
+    let stats = frame.render(&gpu().device, &gpu().queue, &view, base);
+    (read(&texture), stats)
 }
 
 /// `scene` rendered by the raster backend over white.

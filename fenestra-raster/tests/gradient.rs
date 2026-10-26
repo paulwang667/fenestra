@@ -96,3 +96,30 @@ impl Paint for Translucent {
 fn translucent_stops_match_vello() {
     assert_like_vello_all("translucent", &Translucent, (240, 160), &[EDGES, FILLS]);
 }
+
+/// Steep gradients show where a gradient is sampled within the pixel:
+/// vello evaluates at the pixel's integer coordinate.
+#[test]
+fn steep_gradients_sample_where_vello_does() {
+    for (name, g) in [
+        (
+            "steep_radial",
+            Gradient::new_radial((60.0, 40.0), 20.0).with_stops(stops()),
+        ),
+        (
+            "steep_linear",
+            Gradient::new_linear((50.0, 0.0), (70.0, 0.0)).with_stops(stops()),
+        ),
+        (
+            "steep_sweep",
+            Gradient::new_sweep((60.0, 40.0), 0.0, std::f32::consts::TAU).with_stops(stops()),
+        ),
+    ] {
+        assert_like_vello_all(
+            name,
+            &Filled(g, Affine::IDENTITY),
+            (120, 80),
+            &[EDGES, FILLS],
+        );
+    }
+}

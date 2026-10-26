@@ -83,6 +83,9 @@ pub(crate) struct Pipelines {
     pub image: wgpu::RenderPipeline,
     pub mask: wgpu::RenderPipeline,
     pub shadow: wgpu::RenderPipeline,
+    /// The straight-alpha output pass, and its group 0 (the source texture).
+    pub unpremultiply: wgpu::RenderPipeline,
+    pub unpremultiply_layout: wgpu::BindGroupLayout,
 }
 
 impl Pipelines {
@@ -209,6 +212,55 @@ impl Pipelines {
                 cache: None,
             })
         };
+        let unpremultiply_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("fenestra-raster unpremultiply"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+        let unpremultiply_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("fenestra-raster unpremultiply"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("unpremultiply.wgsl").into()),
+        });
+        let unpremultiply = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fenestra-raster unpremultiply"),
+            layout: Some(
+                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("fenestra-raster unpremultiply"),
+                    bind_group_layouts: &[Some(&unpremultiply_layout)],
+                    immediate_size: 0,
+                }),
+            ),
+            vertex: wgpu::VertexState {
+                module: &unpremultiply_module,
+                entry_point: Some("vs_full"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &unpremultiply_module,
+                entry_point: Some("fs_unpremultiply"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let paint = ("vs_paint", "fs_paint");
         let stencil = ("vs_paint", "fs_stencil");
         Self {
@@ -262,6 +314,8 @@ impl Pipelines {
             }),
             globals_layout,
             texture_layout,
+            unpremultiply,
+            unpremultiply_layout,
         }
     }
 

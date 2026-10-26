@@ -421,6 +421,18 @@ impl RasterFrame<'_> {
             shadows: upload(device, "shadows", &shadows.vertices, &shadows.indices),
         };
 
+        // A frame that may come out translucent renders the root offscreen
+        // and is written straight (unpremultiplied) at the end, as vello
+        // writes its output; an opaque one resolves into `target` directly.
+        let straight = (base_color.components[3] < 1.0).then(|| {
+            renderer.pool.take(
+                device,
+                renderer.format,
+                size,
+                &mut stats.layer_textures_created,
+            )
+        });
+
         // Children before parents: every descendant has a higher index.
         let mut targets: Vec<Option<LayerTarget>> = (0..layers.len()).map(|_| None).collect();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -433,9 +445,13 @@ impl RasterFrame<'_> {
             let target_layer;
             let (attachments, resolve, clear) = if i == 0 {
                 let [r, g, b, a] = premultiply(base_color);
+                let (attachments, resolve) = match &straight {
+                    Some(t) => (&t.msaa, &t.view),
+                    None => (renderer.root.as_ref().expect("built above"), target),
+                };
                 (
-                    renderer.root.as_ref().expect("built above"),
-                    target,
+                    attachments,
+                    resolve,
                     wgpu::Color {
                         r: f64::from(r),
                         g: f64::from(g),
@@ -509,8 +525,37 @@ impl RasterFrame<'_> {
                 &binds,
             );
         }
+        if let Some(t) = &straight {
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fenestra-raster unpremultiply"),
+                layout: &renderer.pipelines.unpremultiply_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&t.view),
+                }],
+            });
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("fenestra-raster straight alpha"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&renderer.pipelines.unpremultiply);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
         queue.submit([encoder.finish()]);
-        for target in targets.into_iter().flatten() {
+        for target in targets.into_iter().flatten().chain(straight) {
             renderer.pool.give_back(target);
         }
         renderer.pool.trim();
