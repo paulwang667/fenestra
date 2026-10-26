@@ -626,24 +626,6 @@ impl WindowShell {
         .map_err(ShellError::Surface)?;
         self.composite_with_alpha(&mut surface);
 
-        self.renderers
-            .resize_with(self.context.devices.len(), || None);
-        if self.renderers[surface.dev_id].is_none() {
-            self.renderers[surface.dev_id] = Some(
-                Renderer::new(
-                    &self.context.devices[surface.dev_id].device,
-                    RendererOptions {
-                        // `FENESTRA_CPU` runs vello's compute stages on the
-                        // CPU — the live-window switch for software adapters
-                        // (see `CPU_ENV`).
-                        use_cpu: crate::headless::cpu_compute_requested(),
-                        antialiasing_support: AaSupport::area_only(),
-                        ..Default::default()
-                    },
-                )
-                .map_err(ShellError::Vello)?,
-            );
-        }
         let requested = crate::backend::backend_from_env();
         let adapter = self.context.devices[surface.dev_id]
             .adapter()
@@ -669,12 +651,56 @@ impl WindowShell {
             });
         }
 
+        // vello is built only to draw with it (or for a scene runner's or a
+        // secondary window's first frame): a raster window never pays for
+        // compiling its compute pipelines, nor fails with them.
+        if backend != crate::Backend::Raster {
+            self.ensure_vello(surface.dev_id)?;
+        }
         self.state = RenderState::Active {
             surface: Box::new(surface),
             valid_surface: size.width != 0 && size.height != 0,
             window,
         };
         Ok(())
+    }
+
+    /// Builds vello's renderer for device `dev_id` if it has none yet.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ensure_vello(&mut self, dev_id: usize) -> Result<(), ShellError> {
+        self.renderers
+            .resize_with(self.context.devices.len(), || None);
+        if self.renderers[dev_id].is_none() {
+            self.renderers[dev_id] = Some(
+                Renderer::new(
+                    &self.context.devices[dev_id].device,
+                    RendererOptions {
+                        // `FENESTRA_CPU` runs vello's compute stages on the
+                        // CPU — the live-window switch for software adapters
+                        // (see `CPU_ENV`).
+                        use_cpu: crate::headless::cpu_compute_requested(),
+                        antialiasing_support: AaSupport::area_only(),
+                        ..Default::default()
+                    },
+                )
+                .map_err(ShellError::Vello)?,
+            );
+        }
+        Ok(())
+    }
+
+    /// The web builds vello's renderer when its surface lands ([`Self::pump`]).
+    #[cfg(target_arch = "wasm32")]
+    fn ensure_vello(&mut self, _dev_id: usize) -> Result<(), ShellError> {
+        Ok(())
+    }
+
+    /// The active surface's device.
+    fn surface_device(&self) -> Option<usize> {
+        match &self.state {
+            RenderState::Active { surface, .. } => Some(surface.dev_id),
+            _ => None,
+        }
     }
 
     /// Web: surface/device setup is async — kick it off and park in
@@ -795,6 +821,9 @@ impl WindowShell {
     /// Recoverable surface states (lost/outdated/occluded/timeout) are
     /// handled in place; anything else is an error for [`Self::fail`].
     fn present(&mut self, fragment: &Scene) -> Result<(), ShellError> {
+        if let Some(dev_id) = self.surface_device() {
+            self.ensure_vello(dev_id)?;
+        }
         let RenderState::Active {
             surface,
             valid_surface,
@@ -900,6 +929,9 @@ impl WindowShell {
         height: u32,
         base_color: Color,
     ) -> Option<Result<RgbaImage, ShellError>> {
+        if let Err(e) = self.ensure_vello(self.surface_device()?) {
+            return Some(Err(e));
+        }
         let RenderState::Active { surface, .. } = &self.state else {
             return None;
         };
@@ -1020,6 +1052,9 @@ impl WindowShell {
     /// and `paint_final` return logical-space scenes that the two-pass caller
     /// pre-scales via [`Self::at_scale`] before passing here.
     fn present_physical(&mut self, fragment: &Scene) -> Result<(), ShellError> {
+        if let Some(dev_id) = self.surface_device() {
+            self.ensure_vello(dev_id)?;
+        }
         let RenderState::Active {
             surface,
             valid_surface,
