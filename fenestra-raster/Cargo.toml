@@ -19,8 +19,12 @@ kurbo.workspace = true
 peniko.workspace = true
 lyon_tessellation.workspace = true
 bytemuck.workspace = true
+etagere.workspace = true
+vello_cpu.workspace = true
+skrifa.workspace = true
 
 [dev-dependencies]
 vello.workspace = true
+fontique.workspace = true
 pollster.workspace = true
 image.workspace = true

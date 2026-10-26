@@ -102,6 +102,11 @@ struct ImageOut {
     return textureSample(tex, samp, i.uv) * i.tint;
 }
 
+// Glyph coverage (an R8 atlas page) tinted by the run's color.
+@fragment fn fs_mask(i: ImageOut) -> @location(0) vec4f {
+    return textureSample(tex, samp, i.uv).r * i.tint;
+}
+
 // ---------------------------------------------------------------- shadows
 
 struct ShadowIn {

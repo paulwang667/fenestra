@@ -81,6 +81,7 @@ pub(crate) struct Pipelines {
     pub clip_push: wgpu::RenderPipeline,
     pub clip_pop: wgpu::RenderPipeline,
     pub image: wgpu::RenderPipeline,
+    pub mask: wgpu::RenderPipeline,
     pub shadow: wgpu::RenderPipeline,
 }
 
@@ -237,6 +238,13 @@ impl Pipelines {
                 &textured_layout,
                 &image_buffers,
                 ("vs_image", "fs_image"),
+                StencilOp::Test,
+            ),
+            mask: pipeline(
+                "fenestra-raster glyph mask",
+                &textured_layout,
+                &image_buffers,
+                ("vs_image", "fs_mask"),
                 StencilOp::Test,
             ),
             shadow: pipeline(

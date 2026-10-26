@@ -9,6 +9,7 @@
 //! [`RasterFrame::render`].
 
 mod geometry;
+mod glyphs;
 mod gpu;
 mod images;
 mod layers;
@@ -68,6 +69,7 @@ pub struct RasterRenderer {
     ramps: paint::Ramps,
     pool: LayerPool,
     images: images::ImageCache,
+    atlas: glyphs::Atlas,
     /// The device's largest texture side; bigger images are downscaled.
     max_texture_dimension: u32,
 }
@@ -96,6 +98,7 @@ impl RasterRenderer {
             ramps: paint::Ramps::default(),
             pool: LayerPool::default(),
             images: images::ImageCache::default(),
+            atlas: glyphs::Atlas::default(),
             max_texture_dimension,
         }
     }
@@ -105,6 +108,7 @@ impl RasterRenderer {
         self.ramps.begin_frame();
         self.pool.begin_frame();
         self.images.begin_frame();
+        self.atlas.begin_frame();
         let size = (width.max(1), height.max(1));
         RasterFrame {
             renderer: self,
@@ -124,8 +128,8 @@ impl RasterRenderer {
         CacheSizes {
             layer_textures: self.pool.len(),
             images: self.images.len(),
+            atlas_pages: self.atlas.pages(),
             ramp_rows: self.ramps.len(),
-            ..CacheSizes::default()
         }
     }
 }
@@ -143,6 +147,8 @@ enum Pipe {
     Textured(Tex),
     /// Draws shadow-mesh quads (blurred rounded rects).
     Shadow,
+    /// Draws quad-mesh glyphs from a coverage atlas page, tinted.
+    Mask(usize),
 }
 
 /// The texture a textured draw samples.
@@ -152,6 +158,8 @@ enum Tex {
     Layer(usize),
     /// A cached image's.
     Image(images::Key),
+    /// A glyph atlas page's.
+    Page(usize),
 }
 
 /// One draw call: a pipeline, its stencil reference, and an index range into
@@ -254,7 +262,6 @@ impl RasterFrame<'_> {
         match draws.last_mut() {
             Some(last)
                 if last.pipe == pipe
-                    && !matches!(pipe, Pipe::Textured(_))
                     && last.stencil == stencil
                     && last.indices.end == indices.start =>
             {
@@ -362,6 +369,8 @@ impl RasterFrame<'_> {
             renderer.root = Some(Attachments::new(device, renderer.format, size));
         }
         let ramps = renderer.ramps.upload(device, queue);
+        renderer.atlas.upload(device, queue);
+        stats.glyphs_rasterized = renderer.atlas.rasterized;
         stats.images_uploaded =
             renderer
                 .images
@@ -449,8 +458,10 @@ impl RasterFrame<'_> {
             // The textures this pass samples, bound before it begins.
             let mut binds: Vec<(Tex, wgpu::BindGroup)> = Vec::new();
             for draw in &layer.draws {
-                let Pipe::Textured(tex) = draw.pipe else {
-                    continue;
+                let tex = match draw.pipe {
+                    Pipe::Textured(tex) => tex,
+                    Pipe::Mask(page) => Tex::Page(page),
+                    _ => continue,
                 };
                 if binds.iter().any(|(t, _)| *t == tex) {
                     continue;
@@ -458,6 +469,7 @@ impl RasterFrame<'_> {
                 let view = match tex {
                     Tex::Layer(child) => targets[child].as_ref().map(|t| &t.view),
                     Tex::Image(k) => renderer.images.view(&k),
+                    Tex::Page(page) => renderer.atlas.view(page),
                 };
                 if let Some(view) = view {
                     binds.push((tex, renderer.pipelines.texture_bind(device, view)));
@@ -502,6 +514,7 @@ impl RasterFrame<'_> {
             renderer.pool.give_back(target);
         }
         renderer.pool.trim();
+        renderer.atlas.trim();
         stats
     }
 }
@@ -569,6 +582,13 @@ fn encode_draws(
                 };
                 pass.set_bind_group(1, bind, &[]);
                 (&pipelines.image, &buffers.quads, Bound::Quads)
+            }
+            Pipe::Mask(page) => {
+                let Some((_, bind)) = binds.iter().find(|(t, _)| *t == Tex::Page(page)) else {
+                    continue;
+                };
+                pass.set_bind_group(1, bind, &[]);
+                (&pipelines.mask, &buffers.quads, Bound::Quads)
             }
         };
         let Some((vertices, indices)) = mesh else {
@@ -770,8 +790,27 @@ impl DrawTarget for RasterFrame<'_> {
         self.record(layer, Pipe::Shadow, stencil, start..end);
     }
 
-    fn draw_glyphs(&mut self, _run: &GlyphRun<'_>, _glyphs: impl Iterator<Item = Glyph>) {
-        todo!("Task 6: glyphs")
+    fn draw_glyphs(&mut self, run: &GlyphRun<'_>, glyphs: impl Iterator<Item = Glyph>) {
+        let transform = self.current() * run.transform;
+        if !transform.is_finite() {
+            return;
+        }
+        let color = premultiply(run.color);
+        let layer = self.layer_index();
+        let stencil = self.layers[layer].clip_level;
+        for glyph in glyphs {
+            let Some(placed) = self.renderer.atlas.place(run, transform, glyph) else {
+                continue;
+            };
+            let (pipe, tint) = match placed.kind {
+                glyphs::Kind::Mask => (Pipe::Mask(placed.page), color),
+                glyphs::Kind::Color => (Pipe::Textured(Tex::Page(placed.page)), [color[3]; 4]),
+            };
+            let start = len32(&self.quads.indices);
+            geometry::quad_uv(&mut self.quads, placed.corners, placed.uv, tint);
+            let end = len32(&self.quads.indices);
+            self.record(layer, pipe, stencil, start..end);
+        }
     }
 
     fn push_transform(&mut self, transform: Affine) {

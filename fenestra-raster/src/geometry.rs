@@ -56,11 +56,17 @@ pub(crate) type QuadMesh = VertexBuffers<ImageV, u32>;
 /// Appends a quad whose texture corners land on `corners` (top-left,
 /// top-right, bottom-right, bottom-left, in device space).
 pub(crate) fn quad(mesh: &mut QuadMesh, corners: [Point; 4], tint: [f32; 4]) {
+    quad_uv(mesh, corners, [0.0, 0.0, 1.0, 1.0], tint);
+}
+
+/// [`quad`] sampling the texture rectangle `[u0, v0, u1, v1]`.
+pub(crate) fn quad_uv(mesh: &mut QuadMesh, corners: [Point; 4], uv: [f32; 4], tint: [f32; 4]) {
     #[expect(clippy::cast_possible_truncation, reason = "vertex counts fit in u32")]
     let base = mesh.vertices.len() as u32;
+    let [u0, v0, u1, v1] = uv;
     for (p, uv) in corners
         .into_iter()
-        .zip([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        .zip([[u0, v0], [u1, v0], [u1, v1], [u0, v1]])
     {
         #[expect(
             clippy::cast_possible_truncation,
