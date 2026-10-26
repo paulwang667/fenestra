@@ -3,7 +3,7 @@
 
 use fenestra_core::ImeTextState;
 
-/// How long a state report that does not match a field switch is distrusted
+/// How long after a field switch the old field's buffer is distrusted
 /// (seconds); past it, reports are believed again so input never locks up.
 const SWITCH_GRACE: f64 = 0.5;
 
@@ -17,10 +17,11 @@ pub(crate) struct ImeSync {
     /// The last field the IME was given, kept when focus leaves every field:
     /// GameActivity still holds its buffer and its editor info.
     held: Option<ImeTextState>,
-    /// A push that moved the IME to another field, with when it was sent:
-    /// until the IME reports exactly this state back, its reports still
-    /// describe the old field's buffer and are dropped.
-    switching: Option<(ImeTextState, f64)>,
+    /// The old field's text after a push moved the IME to another field,
+    /// with when it was sent: GameActivity may echo that buffer before it
+    /// takes the push, and such a report is dropped. Any other report ends
+    /// the switch.
+    switching: Option<(String, f64)>,
 }
 
 impl ImeSync {
@@ -36,11 +37,8 @@ impl ImeSync {
 
     /// Records that `state` was pushed to the IME at `now` (seconds).
     pub(crate) fn pushed(&mut self, state: Option<ImeTextState>, now: f64) {
-        let switched = state
-            .as_ref()
-            .is_some_and(|s| self.held.as_ref().is_some_and(|old| old.field != s.field));
-        self.switching = match (&state, switched) {
-            (Some(s), true) => Some((s.clone(), now)),
+        self.switching = match (&state, &self.held) {
+            (Some(s), Some(old)) if old.field != s.field => Some((old.text.clone(), now)),
             _ => None,
         };
         if state.is_some() {
@@ -66,13 +64,12 @@ impl ImeSync {
             field: synced.and_then(|s| s.field),
             masked: synced.is_some_and(|s| s.masked),
         };
-        if let Some((pushed, at)) = &self.switching {
-            if *pushed == ime {
-                self.switching = None;
-            } else if now - at < SWITCH_GRACE {
+        if let Some((old, at)) = self.switching.take() {
+            // Text the new field also has cannot be told apart: believe it.
+            let echo = ime.text == old && synced.is_none_or(|s| s.text != old);
+            if echo && now - at < SWITCH_GRACE {
+                self.switching = Some((old, at));
                 return None;
-            } else {
-                self.switching = None;
             }
         }
         // The IME already holds this state: only differences the field
@@ -129,6 +126,21 @@ mod tests {
         sync.pushed(Some(state("old", 1)), 0.0);
         sync.pushed(Some(state("", 2)), 1.0);
         assert_eq!(recv(&mut sync, "y", 1.6), Some(state("y", 2)));
+    }
+
+    /// An IME may acknowledge a switch with a state of its own (here, the
+    /// selection moved), or the user may type before it acknowledges: only
+    /// the old field's buffer is stale.
+    #[test]
+    fn after_a_switch_only_the_old_buffer_is_dropped() {
+        let mut sync = ImeSync::default();
+        sync.pushed(Some(state("你好", 1)), 0.0);
+        sync.pushed(Some(state("hi", 2)), 1.0);
+        let mut moved = state("hi", 2);
+        moved.selection = (0, 0);
+        assert_eq!(sync.received("hi".into(), (0, 0), None, 1.02), Some(moved));
+        sync.pushed(Some(state("", 3)), 2.0);
+        assert_eq!(recv(&mut sync, "x", 2.05), Some(state("x", 3)));
     }
 
     #[test]
