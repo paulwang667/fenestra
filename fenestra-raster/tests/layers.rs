@@ -4,7 +4,8 @@ mod support;
 
 use fenestra_core::draw::DrawTarget;
 use kurbo::{Affine, BezPath, Circle, Rect, RoundedRect, Stroke};
-use peniko::{Color, Fill};
+use peniko::{Blob, Color, Fill, ImageAlphaType, ImageData, ImageFormat};
+use std::sync::OnceLock;
 use support::{EDGES, FILLS, Paint, assert_like_vello_all, render_raster, renderer};
 
 const RED: Color = Color::from_rgb8(220, 40, 50);
@@ -108,8 +109,26 @@ fn opacity_layer_composites_children_once() {
     );
 }
 
+/// A 32×16 opaque picture: red rising across, green down.
+fn photo() -> &'static ImageData {
+    static PHOTO: OnceLock<ImageData> = OnceLock::new();
+    PHOTO.get_or_init(|| {
+        let (w, h) = (32u32, 16u32);
+        let data = (0..h)
+            .flat_map(|y| (0..w).flat_map(move |x| [(x * 8) as u8, (y * 16) as u8, 140, 255]))
+            .collect::<Vec<u8>>();
+        ImageData {
+            data: Blob::from(data),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: w,
+            height: h,
+        }
+    })
+}
+
 /// A scroll view's clip, an exit ghost fading (layer) and shrinking
-/// (transform), and a rounded clip inside it.
+/// (transform), and a rounded clip inside it cutting a picture's corner.
 struct Deep;
 impl Paint for Deep {
     fn paint<T: DrawTarget>(&self, t: &mut T) {
@@ -145,6 +164,11 @@ impl Paint for Deep {
             None,
             &Circle::new((120.0, 140.0), 50.0),
         );
+        // Past the clip's rounded bottom-right corner.
+        t.draw_image(
+            photo(),
+            Affine::translate((150.0, 100.0)) * Affine::scale_non_uniform(3.0, 4.0),
+        );
         t.pop_layer();
         t.pop_transform();
         t.pop_layer();
@@ -162,6 +186,13 @@ impl Paint for Deep {
 #[test]
 fn clip_in_layer_in_clip_under_a_transform() {
     assert_like_vello_all("deep", &Deep, (240, 160), &[EDGES, FILLS]);
+    // The picture shows, faded, inside the clip.
+    let (image, _) = render_raster(&mut renderer(), &Deep, (240, 160));
+    let p = image.pixel(185, 115);
+    assert!(
+        p[2] > p[1] && p[0] > 150,
+        "the picture, not the fill: {p:?}"
+    );
 }
 
 struct AfterPop;
