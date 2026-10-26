@@ -259,6 +259,24 @@ pub enum InputEvent {
         /// Cursor range within the composition, in bytes.
         cursor: Option<(usize, usize)>,
     },
+    /// The IME's whole view of the focused field, from IMEs that edit a
+    /// mirror of it rather than sending deltas (Android): the editor is
+    /// made to match.
+    ImeState(ImeTextState),
+}
+
+/// A text field as a platform IME sees it: the buffer with any composition
+/// inline, and byte ranges into it. Sent in as [`InputEvent::ImeState`];
+/// read back with [`FrameState::ime_text_state`](crate::FrameState::ime_text_state)
+/// to tell the IME about changes it did not make.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImeTextState {
+    /// The field's text, composition included.
+    pub text: String,
+    /// The selection (equal ends for a caret).
+    pub selection: (usize, usize),
+    /// The composition, while one is in progress.
+    pub compose: Option<(usize, usize)>,
 }
 
 /// The result of dispatching one event.
@@ -1453,6 +1471,23 @@ fn dispatch_inner<Msg: Clone>(
                 out.redraw = true;
             }
         }
+        InputEvent::ImeState(ime) => {
+            let now = state.now();
+            if let Some(focus) = state.focus
+                && let Some(el) = handlers.get(focus)
+                && !el.disabled
+                && matches!(el.kind, Kind::Input(_))
+                && let Some(editor) = state.editors.get_mut(&focus)
+            {
+                if input::apply_ime_state(editor, fonts, &ime).changed
+                    && let Some(f) = &el.on_input
+                {
+                    out.msgs.push(f(&editor.editor.text().to_string()));
+                }
+                editor.last_activity = now;
+                out.redraw = true;
+            }
+        }
     }
     out
 }
@@ -1682,5 +1717,55 @@ mod blur_tests {
             );
             assert_eq!(state.focused(), Some(field));
         }
+    }
+
+    #[test]
+    fn ime_state_makes_the_field_match_the_ime() {
+        let root = col().w(200.0).children([raw_input("你好朋友", "")
+            .id("field")
+            .w(200.0)
+            .h(32.0)
+            .on_input(|v| v.to_owned())]);
+        let mut state = FrameState::new();
+        let mut fonts = Fonts::embedded();
+        let frame = build_frame(
+            &root,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (240.0, 100.0),
+            1.0,
+        );
+        state.set_focus(Some(frame.get(&by::id("field")).id));
+        let mut send = |text: &str, selection, compose| {
+            let ime = ImeTextState {
+                text: text.into(),
+                selection,
+                compose,
+            };
+            let msgs = dispatch(
+                &root,
+                &frame,
+                &mut state,
+                &mut fonts,
+                InputEvent::ImeState(ime.clone()),
+            )
+            .msgs;
+            // The field now reads back exactly what the IME holds, so the
+            // runner has nothing to send back.
+            assert_eq!(state.ime_text_state(), Some(ime));
+            msgs
+        };
+        // Caret moved: no edit.
+        assert!(send("你好朋友", (6, 6), None).is_empty());
+        // Composing between 好 and 朋: the value is unchanged.
+        assert!(send("你好wo朋友", (8, 8), Some((6, 8))).is_empty());
+        // Committed in the middle.
+        assert_eq!(send("你好我朋友", (9, 9), None), vec!["你好我朋友"]);
+        // The IME recomposes a committed word: it leaves the value while
+        // it is a preedit, like any composition.
+        assert_eq!(send("你好我朋友", (9, 9), Some((6, 9))), vec!["你好朋友"]);
+        // A deletion before the caret.
+        assert_eq!(send("你朋友", (3, 3), None), vec!["你朋友"]);
     }
 }

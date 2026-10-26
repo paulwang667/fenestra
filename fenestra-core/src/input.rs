@@ -656,6 +656,92 @@ pub(crate) fn handle_preedit(
     }
 }
 
+/// Makes the editor match an IME's view of it ([`ImeTextState`]): the
+/// committed value is brought in line with one minimal replacement (so undo
+/// and `on_input` see a real edit), then the composition and selection are
+/// laid over it. A value the field refuses (read-only, over `max_chars`)
+/// leaves it as is; the runner then reports the field back to the IME.
+pub(crate) fn apply_ime_state(
+    state: &mut EditorState,
+    fonts: &mut Fonts,
+    ime: &crate::events::ImeTextState,
+) -> EditOutcome {
+    if state.read_only {
+        return IGNORED;
+    }
+    let text = ime.text.as_str();
+    // Platform IMEs are not trusted to keep offsets in range or on char
+    // boundaries.
+    let clamp = |i: usize| {
+        let mut i = i.min(text.len());
+        while !text.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    };
+    let compose = ime
+        .compose
+        .map(|(a, b)| (clamp(a.min(b)), clamp(a.max(b))))
+        .filter(|(a, b)| a < b);
+    let value = match compose {
+        Some((a, b)) => [&text[..a], &text[b..]].concat(),
+        None => text.to_owned(),
+    };
+    let current = state.editor.text().to_string();
+    let changed = value != current;
+    if changed {
+        let cap = state
+            .max_chars
+            .is_some_and(|max| value.chars().count() > max);
+        if cap || (!state.multiline && value.contains('\n')) {
+            return IGNORED;
+        }
+        state.undo.begin(&state.editor, EditRun::Insert);
+    }
+    let (font_cx, layout_cx) = fonts.editor_contexts();
+    let mut drv = state.editor.driver(font_cx, layout_cx);
+    drv.clear_compose();
+    if changed {
+        let prefix: usize = current
+            .chars()
+            .zip(value.chars())
+            .take_while(|(a, b)| a == b)
+            .map(|(c, _)| c.len_utf8())
+            .sum();
+        let suffix: usize = current[prefix..]
+            .chars()
+            .rev()
+            .zip(value[prefix..].chars().rev())
+            .take_while(|(a, b)| a == b)
+            .map(|(c, _)| c.len_utf8())
+            .sum();
+        drv.select_byte_range(prefix, current.len() - suffix);
+        let inserted = &value[prefix..value.len() - suffix];
+        if inserted.is_empty() {
+            drv.delete_selection();
+        } else {
+            drv.insert_or_replace_selection(inserted);
+        }
+    }
+    let (sa, sb) = (clamp(ime.selection.0), clamp(ime.selection.1));
+    match compose {
+        Some((a, b)) => {
+            drv.select_byte_range(a, a);
+            let cursor = if a <= sa.min(sb) && sa.max(sb) <= b {
+                (sa - a, sb - a)
+            } else {
+                (b - a, b - a)
+            };
+            drv.set_compose(&text[a..b], Some(cursor));
+        }
+        None => drv.select_byte_range(sa, sb),
+    }
+    EditOutcome {
+        changed,
+        consumed: true,
+    }
+}
+
 /// Moves the caret (or extends the selection) to a pointer position given in
 /// coordinates local to the text origin.
 pub(crate) fn pointer_down(

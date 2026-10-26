@@ -1358,6 +1358,8 @@ where
         keyboard_shown: false,
         #[cfg(target_os = "android")]
         keyboard_tap: false,
+        #[cfg(all(target_os = "android", feature = "android-game-activity"))]
+        ime_synced: None,
         started: Instant::now(),
         last: None,
         dirty: true,
@@ -1435,6 +1437,10 @@ struct AppRunner<A: App> {
     /// re-shows a keyboard the user dismissed (Android).
     #[cfg(target_os = "android")]
     keyboard_tap: bool,
+    /// The focused field as the IME last knew it (GameActivity mirrors the
+    /// field; a difference after a frame is sent back to it).
+    #[cfg(all(target_os = "android", feature = "android-game-activity"))]
+    ime_synced: Option<fenestra_core::ImeTextState>,
     started: Instant,
     /// View and frame from the last redraw, for input routing.
     last: Option<(Element<A::Msg>, fenestra_core::Frame)>,
@@ -1904,8 +1910,41 @@ impl<A: App> AppRunner<A> {
         }
         #[cfg(target_os = "android")]
         self.sync_soft_keyboard();
+        #[cfg(all(target_os = "android", feature = "android-game-activity"))]
+        self.sync_ime_text();
         #[cfg(not(target_arch = "wasm32"))]
         self.push_access_tree();
+    }
+
+    /// Tells the IME about a focused field it does not know as it is:
+    /// newly focused, caret moved by a tap or key, value set by the app, or
+    /// an IME edit the field refused. Only on a difference — every push
+    /// restarts the IME's input session, which would drop a composition.
+    #[cfg(all(target_os = "android", feature = "android-game-activity"))]
+    fn sync_ime_text(&mut self) {
+        use winit::platform::android::activity::input::{TextInputState, TextSpan};
+        let now = self.state.ime_text_state();
+        if now == self.ime_synced {
+            return;
+        }
+        if let Some(ime) = &now
+            && let Some(app) = &self.shell.options.android_app
+        {
+            // Java indexes UTF-16 code units.
+            let units = |byte: usize| ime.text[..byte].encode_utf16().count();
+            app.set_text_input_state(TextInputState {
+                text: ime.text.clone(),
+                selection: TextSpan {
+                    start: units(ime.selection.0),
+                    end: units(ime.selection.1),
+                },
+                compose_region: ime.compose.map(|(a, b)| TextSpan {
+                    start: units(a),
+                    end: units(b),
+                }),
+            });
+        }
+        self.ime_synced = now;
     }
 
     /// Android types only through the soft keyboard, so it follows focus:
@@ -2348,7 +2387,9 @@ impl<A: App> AppRunner<A> {
                 winit::event::Ime::Commit(text) => {
                     self.secondary_input_main(key, event_loop, InputEvent::Text(text));
                 }
-                winit::event::Ime::Enabled | winit::event::Ime::Disabled => {}
+                // Enabled/Disabled, and the Android `TextState` a patched
+                // winit adds (secondary windows don't exist there).
+                _ => {}
             },
             WindowEvent::RedrawRequested => self.secondary_redraw(key, event_loop),
             _ => {}
@@ -2873,7 +2914,25 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                 winit::event::Ime::Commit(text) => {
                     self.input_main(event_loop, InputEvent::Text(text));
                 }
-                winit::event::Ime::Enabled | winit::event::Ime::Disabled => {}
+                #[cfg(all(target_os = "android", feature = "android-game-activity"))]
+                winit::event::Ime::TextState {
+                    text,
+                    selection,
+                    compose,
+                } => {
+                    let ime = fenestra_core::ImeTextState {
+                        text,
+                        selection,
+                        compose,
+                    };
+                    // The IME already holds this state: only differences
+                    // the field makes from here on go back to it.
+                    self.ime_synced = Some(ime.clone());
+                    self.input_main(event_loop, InputEvent::ImeState(ime));
+                }
+                // Enabled/Disabled (and `TextState` when a patched winit
+                // is in the build without GameActivity).
+                _ => {}
             },
             WindowEvent::RedrawRequested => self.redraw(event_loop),
             _ => {}
