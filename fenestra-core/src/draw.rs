@@ -241,6 +241,22 @@ pub(crate) mod recorder {
         },
     }
 
+    impl Op {
+        /// The op's composed transform; `None` for `PopLayer`.
+        pub(crate) fn transform(&self) -> Option<Affine> {
+            match self {
+                Op::Fill { transform, .. }
+                | Op::Stroke { transform, .. }
+                | Op::PushLayer { transform, .. }
+                | Op::PushClip { transform }
+                | Op::Image { transform }
+                | Op::Shadow { transform }
+                | Op::Glyphs { transform, .. } => Some(*transform),
+                Op::PopLayer => None,
+            }
+        }
+    }
+
     #[derive(Default)]
     pub(crate) struct Recorder {
         pub(crate) ops: Vec<Op>,
@@ -344,7 +360,12 @@ pub(crate) mod recorder {
 
 #[cfg(test)]
 mod tests {
+    use super::recorder::{Op, Recorder};
     use super::*;
+    use crate::{
+        Color, Fonts, Frame, FrameState, ShadowToken, Theme, build_frame, col, div, image_rgba8,
+        raw_input, rich_text, span,
+    };
 
     #[test]
     fn transform_stack_composes_outer_first() {
@@ -374,7 +395,7 @@ mod tests {
 
     #[test]
     fn recorder_composes_like_scene_target() {
-        let mut r = recorder::Recorder::default();
+        let mut r = Recorder::default();
         r.push_transform(Affine::translate((5.0, 5.0)));
         r.fill(
             peniko::Fill::NonZero,
@@ -386,7 +407,155 @@ mod tests {
         r.pop_transform();
         assert_eq!(r.depth(), 0);
         assert!(
-            matches!(r.ops[0], recorder::Op::Fill { transform, .. } if transform == Affine::translate((5.0, 5.0)) * Affine::scale(2.0))
+            matches!(r.ops[0], Op::Fill { transform, .. } if transform == Affine::translate((5.0, 5.0)) * Affine::scale(2.0))
         );
+    }
+
+    /// Rotation of an affine's linear part, in degrees (unaffected by a positive scale).
+    fn angle_deg(a: Affine) -> f64 {
+        let c = a.as_coeffs();
+        c[1].atan2(c[0]).to_degrees()
+    }
+
+    /// A container rotated 30° holding a shadowed half-opacity card, an image,
+    /// synthesized italic text, and an input field.
+    fn rotated_fixture() -> (Frame, Fonts, FrameState) {
+        let root = col::<()>().w(300.0).h(400.0).rotate(30.0).children([
+            col::<()>()
+                .w(200.0)
+                .h(80.0)
+                .bg(Color::WHITE)
+                .rounded(12.0)
+                .shadow(ShadowToken::Md)
+                .opacity(0.5),
+            image_rgba8(4, 4, vec![255; 64]).w(40.0).h(40.0),
+            rich_text([span("italic").italic()]),
+            raw_input("hello", "").id("field").w(200.0).h(32.0),
+        ]);
+        let mut fonts = Fonts::embedded();
+        let mut state = FrameState::new();
+        let frame = build_frame(
+            &root,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (400.0, 500.0),
+            1.0,
+        );
+        (frame, fonts, state)
+    }
+
+    #[test]
+    fn transform_wraps_every_op_in_a_transformed_subtree() {
+        let (frame, mut fonts, mut state) = rotated_fixture();
+        let mut r = Recorder::default();
+        frame.paint_into(&mut r, &mut fonts, &mut state);
+        for op in &r.ops {
+            if let Some(t) = op.transform() {
+                assert!(
+                    (angle_deg(t) - 30.0).abs() < 1e-3,
+                    "{op:?} not rotated with its node"
+                );
+            }
+        }
+        assert!(r.ops.iter().any(|o| matches!(o, Op::Image { .. })));
+        assert!(r.ops.iter().any(|o| matches!(o, Op::Shadow { .. })));
+        assert!(
+            r.ops
+                .iter()
+                .any(|o| matches!(o, Op::PushLayer { alpha, .. } if (*alpha - 0.5).abs() < 1e-6))
+        );
+        assert!(r.ops.iter().any(|o| matches!(o, Op::PushClip { .. })));
+    }
+
+    #[test]
+    fn transform_stack_is_balanced_after_a_frame() {
+        let (frame, mut fonts, mut state) = rotated_fixture();
+        let mut r = Recorder::default();
+        frame.paint_into(&mut r, &mut fonts, &mut state);
+        assert_eq!(r.depth(), 0);
+        let pushes = r
+            .ops
+            .iter()
+            .filter(|o| matches!(o, Op::PushLayer { .. } | Op::PushClip { .. }))
+            .count();
+        let pops = r.ops.iter().filter(|o| matches!(o, Op::PopLayer)).count();
+        assert_eq!(pushes, pops);
+    }
+
+    #[test]
+    fn glyph_runs_carry_skew_and_coords() {
+        let (frame, mut fonts, mut state) = rotated_fixture();
+        let mut r = Recorder::default();
+        frame.paint_into(&mut r, &mut fonts, &mut state);
+        // Fonts::embedded() has no italic face, so .italic() is synthesized as a skew.
+        assert!(r.ops.iter().any(|o| matches!(
+            o,
+            Op::Glyphs {
+                glyph_transform: Some(_),
+                ..
+            }
+        )));
+        assert!(
+            r.ops
+                .iter()
+                .all(|o| !matches!(o, Op::Glyphs { count: 0, .. }))
+        );
+    }
+
+    #[test]
+    fn exit_ghost_scales_inside_its_fade_layer() {
+        // tests/motion.rs `exit_view`, with the ghost also scaling to 0.5.
+        let view = |present: bool| {
+            let mut kids = vec![div::<()>().id("keep").w(100.0).h(20.0).shrink0()];
+            if present {
+                kids.push(
+                    div::<()>()
+                        .id("gone")
+                        .w(100.0)
+                        .h(20.0)
+                        .shrink0()
+                        .bg(Color::BLACK)
+                        .exit_to(0.0, 0.5, 0.0, 0.0),
+                );
+            }
+            col::<()>().w(200.0).h(400.0).children(kids)
+        };
+        let theme = Theme::light();
+        let mut fonts = Fonts::embedded();
+        let mut state = FrameState::new();
+        let _ = build_frame(
+            &view(true),
+            &theme,
+            &mut fonts,
+            &mut state,
+            (400.0, 500.0),
+            1.0,
+        );
+        let f2 = build_frame(
+            &view(false),
+            &theme,
+            &mut fonts,
+            &mut state,
+            (400.0, 500.0),
+            1.0,
+        );
+        state.tick(0.05); // mid-exit
+        let mut r = Recorder::default();
+        f2.paint_into(&mut r, &mut fonts, &mut state);
+        let layer = r
+            .ops
+            .iter()
+            .position(|o| matches!(o, Op::PushLayer { alpha, .. } if *alpha < 1.0))
+            .expect("the ghost fades in a layer");
+        let scaled = r.ops[layer + 1..]
+            .iter()
+            .find_map(Op::transform)
+            .expect("the ghost paints inside it");
+        assert!(
+            scaled.as_coeffs()[0] < 1.0 && scaled.as_coeffs()[0] > 0.5,
+            "mid-exit scale between 1 and 0.5"
+        );
+        assert_eq!(r.depth(), 0);
     }
 }

@@ -2220,7 +2220,23 @@ impl Frame {
     /// single-pass look: glass renders as its translucent tint and foreground
     /// filters are inert, exactly as before backdrop blur existed.
     pub fn paint(&self, fonts: &mut Fonts, state: &mut FrameState) -> Scene {
-        self.paint_with(fonts, state, &mut PaintMode::Full)
+        let mut scene = Scene::new();
+        let mut target = SceneTarget::new(&mut scene);
+        self.paint_into(&mut target, fonts, state);
+        target.finish();
+        scene
+    }
+
+    /// Paints the frame (single pass, no filtered regions) into any
+    /// [`DrawTarget`] — the same ops [`paint`](Self::paint) records into a
+    /// vello scene, for backends other than vello.
+    pub fn paint_into<T: DrawTarget>(
+        &self,
+        target: &mut T,
+        fonts: &mut Fonts,
+        state: &mut FrameState,
+    ) {
+        self.paint_walk(target, fonts, state, &mut PaintMode::Full);
     }
 
     /// The first of the two backdrop-blur passes: a scene with every glass
@@ -2269,11 +2285,24 @@ impl Frame {
         state: &mut FrameState,
         mode: &mut PaintMode<'_>,
     ) -> Scene {
-        // Recomputed below when a focused editor paints its caret.
-        state.ime_caret = None;
         let mut scene = Scene::new();
         let mut target = SceneTarget::new(&mut scene);
-        self.paint_node(&mut target, fonts, state, &self.root, mode);
+        self.paint_walk(&mut target, fonts, state, mode);
+        target.finish();
+        scene
+    }
+
+    /// The body of [`Self::paint_with`], generic over the target.
+    fn paint_walk<T: DrawTarget>(
+        &self,
+        target: &mut T,
+        fonts: &mut Fonts,
+        state: &mut FrameState,
+        mode: &mut PaintMode<'_>,
+    ) {
+        // Recomputed below when a focused editor paints its caret.
+        state.ime_caret = None;
+        self.paint_node(target, fonts, state, &self.root, mode);
         for overlay in &self.overlays {
             if overlay.backdrop {
                 let alpha = 0.4 * overlay.progress;
@@ -2294,14 +2323,12 @@ impl Frame {
                     &self.canvas,
                 );
             }
-            self.paint_node(&mut target, fonts, state, &overlay.node, mode);
+            self.paint_node(target, fonts, state, &overlay.node, mode);
             if faded {
                 target.pop_layer();
             }
         }
-        self.paint_exits(&mut target, fonts, state);
-        target.finish();
-        scene
+        self.paint_exits(target, fonts, state);
     }
 
     /// Paints every in-flight exit ghost on top of the frame. Each ghost
