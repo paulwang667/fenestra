@@ -74,6 +74,15 @@ pub const EDGES: Budget = Budget {
     max_frac: 0.005,
 };
 
+/// The budget for color inside shapes: nearly exact (3/255), on all but
+/// the edge pixels (≤5% of these test scenes). Paired with [`EDGES`] where a
+/// test is about color (gradients, images), since `EDGES` alone would let a
+/// wrong ramp through.
+pub const FILLS: Budget = Budget {
+    channel: 3,
+    max_frac: 0.05,
+};
+
 /// A `width`×`height` RGBA8 image, row-major.
 pub struct Image {
     pub width: u32,
@@ -235,6 +244,14 @@ pub fn assert_like_vello(
     budget: Budget,
 ) -> RenderStats {
     assert_like_vello_with(&mut renderer(), name, scene, size, budget)
+}
+
+/// [`assert_like_vello`] against several budgets at once.
+pub fn assert_like_vello_all(name: &str, scene: &impl Paint, size: (u32, u32), budgets: &[Budget]) {
+    let mut r = renderer();
+    for (i, budget) in budgets.iter().enumerate() {
+        assert_like_vello_with(&mut r, &format!("{name}.{i}"), scene, size, *budget);
+    }
 }
 
 /// [`assert_like_vello`] through a given renderer.

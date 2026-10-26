@@ -10,6 +10,7 @@
 
 mod geometry;
 mod gpu;
+mod paint;
 
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,7 +21,7 @@ use lyon_tessellation::{FillTessellator, StrokeTessellator};
 use peniko::{BrushRef, Color, Fill, ImageData};
 use wgpu::util::DeviceExt;
 
-use geometry::{Mesh, PaintParams};
+use geometry::Mesh;
 use gpu::{Attachments, GLOBALS_STRIDE, Globals, Pipelines};
 
 /// What one frame cost.
@@ -61,6 +62,7 @@ pub struct RasterRenderer {
     stroke: StrokeTessellator,
     /// The root pass's MSAA attachments, rebuilt when the frame size changes.
     root: Option<Attachments>,
+    ramps: paint::Ramps,
 }
 
 impl RasterRenderer {
@@ -73,11 +75,13 @@ impl RasterRenderer {
             fill: FillTessellator::new(),
             stroke: StrokeTessellator::new(),
             root: None,
+            ramps: paint::Ramps::default(),
         }
     }
 
     /// Starts recording a `width`×`height` device-pixel frame.
     pub fn frame(&mut self, width: u32, height: u32) -> RasterFrame<'_> {
+        self.ramps.begin_frame();
         RasterFrame {
             renderer: self,
             size: (width.max(1), height.max(1)),
@@ -89,7 +93,10 @@ impl RasterRenderer {
 
     /// What the renderer currently keeps between frames.
     pub fn cache_sizes(&self) -> CacheSizes {
-        CacheSizes::default()
+        CacheSizes {
+            ramp_rows: self.ramps.len(),
+            ..CacheSizes::default()
+        }
     }
 }
 
@@ -175,17 +182,6 @@ impl RasterFrame<'_> {
         }
     }
 
-    /// The vertex parameters for `brush`.
-    fn paint_params(brush: BrushRef<'_>) -> PaintParams {
-        match brush {
-            BrushRef::Solid(color) => PaintParams {
-                color: premultiply(color),
-                ..PaintParams::default()
-            },
-            _ => todo!("Task 3: gradient brushes"),
-        }
-    }
-
     /// Encodes the frame, submits it, and resolves it into `target` (the
     /// frame's size, the renderer's format, `RENDER_ATTACHMENT`), cleared to
     /// `base_color` first.
@@ -209,6 +205,7 @@ impl RasterFrame<'_> {
         if renderer.root.as_ref().is_none_or(|a| a.size != size) {
             renderer.root = Some(Attachments::new(device, renderer.format, size));
         }
+        let ramps = renderer.ramps.upload(device, queue);
         let root = renderer.root.as_ref().expect("just built");
 
         #[expect(clippy::cast_precision_loss, reason = "frame sizes are exact in f32")]
@@ -226,14 +223,20 @@ impl RasterFrame<'_> {
         let globals_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("fenestra-raster globals"),
             layout: &renderer.pipelines.globals_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &uniform,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(std::mem::size_of::<Globals>() as u64),
-                }),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &uniform,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(std::mem::size_of::<Globals>() as u64),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(ramps),
+                },
+            ],
         });
         // wgpu rejects zero-sized buffers: an empty frame binds none.
         let buffers = (!mesh.indices.is_empty()).then(|| {
@@ -319,7 +322,9 @@ impl DrawTarget for RasterFrame<'_> {
         if !transform.is_finite() {
             return;
         }
-        let params = Self::paint_params(brush.into());
+        let Some(params) = self.renderer.ramps.params(brush.into()) else {
+            return;
+        };
         let start = self.mesh.indices.len();
         let renderer = &mut *self.renderer;
         if let Err(e) = geometry::fill(
@@ -347,7 +352,9 @@ impl DrawTarget for RasterFrame<'_> {
         if !transform.is_finite() {
             return;
         }
-        let params = Self::paint_params(brush.into());
+        let Some(params) = self.renderer.ramps.params(brush.into()) else {
+            return;
+        };
         let start = self.mesh.indices.len();
         let renderer = &mut *self.renderer;
         if let Err(e) = geometry::stroke(
