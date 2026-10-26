@@ -2327,7 +2327,7 @@ impl<A: App> AppRunner<A> {
         if let Some(ime) = &now
             && let Some(app) = &self.shell.options.android_app
         {
-            let was_masked = self.ime.synced().is_some_and(|s| s.masked);
+            let was_masked = self.ime.held_masked();
             if ime.masked != was_masked {
                 // GameActivity's own default: text, action Done, no fullscreen.
                 let options = ImeOptions::from_bits_retain(6) | ImeOptions::IME_FLAG_NO_FULLSCREEN;

@@ -11,7 +11,12 @@ const SWITCH_GRACE: f64 = 0.5;
 /// still settling.
 #[derive(Debug, Default)]
 pub(crate) struct ImeSync {
+    /// The focused field's state as the IME knows it; `None` with no field
+    /// focused.
     synced: Option<ImeTextState>,
+    /// The last field the IME was given, kept when focus leaves every field:
+    /// GameActivity still holds its buffer and its editor info.
+    held: Option<ImeTextState>,
     /// A push that moved the IME to another field, with when it was sent:
     /// until the IME reports exactly this state back, its reports still
     /// describe the old field's buffer and are dropped.
@@ -24,15 +29,23 @@ impl ImeSync {
         self.synced.as_ref()
     }
 
+    /// Whether the IME's editor info is the password one.
+    pub(crate) fn held_masked(&self) -> bool {
+        self.held.as_ref().is_some_and(|s| s.masked)
+    }
+
     /// Records that `state` was pushed to the IME at `now` (seconds).
     pub(crate) fn pushed(&mut self, state: Option<ImeTextState>, now: f64) {
         let switched = state
             .as_ref()
-            .is_some_and(|s| self.synced.as_ref().is_some_and(|old| old.field != s.field));
+            .is_some_and(|s| self.held.as_ref().is_some_and(|old| old.field != s.field));
         self.switching = match (&state, switched) {
             (Some(s), true) => Some((s.clone(), now)),
             _ => None,
         };
+        if state.is_some() {
+            self.held.clone_from(&state);
+        }
         self.synced = state;
     }
 
@@ -65,6 +78,7 @@ impl ImeSync {
         // The IME already holds this state: only differences the field
         // makes from here on go back to it.
         self.synced = Some(ime.clone());
+        self.held = Some(ime.clone());
         Some(ime)
     }
 }
@@ -123,5 +137,22 @@ mod tests {
         sync.pushed(Some(state("ab", 1)), 0.0);
         sync.pushed(Some(state("abc", 1)), 1.0);
         assert_eq!(recv(&mut sync, "abcd", 1.001), Some(state("abcd", 1)));
+    }
+
+    /// Leaving every field pushes nothing, but GameActivity still holds the
+    /// last field — its buffer and its editor info.
+    #[test]
+    fn leaving_all_fields_keeps_what_the_ime_holds() {
+        let mut sync = ImeSync::default();
+        let mut secret = state("pw", 1);
+        secret.masked = true;
+        sync.pushed(Some(secret), 0.0);
+        sync.pushed(None, 1.0);
+        assert!(sync.held_masked(), "the password editor info is still set");
+        sync.pushed(Some(state("", 2)), 2.0);
+        assert!(!sync.held_masked());
+        // GameActivity's echo of the old buffer after the switch is stale.
+        assert_eq!(recv(&mut sync, "pw", 2.001), None);
+        assert_eq!(recv(&mut sync, "", 2.03), Some(state("", 2)));
     }
 }
