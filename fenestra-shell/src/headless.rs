@@ -15,7 +15,7 @@ use vello::wgpu::{
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 
 use crate::ShellError;
-use crate::backend::{Backend, backend_from_env, raster_supported};
+use crate::backend::{Backend, backend_from_env, effective_backend, warn_raster_fallback};
 
 /// Env var selecting vello's CPU compute pipeline (any value but `0` or
 /// empty): the renderer's shader stages run as native Rust instead of GPU
@@ -53,16 +53,6 @@ pub struct Headless {
     max_dim: u32,
 }
 
-/// Prints once that raster was asked for on an adapter it cannot use.
-fn warn_raster_fallback(adapter: wgpu::Backend) {
-    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        eprintln!(
-            "fenestra: the raster backend needs Vulkan, Metal, or DX12; {adapter:?} renders with vello"
-        );
-    }
-}
-
 impl Headless {
     /// Acquires an adapter (no surface required) and renders through the
     /// [`Backend`] `FENESTRA_RENDERER` chooses. Set [`CPU_ENV`] to run
@@ -79,13 +69,11 @@ impl Headless {
         let handle = &context.devices[dev_id];
         let max_dim = handle.device.limits().max_texture_dimension_2d;
         let adapter = handle.adapter().get_info().backend;
-        let backend = match backend {
-            Backend::Raster if !raster_supported(adapter) => {
-                warn_raster_fallback(adapter);
-                Backend::Vello
-            }
-            b => b,
-        };
+        let effective = effective_backend(backend, adapter);
+        if effective != backend {
+            warn_raster_fallback(adapter);
+        }
+        let backend = effective;
         let raster = (backend == Backend::Raster).then(|| {
             fenestra_raster::RasterRenderer::new(&handle.device, TextureFormat::Rgba8Unorm)
         });
@@ -199,67 +187,10 @@ impl Headless {
     fn read(
         &self,
         texture: &wgpu::Texture,
-        (x, y, width, height): (u32, u32, u32, u32),
+        region: (u32, u32, u32, u32),
     ) -> Result<RgbaImage, ShellError> {
         let handle = &self.context.devices[self.dev_id];
-        let (device, queue) = (&handle.device, &handle.queue);
-        // wgpu requires copy rows padded to 256 bytes.
-        let padded_byte_width = (width * 4).next_multiple_of(256);
-        let buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("fenestra headless readback"),
-            size: u64::from(padded_byte_width) * u64::from(height),
-            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("fenestra headless copy"),
-        });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x, y, z: 0 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded_byte_width),
-                    rows_per_image: None,
-                },
-            },
-            Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit([encoder.finish()]);
-
-        let slice = buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|_| ShellError::Readback)?;
-        rx.recv()
-            .map_err(|_| ShellError::Readback)?
-            .map_err(|_| ShellError::Readback)?;
-
-        let data = slice.get_mapped_range();
-        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
-        for row in 0..height {
-            let start = (row * padded_byte_width) as usize;
-            pixels.extend_from_slice(&data[start..start + (width * 4) as usize]);
-        }
-        drop(data);
-        buffer.unmap();
-
-        Ok(RgbaImage::from_raw(width, height, pixels)
-            .expect("readback buffer matches image dimensions"))
+        read_texture(&handle.device, &handle.queue, texture, region)
     }
 
     /// Renders `frame` with real frosted-glass backdrop blur and foreground
@@ -380,6 +311,73 @@ impl Headless {
         scaled.append(&scene, Some(vello::kurbo::Affine::scale(scale)));
         scaled
     }
+}
+
+/// Reads the `(x, y, width, height)` part of an RGBA8 `texture` (with
+/// `COPY_SRC`) back to the CPU.
+pub(crate) fn read_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    (x, y, width, height): (u32, u32, u32, u32),
+) -> Result<RgbaImage, ShellError> {
+    // wgpu requires copy rows padded to 256 bytes.
+    let padded_byte_width = (width * 4).next_multiple_of(256);
+    let buffer = device.create_buffer(&BufferDescriptor {
+        label: Some("fenestra headless readback"),
+        size: u64::from(padded_byte_width) * u64::from(height),
+        usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+        label: Some("fenestra headless copy"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x, y, z: 0 },
+            aspect: wgpu::TextureAspect::All,
+        },
+        TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_byte_width),
+                rows_per_image: None,
+            },
+        },
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+
+    let slice = buffer.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|_| ShellError::Readback)?;
+    rx.recv()
+        .map_err(|_| ShellError::Readback)?
+        .map_err(|_| ShellError::Readback)?;
+
+    let data = slice.get_mapped_range();
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for row in 0..height {
+        let start = (row * padded_byte_width) as usize;
+        pixels.extend_from_slice(&data[start..start + (width * 4) as usize]);
+    }
+    drop(data);
+    buffer.unmap();
+
+    Ok(RgbaImage::from_raw(width, height, pixels)
+        .expect("readback buffer matches image dimensions"))
 }
 
 #[cfg(test)]

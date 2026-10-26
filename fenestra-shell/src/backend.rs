@@ -52,6 +52,25 @@ pub(crate) fn raster_supported(backend: wgpu::Backend) -> bool {
     )
 }
 
+/// The backend to draw with: `requested`, unless that is raster on an
+/// adapter raster cannot use ([`raster_supported`]).
+pub(crate) fn effective_backend(requested: Backend, adapter: wgpu::Backend) -> Backend {
+    match requested {
+        Backend::Raster if !raster_supported(adapter) => Backend::Vello,
+        b => b,
+    }
+}
+
+/// Prints once that raster was asked for on an adapter it cannot use.
+pub(crate) fn warn_raster_fallback(adapter: wgpu::Backend) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "fenestra: the raster backend needs Vulkan, Metal, or DX12; {adapter:?} renders with vello"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,6 +86,21 @@ mod tests {
             assert_eq!(parse(Some("raster"), d), Backend::Raster);
             assert_eq!(parse(Some("RASTER"), d), Backend::Raster);
         }
+    }
+
+    #[test]
+    fn a_gl_adapter_keeps_vello() {
+        use wgpu::Backend as Api;
+        assert_eq!(
+            effective_backend(Backend::Raster, Api::Vulkan),
+            Backend::Raster
+        );
+        assert_eq!(effective_backend(Backend::Raster, Api::Gl), Backend::Vello);
+        assert_eq!(
+            effective_backend(Backend::Vello, Api::Vulkan),
+            Backend::Vello
+        );
+        assert_eq!(effective_backend(Backend::Vello, Api::Gl), Backend::Vello);
     }
 
     #[test]

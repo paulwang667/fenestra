@@ -399,6 +399,8 @@ struct WindowShell {
     /// while their size holds — a glass header reads the same strip every
     /// frame, and allocating both per frame was part of what it cost.
     readback: Option<Readback>,
+    /// Set when the main window draws through the raster backend.
+    raster: Option<RasterState>,
     /// This window's glass panes' last blurs ([`crate::multi_pass::GlassCache`]).
     glass_cache: crate::multi_pass::GlassCache,
     /// Completed async surface setup, parked until the next [`Self::pump`]
@@ -417,6 +419,27 @@ struct Readback {
     texture: wgpu::Texture,
     buffer: wgpu::Buffer,
     padded_byte_width: u32,
+}
+
+/// The raster backend for this window ([`crate::Backend::Raster`]): the
+/// renderer, on the surface's device, and the texture frames render into
+/// before they are blitted to the swapchain (kept, so a clean frame is
+/// presented again without repainting).
+struct RasterState {
+    dev_id: usize,
+    renderer: fenestra_raster::RasterRenderer,
+    target: Option<RasterTarget>,
+}
+
+struct RasterTarget {
+    size: (u32, u32),
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+/// Whether the raster target must be (re)built for a `surface`-sized frame.
+fn needs_new_target(current: Option<(u32, u32)>, surface: (u32, u32)) -> bool {
+    current != Some(surface)
 }
 
 /// The handoff slot for the web's async surface creation: the setup result,
@@ -439,6 +462,7 @@ impl WindowShell {
             transparent,
             fatal: None,
             readback: None,
+            raster: None,
             glass_cache: crate::multi_pass::GlassCache::default(),
             #[cfg(target_arch = "wasm32")]
             ready: WasmReady::default(),
@@ -619,6 +643,30 @@ impl WindowShell {
                 )
                 .map_err(ShellError::Vello)?,
             );
+        }
+        let requested = crate::backend::backend_from_env();
+        let adapter = self.context.devices[surface.dev_id]
+            .adapter()
+            .get_info()
+            .backend;
+        let backend = crate::backend::effective_backend(requested, adapter);
+        if backend != requested {
+            crate::backend::warn_raster_fallback(adapter);
+        }
+        if backend == crate::Backend::Raster
+            && self
+                .raster
+                .as_ref()
+                .is_none_or(|r| r.dev_id != surface.dev_id)
+        {
+            self.raster = Some(RasterState {
+                dev_id: surface.dev_id,
+                renderer: fenestra_raster::RasterRenderer::new(
+                    &self.context.devices[surface.dev_id].device,
+                    TextureFormat::Rgba8Unorm,
+                ),
+                target: None,
+            });
         }
 
         self.state = RenderState::Active {
@@ -1066,6 +1114,162 @@ impl WindowShell {
         Ok(())
     }
 
+    /// Whether this window draws through the raster backend.
+    fn uses_raster(&self) -> bool {
+        self.raster.is_some()
+    }
+
+    /// The active surface's size in physical pixels.
+    fn physical_size(&self) -> Option<(u32, u32)> {
+        match &self.state {
+            RenderState::Active { surface, .. } => {
+                Some((surface.config.width, surface.config.height))
+            }
+            _ => None,
+        }
+    }
+
+    /// Records a frame with `paint` and renders it into the raster target
+    /// (the surface's size); returns what `paint` returned and how long the
+    /// GPU encoding took. `None` with no drawable surface.
+    fn raster_render<R>(
+        &mut self,
+        paint: impl FnOnce(&mut fenestra_raster::RasterFrame<'_>) -> R,
+    ) -> Option<(R, Duration)> {
+        let RenderState::Active {
+            surface,
+            valid_surface: true,
+            ..
+        } = &self.state
+        else {
+            return None;
+        };
+        let size = (surface.config.width, surface.config.height);
+        let handle = &self.context.devices[surface.dev_id];
+        let raster = self.raster.as_mut()?;
+        if needs_new_target(raster.target.as_ref().map(|t| t.size), size) {
+            let texture = handle.device.create_texture(&TextureDescriptor {
+                label: Some("fenestra raster target"),
+                size: Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                usage: TextureUsages::RENDER_ATTACHMENT
+                    | TextureUsages::TEXTURE_BINDING
+                    | TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            raster.target = Some(RasterTarget {
+                size,
+                texture,
+                view,
+            });
+        }
+        let target = raster.target.as_ref().expect("just ensured");
+        let base = if self.transparent {
+            Color::TRANSPARENT
+        } else {
+            self.background
+        };
+        let mut frame = raster.renderer.frame(size.0, size.1);
+        let out = paint(&mut frame);
+        let t = Instant::now();
+        frame.render(&handle.device, &handle.queue, &target.view, base);
+        Some((out, t.elapsed()))
+    }
+
+    /// Reads the `(x, y, width, height)` part of the raster target back (the
+    /// backdrop of a two-pass frame).
+    fn raster_read(&self, region: (u32, u32, u32, u32)) -> Option<Result<RgbaImage, ShellError>> {
+        let RenderState::Active { surface, .. } = &self.state else {
+            return None;
+        };
+        let handle = &self.context.devices[surface.dev_id];
+        let target = self.raster.as_ref()?.target.as_ref()?;
+        Some(crate::headless::read_texture(
+            &handle.device,
+            &handle.queue,
+            &target.texture,
+            region,
+        ))
+    }
+
+    /// Blits the raster target to the swapchain and presents it.
+    fn raster_present(&mut self) -> Result<(), ShellError> {
+        let RenderState::Active {
+            surface,
+            valid_surface,
+            window,
+        } = &mut self.state
+        else {
+            return Ok(());
+        };
+        let Some(target) = self.raster.as_ref().and_then(|r| r.target.as_ref()) else {
+            return Ok(());
+        };
+        if !*valid_surface || target.size != (surface.config.width, surface.config.height) {
+            return Ok(());
+        }
+        let handle = &self.context.devices[surface.dev_id];
+        if crate::frame_stats::sync() {
+            let t = Instant::now();
+            handle
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .map_err(ShellError::Poll)?;
+            crate::frame_stats::record(crate::frame_stats::Phase::Gpu, t.elapsed());
+        }
+        let t = Instant::now();
+        let surface_texture = match surface.surface.get_current_texture() {
+            CurrentSurfaceTexture::Success(texture) => texture,
+            CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Suboptimal(_) => {
+                self.context.configure_surface(surface);
+                window.request_redraw();
+                return Ok(());
+            }
+            CurrentSurfaceTexture::Occluded => return Ok(()),
+            CurrentSurfaceTexture::Timeout => {
+                window.request_redraw();
+                return Ok(());
+            }
+            CurrentSurfaceTexture::Lost => {
+                let window = window.clone();
+                window.request_redraw();
+                return self.activate(window);
+            }
+            CurrentSurfaceTexture::Validation => return Err(ShellError::SurfaceValidation),
+        };
+        crate::frame_stats::record(crate::frame_stats::Phase::Acquire, t.elapsed());
+        let t = Instant::now();
+        let mut encoder = handle
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("fenestra raster blit"),
+            });
+        surface.blitter.copy(
+            &handle.device,
+            &mut encoder,
+            &target.view,
+            &surface_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default()),
+        );
+        handle.queue.submit([encoder.finish()]);
+        surface_texture.present();
+        handle
+            .device
+            .poll(wgpu::PollType::Poll)
+            .map_err(ShellError::Poll)?;
+        crate::frame_stats::record(crate::frame_stats::Phase::Present, t.elapsed());
+        Ok(())
+    }
+
     /// Wraps a logical-space scene for a physical target. Returns the scene
     /// untouched at scale 1.0 so reference goldens stay byte-identical.
     fn at_scale(scene: Scene, scale: f64) -> Scene {
@@ -1430,6 +1634,7 @@ where
         last: None,
         dirty: true,
         cached_scene: None,
+        raster_key: None,
         modifiers: winit::keyboard::ModifiersState::empty(),
         #[cfg(not(target_arch = "wasm32"))]
         adapter: None,
@@ -1521,6 +1726,9 @@ struct AppRunner<A: App> {
     dirty: bool,
     /// The last painted scene with its (logical w, h, scale) key.
     cached_scene: Option<(Scene, (f64, f64, f64))>,
+    /// The (logical w, h, scale) of the frame in the raster target, when the
+    /// window draws through the raster backend.
+    raster_key: Option<(f64, f64, f64)>,
     modifiers: winit::keyboard::ModifiersState,
     /// The AccessKit adapter, created before the window first shows.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1848,8 +2056,14 @@ impl<A: App> AppRunner<A> {
         let Some((lw, lh, scale)) = self.shell.logical_size() else {
             return;
         };
-        // Clean frame at the same size: re-present the cached scene and
+        // Clean frame at the same size: present the last frame again and
         // skip build/layout/paint entirely (expose/un-occlude redraws).
+        if !self.dirty && self.shell.uses_raster() && self.raster_key == Some((lw, lh, scale)) {
+            if let Err(e) = self.shell.raster_present() {
+                self.shell.fail(event_loop, e);
+            }
+            return;
+        }
         if !self.dirty
             && let Some((scene, key)) = &self.cached_scene
             && *key == (lw, lh, scale)
@@ -1876,80 +2090,92 @@ impl<A: App> AppRunner<A> {
             scale,
         );
         crate::frame_stats::record(crate::frame_stats::Phase::Build, t.elapsed());
-        let t = Instant::now();
-        // Two-pass render when the frame has filtered regions (glass blur,
-        // element filters, custom GPU renders): paint the backdrop scene
-        // (every filtered subtree skipped), read it back, run
-        // `process_specs` on the CPU, then paint the final scene with each
-        // region composited. A frame with no specs falls through to the
-        // single-pass fast path: the backdrop scene IS the final image,
-        // byte-identical to the old `frame.paint()` + `present()`.
-        let (backdrop_scene, specs) = frame.paint_backdrop(&mut self.fonts, &mut self.state);
-        let scene = if specs.is_empty() {
-            // Fast path: backdrop scene is the final image, just scale and present.
-            WindowShell::at_scale(backdrop_scene, scale)
-        } else {
-            // Clone the Arc so the closure is `'static` (it doesn't borrow
-            // `self`). The closure falls back to `None` when no custom
-            // render is registered — the element paints normally.
-            let custom_arc = self.custom_render.clone();
-            let custom_fn = move |key: u64, w: u32, h: u32| -> Option<vello::peniko::ImageData> {
-                custom_arc
-                    .as_ref()
-                    .and_then(|f| f(key, w, h).map(|d| d.image))
-            };
-            crate::frame_stats::two_pass(specs.len());
-            // Two-pass: render backdrop to off-screen, readback, process, final.
-            let physical_backdrop = WindowShell::at_scale(backdrop_scene, scale);
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "physical window size fits in u32"
-            )]
-            let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
-            let (region, origin_scene) =
-                crate::multi_pass::region_scene(&physical_backdrop, &specs, scale, (pw, ph));
-            let tr = Instant::now();
-            let readback = self
-                .shell
-                .render_to_image(&origin_scene, region.2, region.3, theme.bg);
-            crate::frame_stats::record(crate::frame_stats::Phase::Readback, tr.elapsed());
-            match readback {
-                Some(Ok(backdrop_pixels)) => {
-                    let tf = Instant::now();
-                    let injected = crate::multi_pass::process_specs_in(
-                        &backdrop_pixels,
-                        (region.0, region.1),
-                        (pw, ph),
-                        &specs,
-                        scale,
-                        &custom_fn,
-                        &mut self.custom_cache,
-                        &mut self.shell.glass_cache,
-                    );
-                    crate::frame_stats::record(crate::frame_stats::Phase::Filters, tf.elapsed());
-                    WindowShell::at_scale(
-                        frame.paint_final(&mut self.fonts, &mut self.state, &injected),
-                        scale,
-                    )
-                }
-                Some(Err(e)) => {
-                    self.shell.fail(event_loop, e);
-                    return;
-                }
-                None => return, // no active surface; nothing to present
+        if self.shell.uses_raster() {
+            if !self.present_raster_frame(event_loop, &frame, scale) {
+                return;
             }
-        };
-        crate::frame_stats::record(crate::frame_stats::Phase::Paint, t.elapsed());
-        if let Err(e) = self.shell.present_physical(&scene) {
-            self.shell.fail(event_loop, e);
-            return;
+            self.raster_key = Some((lw, lh, scale));
+            self.dirty = frame.animating;
+        } else {
+            let t = Instant::now();
+            // Two-pass render when the frame has filtered regions (glass blur,
+            // element filters, custom GPU renders): paint the backdrop scene
+            // (every filtered subtree skipped), read it back, run
+            // `process_specs` on the CPU, then paint the final scene with each
+            // region composited. A frame with no specs falls through to the
+            // single-pass fast path: the backdrop scene IS the final image,
+            // byte-identical to the old `frame.paint()` + `present()`.
+            let (backdrop_scene, specs) = frame.paint_backdrop(&mut self.fonts, &mut self.state);
+            let scene = if specs.is_empty() {
+                // Fast path: backdrop scene is the final image, just scale and present.
+                WindowShell::at_scale(backdrop_scene, scale)
+            } else {
+                // Clone the Arc so the closure is `'static` (it doesn't borrow
+                // `self`). The closure falls back to `None` when no custom
+                // render is registered — the element paints normally.
+                let custom_arc = self.custom_render.clone();
+                let custom_fn =
+                    move |key: u64, w: u32, h: u32| -> Option<vello::peniko::ImageData> {
+                        custom_arc
+                            .as_ref()
+                            .and_then(|f| f(key, w, h).map(|d| d.image))
+                    };
+                crate::frame_stats::two_pass(specs.len());
+                // Two-pass: render backdrop to off-screen, readback, process, final.
+                let physical_backdrop = WindowShell::at_scale(backdrop_scene, scale);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "physical window size fits in u32"
+                )]
+                let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
+                let (region, origin_scene) =
+                    crate::multi_pass::region_scene(&physical_backdrop, &specs, scale, (pw, ph));
+                let tr = Instant::now();
+                let readback =
+                    self.shell
+                        .render_to_image(&origin_scene, region.2, region.3, theme.bg);
+                crate::frame_stats::record(crate::frame_stats::Phase::Readback, tr.elapsed());
+                match readback {
+                    Some(Ok(backdrop_pixels)) => {
+                        let tf = Instant::now();
+                        let injected = crate::multi_pass::process_specs_in(
+                            &backdrop_pixels,
+                            (region.0, region.1),
+                            (pw, ph),
+                            &specs,
+                            scale,
+                            &custom_fn,
+                            &mut self.custom_cache,
+                            &mut self.shell.glass_cache,
+                        );
+                        crate::frame_stats::record(
+                            crate::frame_stats::Phase::Filters,
+                            tf.elapsed(),
+                        );
+                        WindowShell::at_scale(
+                            frame.paint_final(&mut self.fonts, &mut self.state, &injected),
+                            scale,
+                        )
+                    }
+                    Some(Err(e)) => {
+                        self.shell.fail(event_loop, e);
+                        return;
+                    }
+                    None => return, // no active surface; nothing to present
+                }
+            };
+            crate::frame_stats::record(crate::frame_stats::Phase::Paint, t.elapsed());
+            if let Err(e) = self.shell.present_physical(&scene) {
+                self.shell.fail(event_loop, e);
+                return;
+            }
+            crate::frame_stats::frame_end();
+            // The frame is clean until something changes it; animation and
+            // hover refresh keep it dirty so the pipeline runs again.
+            self.cached_scene = Some((scene, (lw, lh, scale)));
+            self.dirty = frame.animating;
         }
-        crate::frame_stats::frame_end();
-        // The frame is clean until something changes it; animation and
-        // hover refresh keep it dirty so the pipeline runs again.
-        self.cached_scene = Some((scene, (lw, lh, scale)));
-        self.dirty = frame.animating;
         // Content may have moved under a stationary pointer (scroll,
         // layout change): refresh hover and repaint once more if it did.
         if refresh_hover(&view, &frame, &mut self.state)
@@ -1996,6 +2222,93 @@ impl<A: App> AppRunner<A> {
         self.sync_ime_text();
         #[cfg(not(target_arch = "wasm32"))]
         self.push_access_tree();
+    }
+
+    /// Paints `frame` through the raster backend and presents it — two
+    /// passes when it has filtered regions (the backdrop rendered, the part
+    /// the glass reads copied back and filtered on the CPU, then the final
+    /// pass). Returns `false` when the redraw must stop (no surface, or a
+    /// failure, already reported).
+    fn present_raster_frame(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        frame: &fenestra_core::Frame,
+        scale: f64,
+    ) -> bool {
+        use fenestra_core::draw::DrawTarget;
+        let t = Instant::now();
+        let transform = kurbo::Affine::scale(scale);
+        let (fonts, state) = (&mut self.fonts, &mut self.state);
+        let Some((specs, mut render)) = self.shell.raster_render(|f| {
+            f.push_transform(transform);
+            let specs = frame.paint_backdrop_into(f, fonts, state);
+            f.pop_transform();
+            specs
+        }) else {
+            return false;
+        };
+        if !specs.is_empty() {
+            crate::frame_stats::two_pass(specs.len());
+            let Some((pw, ph)) = self.shell.physical_size() else {
+                return false;
+            };
+            let region = crate::multi_pass::backdrop_region(&specs, scale, pw, ph).unwrap_or((
+                0,
+                0,
+                1.min(pw),
+                1.min(ph),
+            ));
+            let tr = Instant::now();
+            let backdrop = match self.shell.raster_read(region) {
+                Some(Ok(image)) => image,
+                Some(Err(e)) => {
+                    self.shell.fail(event_loop, e);
+                    return false;
+                }
+                None => return false,
+            };
+            crate::frame_stats::record(crate::frame_stats::Phase::Readback, tr.elapsed());
+            let custom_arc = self.custom_render.clone();
+            let custom_fn = move |key: u64, w: u32, h: u32| -> Option<vello::peniko::ImageData> {
+                custom_arc
+                    .as_ref()
+                    .and_then(|f| f(key, w, h).map(|d| d.image))
+            };
+            let tf = Instant::now();
+            let injected = crate::multi_pass::process_specs_in(
+                &backdrop,
+                (region.0, region.1),
+                (pw, ph),
+                &specs,
+                scale,
+                &custom_fn,
+                &mut self.custom_cache,
+                &mut self.shell.glass_cache,
+            );
+            crate::frame_stats::record(crate::frame_stats::Phase::Filters, tf.elapsed());
+            let (fonts, state) = (&mut self.fonts, &mut self.state);
+            let Some(((), r)) = self.shell.raster_render(|f| {
+                f.push_transform(transform);
+                frame.paint_final_into(f, fonts, state, &injected);
+                f.pop_transform();
+            }) else {
+                return false;
+            };
+            render += r;
+        }
+        // Paint as on the vello path (readback and filters inside, taken out
+        // by the stats); the raster encode and submit is the Render phase.
+        crate::frame_stats::record(
+            crate::frame_stats::Phase::Paint,
+            t.elapsed().saturating_sub(render),
+        );
+        crate::frame_stats::record(crate::frame_stats::Phase::Render, render);
+        if let Err(e) = self.shell.raster_present() {
+            self.shell.fail(event_loop, e);
+            return false;
+        }
+        crate::frame_stats::frame_end();
+        true
     }
 
     /// Tells the IME about a focused field it does not know as it is:
@@ -3171,6 +3484,20 @@ mod tests {
             vec![7],
             "delivered exactly once"
         );
+    }
+}
+
+#[cfg(test)]
+mod raster_target_tests {
+    use super::needs_new_target;
+
+    /// The raster target follows the surface: built on first use, rebuilt
+    /// when a resize or rotation changes its size, kept otherwise.
+    #[test]
+    fn raster_target_tracks_the_surface_size() {
+        assert!(needs_new_target(None, (800, 600)));
+        assert!(!needs_new_target(Some((800, 600)), (800, 600)));
+        assert!(needs_new_target(Some((800, 600)), (600, 800)));
     }
 }
 
