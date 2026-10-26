@@ -1,9 +1,28 @@
 name: CI
 
+# Two tiers. Every event runs the fast gates (fmt, clippy, the mobile
+# compile checks, audit, deny; a pull request also gets core's GPU-free
+# tests), a few minutes each. The platform test suites, MSRV and coverage —
+# the slow half — run on `main` (push, the weekly schedule, by hand), not on
+# pull requests: a PR learns most of what breaks from the fast tier, and main
+# still gets everything before anything is released from it.
 on:
   push:
     branches: [main]
+    # Prose only: nothing in the build or the tests reads these.
+    paths-ignore:
+      - "**/*.md"
+      - "book/**"
+      - "docs/**"
+      - "llms.txt"
+      - "LICENSE-*"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "book/**"
+      - "docs/**"
+      - "llms.txt"
+      - "LICENSE-*"
   # Re-fire by hand. A platform incident can drop the push/PR event entirely —
   # GitHub's 2026-08-06 Actions outage stranded two runs queued for nine hours
   # that no cancel, force-cancel or re-run could revive, and their own guidance
@@ -70,6 +89,7 @@ jobs:
     # macOS runners have a Metal GPU; goldens are generated on macOS, so this
     # job is the reference for image comparisons.
     name: test (macOS / Metal)
+    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -85,6 +105,7 @@ jobs:
     # Headless vello needs a compute-capable adapter: Mesa lavapipe
     # (software Vulkan) provides one on GitHub's CPU-only runners.
     name: test (Linux / lavapipe)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -107,6 +128,25 @@ jobs:
           # The macOS reference platform stays at the default 0.2%.
           FENESTRA_SNAPSHOT_BUDGET: "0.010"
         run: cargo test --workspace
+
+  test-core:
+    # A pull request's stand-in for the platform suites it skips: core's
+    # GPU-free tests (layout, events, input, IME), the same set Windows
+    # gates on. On main the Linux suite runs these and everything else.
+    name: test (core, GPU-free)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install font system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev pkg-config
+      - run: cargo test -p fenestra-core
 
   check-mobile:
     # Compile-only: there is no device or emulator here, so this guards the
@@ -150,6 +190,7 @@ jobs:
     # the default 0.2% budget; if it proves stable here, Windows pixels
     # become a required gate and the comment above gets rewritten.
     name: build + core tests (Windows)
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -182,8 +223,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo install cargo-audit --locked
+      # A prebuilt binary, not `cargo install`: compiling the tool was most
+      # of this job's time, and it builds nothing of the workspace to cache.
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-audit
       - run: cargo audit
 
   deny:
@@ -195,13 +239,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo install cargo-deny --locked
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-deny
       - run: cargo deny check
 
   msrv:
     # The workspace builds on exactly the declared rust-version.
     name: MSRV (1.88)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -220,6 +266,7 @@ jobs:
     # baseline; raise as it grows, never lower without a recorded
     # decision). Full HTML report uploaded as an artifact.
     name: coverage (core floor)
+    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -228,7 +275,9 @@ jobs:
           toolchain: stable
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo install cargo-llvm-cov --locked
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-llvm-cov
       - name: Enforce the core line-coverage floor
         # Baseline measured 2026-06-12: 47.28% lines from core's own
         # suite (kit/shell suites exercise core further but don't count
