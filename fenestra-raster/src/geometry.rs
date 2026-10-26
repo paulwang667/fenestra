@@ -38,6 +38,43 @@ pub(crate) struct PaintParams {
 /// Triangles for every paint vertex of a frame.
 pub(crate) type Mesh = VertexBuffers<PaintV, u32>;
 
+/// A vertex of a textured quad (images, offscreen layers).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub(crate) struct ImageV {
+    /// Device position.
+    pub pos: [f32; 2],
+    /// Texture coordinate, 0..1.
+    pub uv: [f32; 2],
+    /// Premultiplied multiplier of the sampled color.
+    pub tint: [f32; 4],
+}
+
+/// Triangles for every textured quad of a frame.
+pub(crate) type QuadMesh = VertexBuffers<ImageV, u32>;
+
+/// Appends a quad whose texture corners land on `corners` (top-left,
+/// top-right, bottom-right, bottom-left, in device space).
+pub(crate) fn quad(mesh: &mut QuadMesh, corners: [Point; 4], tint: [f32; 4]) {
+    #[expect(clippy::cast_possible_truncation, reason = "vertex counts fit in u32")]
+    let base = mesh.vertices.len() as u32;
+    for (p, uv) in corners
+        .into_iter()
+        .zip([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+    {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "device coordinates fit in f32"
+        )]
+        mesh.vertices.push(ImageV {
+            pos: [p.x as f32, p.y as f32],
+            uv,
+            tint,
+        });
+    }
+    mesh.indices.extend([0, 1, 2, 0, 2, 3].map(|i| base + i));
+}
+
 /// Flattening tolerance in the shape's units: a quarter device pixel under
 /// `transform`.
 pub(crate) fn tolerance(transform: Affine) -> f32 {

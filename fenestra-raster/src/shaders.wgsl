@@ -70,3 +70,34 @@ fn extend(t: f32, mode: u32) -> f32 {
     let x = i32(round(t * 511.0));
     return textureLoad(ramps, vec2(x, i32(i.grad2.y + 0.5)), 0) * i.color.a;
 }
+
+// Writes only the stencil (clip shapes).
+@fragment fn fs_stencil(i: PaintOut) -> @location(0) vec4f {
+    return vec4f(0.0);
+}
+
+// ---------------------------------------------------------------- textured quads
+
+@group(1) @binding(0) var tex: texture_2d<f32>;
+@group(1) @binding(1) var samp: sampler;
+
+struct ImageIn {
+    @location(0) pos: vec2f,
+    @location(1) uv: vec2f,
+    @location(2) tint: vec4f,
+};
+
+struct ImageOut {
+    @builtin(position) pos: vec4f,
+    @location(0) uv: vec2f,
+    @location(1) tint: vec4f,
+};
+
+@vertex fn vs_image(v: ImageIn) -> ImageOut {
+    return ImageOut(to_clip(v.pos), v.uv, v.tint);
+}
+
+// Textures hold premultiplied color.
+@fragment fn fs_image(i: ImageOut) -> @location(0) vec4f {
+    return textureSample(tex, samp, i.uv) * i.tint;
+}
