@@ -18,13 +18,17 @@ use fenestra_core::{
     App, Element, Fonts, FrameState, GesturePhase, InputEvent, Key, KeyInput, build_frame,
     dispatch, refresh_hover,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use image::RgbaImage;
 use kurbo::Point;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
+use vello::wgpu::{self, CurrentSurfaceTexture};
+// The read-back target, for the native two-pass render (the web has none).
+#[cfg(not(target_arch = "wasm32"))]
 use vello::wgpu::{
-    self, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, CurrentSurfaceTexture,
-    Extent3d, TexelCopyBufferLayout, TextureDescriptor, TextureFormat, TextureUsages,
+    BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, TexelCopyBufferLayout,
+    TextureDescriptor, TextureFormat, TextureUsages,
 };
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 use winit::application::ApplicationHandler;
@@ -128,6 +132,7 @@ pub(crate) fn wheel_deltas(delta: MouseScrollDelta, scale: f64) -> (f64, f64) {
 /// site needs an event loop and a GPU and this needs neither: `windows_carry_
 /// every_option_they_declare` is the whole of the mapping, tested without
 /// opening anything.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn options_for<Msg>(desc: &fenestra_core::WindowDesc<Msg>) -> WindowOptions {
     let options = WindowOptions::titled(desc.title.clone())
         .with_size(desc.size.0, desc.size.1)
@@ -350,8 +355,10 @@ struct WindowShell {
     /// The two-pass read-back's off-screen target and staging buffer, kept
     /// while their size holds — a glass header reads the same strip every
     /// frame, and allocating both per frame was part of what it cost.
+    #[cfg(not(target_arch = "wasm32"))]
     readback: Option<Readback>,
     /// This window's glass panes' last blurs ([`crate::multi_pass::GlassCache`]).
+    #[cfg(not(target_arch = "wasm32"))]
     glass_cache: crate::multi_pass::GlassCache,
     /// Completed async surface setup, parked until the next [`Self::pump`]
     /// (web only; the web is single-threaded so `Rc<RefCell>` suffices).
@@ -361,6 +368,7 @@ struct WindowShell {
 
 /// A reusable read-back target: the texture the backdrop is rendered into and
 /// the mappable buffer it is copied to, for one device and size.
+#[cfg(not(target_arch = "wasm32"))]
 struct Readback {
     dev_id: usize,
     width: u32,
@@ -390,7 +398,9 @@ impl WindowShell {
             background,
             transparent,
             fatal: None,
+            #[cfg(not(target_arch = "wasm32"))]
             readback: None,
+            #[cfg(not(target_arch = "wasm32"))]
             glass_cache: crate::multi_pass::GlassCache::default(),
             #[cfg(target_arch = "wasm32")]
             ready: WasmReady::default(),
@@ -698,6 +708,7 @@ impl WindowShell {
     /// Scales the logical fragment to physical pixels and presents it.
     /// Recoverable surface states (lost/outdated/occluded/timeout) are
     /// handled in place; anything else is an error for [`Self::fail`].
+    #[cfg(not(target_arch = "wasm32"))]
     fn present(&mut self, fragment: &Scene) -> Result<(), ShellError> {
         let RenderState::Active {
             surface,
@@ -797,6 +808,7 @@ impl WindowShell {
     /// then [`crate::multi_pass::process_specs`] each region on the CPU before
     /// the final pass composites the result. Returns `None` when no surface is
     /// active (window not yet resumed or already suspended).
+    #[cfg(not(target_arch = "wasm32"))]
     fn render_to_image(
         &mut self,
         scene: &Scene,
@@ -1448,9 +1460,17 @@ struct AppRunner<A: App> {
     /// `(render_key, cache_key)`, reused across frames when the key
     /// matches. Cleared on scene-key change so stale entries don't
     /// leak across window reconfigurations.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "custom passes need the native two-pass render")
+    )]
     custom_cache: std::collections::HashMap<(u64, u64), vello::peniko::ImageData>,
     /// Custom render registry from [`App::custom_render`]. `None` when
     /// the app doesn't register custom renderers (the default).
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "custom passes need the native two-pass render")
+    )]
     custom_render: Option<fenestra_core::CustomRender>,
 }
 
@@ -1797,50 +1817,64 @@ impl<A: App> AppRunner<A> {
             // Fast path: backdrop scene is the final image, just scale and present.
             WindowShell::at_scale(backdrop_scene, scale)
         } else {
-            // Clone the Arc so the closure is `'static` (it doesn't borrow
-            // `self`). The closure falls back to `None` when no custom
-            // render is registered — the element paints normally.
-            let custom_arc = self.custom_render.clone();
-            let custom_fn = move |key: u64, w: u32, h: u32| -> Option<vello::peniko::ImageData> {
-                custom_arc
-                    .as_ref()
-                    .and_then(|f| f(key, w, h).map(|d| d.image))
-            };
-            // Two-pass: render backdrop to off-screen, readback, process, final.
-            let physical_backdrop = WindowShell::at_scale(backdrop_scene, scale);
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "physical window size fits in u32"
-            )]
-            let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
-            let (region, origin_scene) =
-                crate::multi_pass::region_scene(&physical_backdrop, &specs, scale, (pw, ph));
-            match self
-                .shell
-                .render_to_image(&origin_scene, region.2, region.3, theme.bg)
+            // The web has no synchronous read-back and no CPU filter pass:
+            // glass draws its translucent tint unblurred, as `Frame::paint`
+            // does, and foreground filters are inert.
+            #[cfg(target_arch = "wasm32")]
             {
-                Some(Ok(backdrop_pixels)) => {
-                    let injected = crate::multi_pass::process_specs_in(
-                        &backdrop_pixels,
-                        (region.0, region.1),
-                        (pw, ph),
-                        &specs,
-                        scale,
-                        &custom_fn,
-                        &mut self.custom_cache,
-                        &mut self.shell.glass_cache,
-                    );
-                    WindowShell::at_scale(
-                        frame.paint_final(&mut self.fonts, &mut self.state, &injected),
-                        scale,
-                    )
+                WindowShell::at_scale(
+                    frame.paint_final(&mut self.fonts, &mut self.state, &Default::default()),
+                    scale,
+                )
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                // Clone the Arc so the closure is `'static` (it doesn't borrow
+                // `self`). The closure falls back to `None` when no custom
+                // render is registered — the element paints normally.
+                let custom_arc = self.custom_render.clone();
+                let custom_fn =
+                    move |key: u64, w: u32, h: u32| -> Option<vello::peniko::ImageData> {
+                        custom_arc
+                            .as_ref()
+                            .and_then(|f| f(key, w, h).map(|d| d.image))
+                    };
+                // Two-pass: render backdrop to off-screen, readback, process, final.
+                let physical_backdrop = WindowShell::at_scale(backdrop_scene, scale);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "physical window size fits in u32"
+                )]
+                let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
+                let (region, origin_scene) =
+                    crate::multi_pass::region_scene(&physical_backdrop, &specs, scale, (pw, ph));
+                match self
+                    .shell
+                    .render_to_image(&origin_scene, region.2, region.3, theme.bg)
+                {
+                    Some(Ok(backdrop_pixels)) => {
+                        let injected = crate::multi_pass::process_specs_in(
+                            &backdrop_pixels,
+                            (region.0, region.1),
+                            (pw, ph),
+                            &specs,
+                            scale,
+                            &custom_fn,
+                            &mut self.custom_cache,
+                            &mut self.shell.glass_cache,
+                        );
+                        WindowShell::at_scale(
+                            frame.paint_final(&mut self.fonts, &mut self.state, &injected),
+                            scale,
+                        )
+                    }
+                    Some(Err(e)) => {
+                        self.shell.fail(event_loop, e);
+                        return;
+                    }
+                    None => return, // no active surface; nothing to present
                 }
-                Some(Err(e)) => {
-                    self.shell.fail(event_loop, e);
-                    return;
-                }
-                None => return, // no active surface; nothing to present
             }
         };
         if let Err(e) = self.shell.present_physical(&scene) {

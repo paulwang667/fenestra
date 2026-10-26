@@ -1,6 +1,6 @@
 name: CI
 
-# Two tiers. Every event runs the fast gates (fmt, clippy, the mobile
+# Two tiers. Every event runs the fast gates (fmt, clippy, the cross-target
 # compile checks, audit, deny; a pull request also gets core's GPU-free
 # tests), a few minutes each. The platform test suites, MSRV and coverage —
 # the slow half — run on `main` (push, the weekly schedule, by hand), not on
@@ -153,11 +153,14 @@ jobs:
           sudo apt-get install -y libfontconfig1-dev pkg-config
       - run: cargo test -p fenestra-core
 
-  check-mobile:
-    # Compile-only: there is no device or emulator here, so this guards the
-    # cfg gating (a macOS-only dependency used outside `cfg(target_os =
-    # "macos")` broke every non-macOS target once), not runtime behaviour.
-    # Libraries only; tests and examples assume a desktop host.
+  check-targets:
+    # Compile-only: there is no device, emulator or browser here, so this
+    # guards the cfg gating, not runtime behaviour. Both ways it has broken:
+    # a macOS-only dependency used outside `cfg(target_os = "macos")` broke
+    # every non-macOS target, and native-only read-back code outside
+    # `cfg(not(target_arch = "wasm32"))` broke the web build for weeks with
+    # nothing to say so. Libraries only; tests and examples assume a desktop
+    # host — except web_demo, the example the Pages site is built from.
     name: check (${{ matrix.target }})
     strategy:
       fail-fast: false
@@ -166,8 +169,17 @@ jobs:
           # The Ubuntu image ships the Android NDK (ANDROID_NDK_HOME).
           - target: aarch64-linux-android
             os: ubuntu-latest
+            packages: --workspace
           - target: aarch64-apple-ios
             os: macos-latest
+            packages: --workspace
+          # The crates ARCHITECTURE.md promises on the web; render, describe,
+          # mcp, motion and a2ui are native tools.
+          - target: wasm32-unknown-unknown
+            os: ubuntu-latest
+            packages: >-
+              -p fenestra-core -p fenestra-kit -p fenestra-shell -p fenestra
+              -p fenestra-charts -p fenestra-markdown -p fenestra-looks -p fenestra-anim
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -178,7 +190,9 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: ${{ matrix.target }}
-      - run: cargo check --workspace --target ${{ matrix.target }}
+      - run: cargo check ${{ matrix.packages }} --target ${{ matrix.target }}
+      - if: matrix.target == 'wasm32-unknown-unknown'
+        run: cargo check -p fenestra --example web_demo --target wasm32-unknown-unknown
 
   test-windows:
     # GPU-less Windows runners only have DX12 WARP, whose software
