@@ -63,6 +63,8 @@ pub struct Embedded<A: App> {
     /// Running subscription timers, reconciled after every applied batch.
     subs: std::collections::HashMap<String, crate::window::SubHandle>,
     cursor: Point,
+    /// The touch driving the pointer, while a finger is down.
+    finger: Option<u64>,
     /// Cursor icon requested by the last dispatch, applied by
     /// [`Self::handle_window_event`].
     cursor_icon: Option<fenestra_core::Cursor>,
@@ -124,6 +126,7 @@ where
             proxy,
             subs: std::collections::HashMap::new(),
             cursor: Point::ORIGIN,
+            finger: None,
             cursor_icon: None,
             modifiers: winit::keyboard::ModifiersState::default(),
             started: Instant::now(),
@@ -267,6 +270,25 @@ where
                 })
             }
             WindowEvent::CursorLeft { .. } => self.input(InputEvent::PointerLeave),
+            WindowEvent::Touch(touch) => {
+                let (x, y) = (touch.location.x, touch.location.y);
+                let mut response = EventResponse::default();
+                if let Some((_, events)) = crate::window::touch_pointer(
+                    &mut self.finger,
+                    touch.id,
+                    touch.phase,
+                    x,
+                    y,
+                    scale,
+                ) {
+                    for event in events {
+                        let r = self.input(event);
+                        response.consumed |= r.consumed;
+                        response.repaint |= r.repaint;
+                    }
+                }
+                response
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 let event = match (button, state) {
                     (MouseButton::Left, ElementState::Pressed) => InputEvent::PointerDown,

@@ -53,6 +53,48 @@ pub(crate) fn gesture_phase(phase: TouchPhase) -> GesturePhase {
     }
 }
 
+/// A touch as the pointer, for screens with no mouse.
+///
+/// **One finger drives it**: the first to land, until it lifts. Others are
+/// ignored (`None`) — the single-pointer model has no multi-touch event yet.
+/// A finger has no hover, so a lift also leaves; and a cancel (the OS took
+/// the gesture, as a system swipe does) leaves *before* releasing, so the
+/// release lands on nothing and clicks nothing. Returns the logical position
+/// and the events to dispatch, in order. `finger` is the runner's memory of
+/// which touch is driving.
+pub(crate) fn touch_pointer(
+    finger: &mut Option<u64>,
+    id: u64,
+    phase: TouchPhase,
+    x: f64,
+    y: f64,
+    scale: f64,
+) -> Option<(Point, Vec<InputEvent>)> {
+    let at = Point::new(x / scale, y / scale);
+    #[expect(clippy::cast_possible_truncation, reason = "positions fit in f32")]
+    let moved = InputEvent::PointerMove {
+        x: at.x as f32,
+        y: at.y as f32,
+    };
+    let events = match phase {
+        TouchPhase::Started if finger.is_none() => {
+            *finger = Some(id);
+            vec![moved, InputEvent::PointerDown]
+        }
+        _ if *finger != Some(id) => return None,
+        TouchPhase::Started | TouchPhase::Moved => vec![moved],
+        TouchPhase::Ended => {
+            *finger = None;
+            vec![moved, InputEvent::PointerUp, InputEvent::PointerLeave]
+        }
+        TouchPhase::Cancelled => {
+            *finger = None;
+            vec![InputEvent::PointerLeave, InputEvent::PointerUp]
+        }
+    };
+    Some((at, events))
+}
+
 /// A winit magnification delta as a finite `f32`, or `None`. winit documents
 /// this value as possibly NaN, and a NaN would poison an app's zoom for the
 /// rest of the session.
@@ -1311,6 +1353,7 @@ where
         fonts,
         state,
         cursor: Point::ORIGIN,
+        finger: None,
         started: Instant::now(),
         last: None,
         dirty: true,
@@ -1379,6 +1422,8 @@ struct AppRunner<A: App> {
     #[cfg(target_os = "macos")]
     menu: Option<MenuHandle<A::Msg>>,
     cursor: Point,
+    /// The touch driving the pointer, while a finger is down.
+    finger: Option<u64>,
     started: Instant,
     /// View and frame from the last redraw, for input routing.
     last: Option<(Element<A::Msg>, fenestra_core::Frame)>,
@@ -1416,6 +1461,7 @@ struct SecondaryWindow<A: App> {
     shell: WindowShell,
     state: FrameState,
     cursor: Point,
+    finger: Option<u64>,
     last: Option<(Element<A::Msg>, fenestra_core::Frame)>,
     on_close: A::Msg,
     title: String,
@@ -1985,6 +2031,7 @@ impl<A: App> AppRunner<A> {
                             shell,
                             state,
                             cursor: Point::ORIGIN,
+                            finger: None,
                             last: None,
                             on_close: desc.on_close,
                             title: desc.title,
@@ -2161,6 +2208,22 @@ impl<A: App> AppRunner<A> {
             WindowEvent::CursorLeft { .. } => {
                 self.secondary_input_main(key, event_loop, InputEvent::PointerLeave);
             }
+            WindowEvent::Touch(touch) => {
+                let Some(bundle) = self.secondary.get_mut(key) else {
+                    return;
+                };
+                let scale = bundle.shell.window().map_or(1.0, |w| w.scale_factor());
+                let (x, y) = (touch.location.x, touch.location.y);
+                let Some((at, events)) =
+                    touch_pointer(&mut bundle.finger, touch.id, touch.phase, x, y, scale)
+                else {
+                    return;
+                };
+                bundle.cursor = at;
+                for event in events {
+                    self.secondary_input_main(key, event_loop, event);
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let Some(bundle) = self.secondary.get_mut(key) else {
                     return;
@@ -2314,8 +2377,18 @@ pub(crate) fn map_key(
     event: &winit::event::KeyEvent,
     mods: winit::keyboard::ModifiersState,
 ) -> Option<InputEvent> {
+    map_logical_key(&event.logical_key, mods)
+}
+
+/// [`map_key`] on the logical key alone.
+pub(crate) fn map_logical_key(
+    logical: &winit::keyboard::Key,
+    mods: winit::keyboard::ModifiersState,
+) -> Option<InputEvent> {
     use winit::keyboard::{Key as WKey, NamedKey};
-    let key = match &event.logical_key {
+    let key = match logical {
+        // Android reports Tab and Enter as the characters they type, not as
+        // named keys; they are the same keys.
         WKey::Named(NamedKey::Tab) => {
             return Some(if mods.shift_key() {
                 InputEvent::ShiftTab
@@ -2323,6 +2396,14 @@ pub(crate) fn map_key(
                 InputEvent::Tab
             });
         }
+        WKey::Character(s) if s == "\t" => {
+            return Some(if mods.shift_key() {
+                InputEvent::ShiftTab
+            } else {
+                InputEvent::Tab
+            });
+        }
+        WKey::Character(s) if s == "\n" || s == "\r" => Key::Enter,
         WKey::Named(named) => match named {
             NamedKey::Enter => Key::Enter,
             NamedKey::Space => Key::Space,
@@ -2598,6 +2679,18 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                 self.input_main(event_loop, InputEvent::FileDrop(path))
             }
             WindowEvent::CursorLeft { .. } => self.input_main(event_loop, InputEvent::PointerLeave),
+            WindowEvent::Touch(touch) => {
+                let scale = self.shell.window().map_or(1.0, |w| w.scale_factor());
+                let (x, y) = (touch.location.x, touch.location.y);
+                if let Some((at, events)) =
+                    touch_pointer(&mut self.finger, touch.id, touch.phase, x, y, scale)
+                {
+                    self.cursor = at;
+                    for event in events {
+                        self.input_main(event_loop, event);
+                    }
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let scale = self.shell.window().map_or(1.0, |w| w.scale_factor());
                 self.cursor = Point::new(position.x / scale, position.y / scale);
@@ -2850,6 +2943,106 @@ mod tests {
             *got.lock().expect("lock"),
             vec![7],
             "delivered exactly once"
+        );
+    }
+}
+
+#[cfg(test)]
+mod input_mapping_tests {
+    use super::{map_logical_key, touch_pointer};
+    use fenestra_core::{InputEvent, Key, KeyInput};
+    use kurbo::Point;
+    use winit::event::TouchPhase;
+    use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
+
+    /// A tap is a press and a release where the finger landed, and then the
+    /// pointer leaves: a finger has no hover to leave behind.
+    #[test]
+    fn a_tap_is_a_click_where_the_finger_landed() {
+        let mut finger = None;
+        let (at, down) = touch_pointer(&mut finger, 0, TouchPhase::Started, 336.0, 508.0, 2.0)
+            .expect("the first finger drives the pointer");
+        assert_eq!(
+            at,
+            Point::new(168.0, 254.0),
+            "physical pixels over the scale"
+        );
+        assert_eq!(
+            down,
+            vec![
+                InputEvent::PointerMove { x: 168.0, y: 254.0 },
+                InputEvent::PointerDown
+            ]
+        );
+        let (_, up) = touch_pointer(&mut finger, 0, TouchPhase::Ended, 336.0, 508.0, 2.0).unwrap();
+        assert_eq!(
+            up,
+            vec![
+                InputEvent::PointerMove { x: 168.0, y: 254.0 },
+                InputEvent::PointerUp,
+                InputEvent::PointerLeave
+            ]
+        );
+        assert_eq!(
+            finger, None,
+            "the lift frees the pointer for the next finger"
+        );
+    }
+
+    /// A drag moves the pointer with the finger; a second finger is ignored
+    /// until the first lifts.
+    #[test]
+    fn one_finger_drives_the_pointer_and_others_are_ignored() {
+        let mut finger = None;
+        touch_pointer(&mut finger, 3, TouchPhase::Started, 10.0, 10.0, 1.0).unwrap();
+        assert!(touch_pointer(&mut finger, 4, TouchPhase::Started, 90.0, 90.0, 1.0).is_none());
+        let (_, moved) = touch_pointer(&mut finger, 3, TouchPhase::Moved, 40.0, 10.0, 1.0).unwrap();
+        assert_eq!(moved, vec![InputEvent::PointerMove { x: 40.0, y: 10.0 }]);
+        assert!(touch_pointer(&mut finger, 4, TouchPhase::Ended, 90.0, 90.0, 1.0).is_none());
+        assert_eq!(finger, Some(3));
+    }
+
+    /// The OS taking the gesture (a system swipe) must not click: the pointer
+    /// leaves first, so the release lands on nothing.
+    #[test]
+    fn a_cancelled_touch_releases_without_clicking() {
+        let mut finger = None;
+        touch_pointer(&mut finger, 0, TouchPhase::Started, 10.0, 10.0, 1.0).unwrap();
+        let (_, cancel) =
+            touch_pointer(&mut finger, 0, TouchPhase::Cancelled, 10.0, 10.0, 1.0).unwrap();
+        assert_eq!(
+            cancel,
+            vec![InputEvent::PointerLeave, InputEvent::PointerUp]
+        );
+        assert_eq!(finger, None);
+    }
+
+    /// Android reports Tab and Enter as characters (`"\t"`, `"\n"`), not as
+    /// named keys; they are the same keys.
+    #[test]
+    fn control_characters_are_the_keys_they_stand_for() {
+        let none = ModifiersState::empty();
+        let tab = WKey::Character("\t".into());
+        assert_eq!(map_logical_key(&tab, none), Some(InputEvent::Tab));
+        assert_eq!(
+            map_logical_key(&tab, ModifiersState::SHIFT),
+            Some(InputEvent::ShiftTab)
+        );
+        for enter in ["\n", "\r"] {
+            assert_eq!(
+                map_logical_key(&WKey::Character(enter.into()), none),
+                Some(InputEvent::Key(KeyInput::plain(Key::Enter))),
+                "{enter:?}"
+            );
+        }
+        // The named forms desktop platforms send are unchanged.
+        assert_eq!(
+            map_logical_key(&WKey::Named(NamedKey::Tab), none),
+            Some(InputEvent::Tab)
+        );
+        assert_eq!(
+            map_logical_key(&WKey::Named(NamedKey::Enter), none),
+            Some(InputEvent::Key(KeyInput::plain(Key::Enter)))
         );
     }
 }

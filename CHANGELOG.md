@@ -7,6 +7,21 @@ expansion, and two checks that were narrower than the thing they guarded.
 
 ### Fixed
 
+- **A tap did nothing on a touch screen, and Android's Tab and Enter were
+  the wrong keys.** winit delivers a finger as `WindowEvent::Touch`, which
+  no runner handled, so on Android a button could not be pressed nor a field
+  focused. A touch now drives the pointer — the first finger down, until it
+  lifts; a lift also leaves (a finger has no hover), and a cancel leaves
+  before releasing so the OS taking the gesture clicks nothing — in the
+  main window, secondary windows and `Embedded`. Android reports Tab and
+  Enter as `Character("\t")` / `Character("\n")`, so Tab was dropped and an
+  `on_key` saw `Char('\n')` instead of `Key::Enter`; they map to Tab and
+  Enter now. Verified on an Android 14 emulator: taps press buttons and
+  focus fields, Enter reaches `on_key` as `Key::Enter`, Tab cycles focus.
+  Not fixed: Shift+Tab — winit 0.30 never reports modifiers on Android —
+  and text with no key code (an accented letter, a CJK commit), which
+  NativeActivity has no input connection to deliver.
+
 - **The describe JSON projection dropped every paint-time scale.** The
   emitter warned `"scale transforms have no JSON projection; dropped"`
   and moved on, so a described element with a scale described something
