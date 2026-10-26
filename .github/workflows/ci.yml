@@ -104,9 +104,14 @@ jobs:
   test-linux:
     # Headless vello needs a compute-capable adapter: Mesa lavapipe
     # (software Vulkan) provides one on GitHub's CPU-only runners.
+    #
+    # Pinned to 24.04: on the ubuntu-26.04 image (Mesa 26.0.8) a GPU test
+    # binary dies with SIGSEGV, a different one each run (fenestra-a2ui
+    # `interaction`, then fenestra-kit `harness_test`), while the same suites
+    # pass on Metal. Revisit when a newer Mesa lands on ubuntu-latest.
     name: test (Linux / lavapipe)
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch
