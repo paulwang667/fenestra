@@ -738,6 +738,7 @@ pub struct Element<Msg> {
     pub(crate) drag_from_handle: bool,
     pub(crate) on_click: Option<Msg>,
     pub(crate) on_double_click: Option<Msg>,
+    pub(crate) on_blur: Option<Msg>,
     pub(crate) on_right_click: Option<Msg>,
     pub(crate) on_hover: Option<Msg>,
     pub(crate) on_key: Option<KeyFn<Msg>>,
@@ -859,6 +860,7 @@ impl<Msg> Element<Msg> {
             drag_from_handle: false,
             on_click: None,
             on_double_click: None,
+            on_blur: None,
             on_right_click: None,
             on_hover: None,
             on_key: None,
@@ -1169,6 +1171,13 @@ impl<Msg> Element<Msg> {
     /// (the single-click message fires for both clicks too).
     pub fn on_double_click(mut self, msg: Msg) -> Self {
         self.on_double_click = Some(msg);
+        self
+    }
+
+    /// Emits a message after other messages from a user event that moves focus
+    /// away from this element. Programmatic focus changes do not emit it.
+    pub fn on_blur(mut self, msg: Msg) -> Self {
+        self.on_blur = Some(msg);
         self
     }
 
@@ -2667,6 +2676,7 @@ impl<Msg: 'static> Element<Msg> {
             drag_from_handle: self.drag_from_handle,
             on_click: self.on_click.map(&f),
             on_double_click: self.on_double_click.map(&f),
+            on_blur: self.on_blur.map(&f),
             on_right_click: self.on_right_click.map(&f),
             on_hover: self.on_hover.map(&f),
             on_pointer_move: self.on_pointer_move.map(|g| {

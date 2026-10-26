@@ -59,6 +59,7 @@ pub struct FrameState {
     pub(crate) active: Option<WidgetId>,
     /// The focused element.
     pub(crate) focus: Option<WidgetId>,
+    pub(crate) pending_pointer_blur: Option<WidgetId>,
     /// Last focus-request token seen per element ([`crate::Element::focus_on`]).
     /// Not garbage-collected with the frame: an element that drops its token
     /// and later carries the *same* one again must not refocus, and the map
@@ -153,6 +154,7 @@ impl Default for FrameState {
             hovered: HashMap::new(),
             active: None,
             focus: None,
+            pending_pointer_blur: None,
             focus_requests: HashMap::new(),
             focus_visible: false,
             pointer: None,

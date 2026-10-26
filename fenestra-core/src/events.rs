@@ -597,6 +597,54 @@ pub fn dispatch<Msg: Clone>(
     fonts: &mut Fonts,
     event: InputEvent,
 ) -> Dispatch<Msg> {
+    let previous = state.focus;
+    let pointer_down = matches!(event, InputEvent::PointerDown);
+    let pointer_up = matches!(event, InputEvent::PointerUp);
+    let mut out = dispatch_inner(root, frame, state, fonts, event);
+    // **A composition does not outlive its focus.** Focus moving inside the
+    // window is nothing the platform hears about, so the preedit that would
+    // end it goes to the next focus. Left behind, the editor composes forever,
+    // and while it composes the keyboard is the input method's: a click back
+    // finds a field where Backspace, the arrows and Tab do nothing.
+    if previous != state.focus
+        && let Some(id) = previous
+        && let Some(editor) = state.editors.get_mut(&id)
+        && input::cancel_compose(editor, fonts)
+    {
+        out.redraw = true;
+    }
+    let blurred = if pointer_down {
+        // A click resolves on release. Defer blur so a cancel button gets to
+        // discard its draft before a generic loss-of-focus commit runs.
+        if previous != state.focus {
+            state.pending_pointer_blur = previous;
+        }
+        None
+    } else if pointer_up {
+        state.pending_pointer_blur.take()
+    } else if previous != state.focus {
+        previous
+    } else {
+        None
+    };
+    if let Some(id) = blurred {
+        let handlers = Handlers::collect(root, state, frame.canvas_height());
+        if let Some(el) = handlers.get(id)
+            && let Some(msg) = &el.on_blur
+        {
+            out.msgs.push(msg.clone());
+        }
+    }
+    out
+}
+
+fn dispatch_inner<Msg: Clone>(
+    root: &Element<Msg>,
+    frame: &Frame,
+    state: &mut FrameState,
+    fonts: &mut Fonts,
+    event: InputEvent,
+) -> Dispatch<Msg> {
     let handlers = Handlers::collect(root, state, frame.canvas_height());
     let mut out = Dispatch::default();
 
@@ -755,19 +803,27 @@ pub fn dispatch<Msg: Clone>(
             if state.static_sel.take().is_some() {
                 out.redraw = true;
             }
-            let target = chain.iter().enumerate().rev().find(|(at, id)| {
-                handlers.get(**id).is_some_and(|el| {
-                    // `takes_press` is the shared definition; the overlay
-                    // anchor is the one part that needs the frame.
-                    let takes = el.takes_press() || (!el.disabled && frame.toggle_overlay_of(**id).is_some());
-                    // **A drag from a handle only**: the press has to be on a
-                    // handle inside this element, or it is a press on empty
-                    // space and not this element's to take.
-                    let from_handle = !el.drag_from_handle
-                        || chain[at + 1..].iter().any(|below| handlers.get(*below).is_some_and(|h| h.drag_handle));
-                    takes && from_handle
+            let target = chain
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(at, id)| {
+                    handlers.get(**id).is_some_and(|el| {
+                        // `takes_press` is the shared definition; the overlay
+                        // anchor is the one part that needs the frame.
+                        let takes = el.takes_press()
+                            || (!el.disabled && frame.toggle_overlay_of(**id).is_some());
+                        // **A drag from a handle only**: the press has to be on a
+                        // handle inside this element, or it is a press on empty
+                        // space and not this element's to take.
+                        let from_handle = !el.drag_from_handle
+                            || chain[at + 1..]
+                                .iter()
+                                .any(|below| handlers.get(*below).is_some_and(|h| h.drag_handle));
+                        takes && from_handle
+                    })
                 })
-            }).map(|(_, id)| *id);
+                .map(|(_, id)| *id);
             if let Some(id) = target {
                 state.active = Some(id);
                 // Remember where/when the press began, for swipe recognition.
@@ -1076,6 +1132,11 @@ pub fn dispatch<Msg: Clone>(
             }
         }
         InputEvent::Tab | InputEvent::ShiftTab => {
+            // Candidate paging belongs to the input method, not focus traversal.
+            if state.focus.is_some_and(|focus| state.composing_in(focus)) {
+                out.redraw = true;
+                return out;
+            }
             // **Offered to the focused element first, and only offered.** An
             // element that wants Tab — an inline suggestion waiting to be
             // accepted — answers with a message and keeps it; anything else
@@ -1470,4 +1531,156 @@ fn input_local<Msg>(
         rect.height() * 0.5
     };
     Some((point.x - rect.x0 - pad + scroll_x, y))
+}
+
+#[cfg(test)]
+mod blur_tests {
+    use super::*;
+    use crate::{Theme, build_frame, by, col, raw_input, raw_text_area};
+
+    #[test]
+    fn pointer_blur_follows_the_cancel_click_and_tab_blurs_immediately() {
+        let root = col().w(200.0).children([
+            raw_input("draft", "")
+                .id("field")
+                .w(200.0)
+                .h(32.0)
+                .on_blur("blur"),
+            col()
+                .id("cancel")
+                .w(200.0)
+                .h(32.0)
+                .focusable(true)
+                .on_click("cancel"),
+        ]);
+        let mut state = FrameState::new();
+        let mut fonts = Fonts::embedded();
+        let frame = build_frame(
+            &root,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (240.0, 100.0),
+            1.0,
+        );
+        let field = frame.get(&by::id("field")).id;
+        let point = frame.get(&by::id("cancel")).rect.center();
+        state.set_focus(Some(field));
+        dispatch(
+            &root,
+            &frame,
+            &mut state,
+            &mut fonts,
+            InputEvent::PointerMove {
+                x: point.x as f32,
+                y: point.y as f32,
+            },
+        );
+        assert!(
+            dispatch(
+                &root,
+                &frame,
+                &mut state,
+                &mut fonts,
+                InputEvent::PointerDown
+            )
+            .msgs
+            .is_empty()
+        );
+        assert_eq!(
+            dispatch(&root, &frame, &mut state, &mut fonts, InputEvent::PointerUp).msgs,
+            vec!["cancel", "blur"]
+        );
+        state.set_focus(Some(field));
+        assert_eq!(
+            dispatch(&root, &frame, &mut state, &mut fonts, InputEvent::Tab).msgs,
+            vec!["blur"]
+        );
+    }
+
+    #[test]
+    fn multiline_modified_enter_is_offered_to_the_app() {
+        let root = raw_text_area("draft", "")
+            .id("field")
+            .w(200.0)
+            .h(80.0)
+            .on_input(|_| "change")
+            .on_key(|key| {
+                if key.key == Key::Enter && (key.meta || key.ctrl) {
+                    Some("submit")
+                } else {
+                    None
+                }
+            });
+        let mut state = FrameState::new();
+        let mut fonts = Fonts::embedded();
+        let frame = build_frame(
+            &root,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (240.0, 100.0),
+            1.0,
+        );
+        state.set_focus(Some(frame.get(&by::id("field")).id));
+        let mut key = KeyInput::plain(Key::Enter);
+        key.meta = true;
+        assert_eq!(
+            dispatch(&root, &frame, &mut state, &mut fonts, InputEvent::Key(key)).msgs,
+            vec!["submit"]
+        );
+        assert_eq!(
+            dispatch(
+                &root,
+                &frame,
+                &mut state,
+                &mut fonts,
+                InputEvent::Key(KeyInput::plain(Key::Enter))
+            )
+            .msgs,
+            vec!["change"]
+        );
+    }
+
+    #[test]
+    fn composition_tab_never_changes_focus_or_emits_blur() {
+        let root = col().w(200.0).children([
+            raw_input("", "")
+                .id("field")
+                .w(200.0)
+                .h(32.0)
+                .on_blur("blur"),
+            raw_input("", "").id("next").w(200.0).h(32.0),
+        ]);
+        let mut state = FrameState::new();
+        let mut fonts = Fonts::embedded();
+        let frame = build_frame(
+            &root,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (240.0, 100.0),
+            1.0,
+        );
+        let field = frame.get(&by::id("field")).id;
+        state.set_focus(Some(field));
+        dispatch(
+            &root,
+            &frame,
+            &mut state,
+            &mut fonts,
+            InputEvent::ImePreedit {
+                text: "zhongwen".into(),
+                cursor: Some((0, 8)),
+            },
+        );
+        for event in [InputEvent::Tab, InputEvent::ShiftTab] {
+            assert!(
+                dispatch(&root, &frame, &mut state, &mut fonts, event)
+                    .msgs
+                    .is_empty()
+            );
+            assert_eq!(state.focused(), Some(field));
+        }
+    }
 }

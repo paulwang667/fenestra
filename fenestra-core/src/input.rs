@@ -116,7 +116,7 @@ impl UndoStack {
 impl EditorState {
     pub(crate) fn new(style: &ResolvedText, now: f64, multiline: bool) -> Self {
         let mut editor = parley::PlainEditor::new(style.px);
-        apply_style(&mut editor, style);
+        apply_style(&mut editor, style, None);
         editor.set_width(None); // multiline editors get their width at paint
         Self {
             editor,
@@ -163,7 +163,7 @@ impl EditorState {
         // it did not survive one rebuild, which is one redraw, which is what
         // every runner does after the preedit that started it.
         if self.editor.is_composing() {
-            apply_style(&mut self.editor, style);
+            apply_style(&mut self.editor, style, fonts.role_family(style.family));
             return;
         }
         if self.editor.raw_text() != value {
@@ -173,7 +173,7 @@ impl EditorState {
             if fresh {
                 // First fill of a brand-new editor: nothing to undo.
                 self.editor.set_text(value);
-                apply_style(&mut self.editor, style);
+                apply_style(&mut self.editor, style, fonts.role_family(style.family));
                 self.caret_to_end(fonts);
                 return;
             }
@@ -186,11 +186,11 @@ impl EditorState {
             self.undo.redos.clear();
             self.undo.break_run();
             self.editor.set_text(value);
-            apply_style(&mut self.editor, style);
+            apply_style(&mut self.editor, style, fonts.role_family(style.family));
             self.caret_to_end(fonts);
             return;
         }
-        apply_style(&mut self.editor, style);
+        apply_style(&mut self.editor, style, fonts.role_family(style.family));
     }
 
     /// Puts the caret after the last character. Styles have to be applied
@@ -233,7 +233,11 @@ fn value_offset(text: &str, mask_byte: usize) -> usize {
         .map_or(text.len(), |(byte, _)| byte)
 }
 
-fn apply_style(editor: &mut parley::PlainEditor<LayoutBrush>, style: &ResolvedText) {
+fn apply_style(
+    editor: &mut parley::PlainEditor<LayoutBrush>,
+    style: &ResolvedText,
+    registered_family: Option<&str>,
+) {
     use parley::{FontFamily, FontWeight, GenericFamily, LineHeight, StyleProperty};
     let styles = editor.edit_styles();
     styles.insert(StyleProperty::FontSize(style.px));
@@ -272,15 +276,18 @@ fn apply_style(editor: &mut parley::PlainEditor<LayoutBrush>, style: &ResolvedTe
             )));
         }
     }
-    styles.insert(StyleProperty::FontFamily(match style.family {
-        crate::tokens::FamilyRole::Sans => FontFamily::named("Inter"),
-        crate::tokens::FamilyRole::Mono => FontFamily::Single(GenericFamily::Monospace.into()),
-        // Editors keep the body face; display/serif faces are for static
-        // text (registered names are not plumbed into editors yet).
-        crate::tokens::FamilyRole::Display | crate::tokens::FamilyRole::Serif => {
-            FontFamily::named("Inter")
+    let family = if let Some(name) = registered_family {
+        FontFamily::Source(std::borrow::Cow::Owned(format!(
+            "\"{}\"",
+            name.replace('\\', "\\\\").replace('"', "\\\"")
+        )))
+    } else {
+        match style.family {
+            crate::tokens::FamilyRole::Mono => FontFamily::Single(GenericFamily::Monospace.into()),
+            _ => FontFamily::named("Inter"),
         }
-    }));
+    };
+    styles.insert(StyleProperty::FontFamily(family));
 }
 
 /// The outcome of one editor event.
@@ -314,6 +321,11 @@ pub(crate) fn handle_key(
     clipboard: &mut dyn Clipboard,
     key: &KeyInput,
 ) -> EditOutcome {
+    // Candidate-selection keys belong to the input method while it is composing.
+    // Editing here would add a newline/delete text before the IME commit arrives.
+    if state.editor.is_composing() {
+        return MOVED;
+    }
     let outcome = handle_key_inner(state, fonts, clipboard, key);
     if !outcome.changed {
         // Caret/selection moves are coalescing boundaries: the next
@@ -466,6 +478,8 @@ fn handle_key_inner(
         // paragraph either way. Without the first branch the editor handles
         // every Enter and an `on_key` on the element never fires, so the
         // composer's rule could be written and could not work.
+        // Modified Enter is a form submission chord, never a paragraph.
+        Key::Enter if multiline && (key.meta || key.ctrl) => IGNORED,
         Key::Enter if multiline && submit_on_enter && !key.shift => IGNORED,
         Key::Enter if multiline => {
             if state.read_only {
@@ -548,14 +562,14 @@ fn handle_key_inner(
 }
 
 /// Filters control characters out of committed or pasted text. Multiline
-/// editors keep newlines (normalized to `\n`); single-line editors strip
+/// editors keep tabs and newlines (normalized to `\n`); single-line editors strip
 /// them with everything else.
 fn sanitize(text: &str, multiline: bool) -> String {
     if multiline {
         text.replace("\r\n", "\n")
             .chars()
             .map(|c| if c == '\r' { '\n' } else { c })
-            .filter(|c| *c == '\n' || !c.is_control())
+            .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
             .collect()
     } else {
         text.chars().filter(|c| !c.is_control()).collect()
@@ -607,6 +621,17 @@ pub(crate) fn handle_text(state: &mut EditorState, fonts: &mut Fonts, text: &str
     let mut drv = state.editor.driver(font_cx, layout_cx);
     drv.insert_or_replace_selection(&sanitized);
     HANDLED
+}
+
+/// Drops an unfinished composition, preedit and all; returns whether there
+/// was one. The preedit was never the field's value, so nothing is undone.
+pub(crate) fn cancel_compose(state: &mut EditorState, fonts: &mut Fonts) -> bool {
+    if !state.editor.is_composing() {
+        return false;
+    }
+    let (font_cx, layout_cx) = fonts.editor_contexts();
+    state.editor.driver(font_cx, layout_cx).clear_compose();
+    true
 }
 
 /// Updates the IME preedit text.
@@ -1095,11 +1120,40 @@ fn draw_text(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn multiline_paste_keeps_tsv_delimiters() {
+        assert_eq!(super::sanitize("A\t1\r\nB\t2\0", true), "A\t1\nB\t2");
+        assert_eq!(super::sanitize("A\t1\n", false), "A1");
+    }
+
     use super::{LayoutBrush, apply_style};
     use crate::style::{NumericSpacing, OpticalSizing, TextStyle};
     use crate::text::resolve_text;
     use crate::theme::Theme;
     use std::mem::discriminant;
+
+    #[test]
+    fn persistent_editor_resolves_registered_font_roles() {
+        let mut fonts = crate::text::Fonts::embedded();
+        fonts.register(
+            crate::tokens::FamilyRole::Mono,
+            include_bytes!("../assets/inter/Inter-Regular.otf").to_vec(),
+        );
+        let style = crate::text::resolve_text(
+            &TextStyle {
+                family: crate::tokens::FamilyRole::Mono,
+                ..Default::default()
+            },
+            &Theme::light(),
+        );
+        let mut state = super::EditorState::new(&style, 0.0, true);
+        state.sync("Registered input", &style, &mut fonts);
+        let key = discriminant(&parley::StyleProperty::<LayoutBrush>::FontFamily(
+            parley::FontFamily::named("unused"),
+        ));
+        assert!(matches!(state.editor.edit_styles().inner().get(&key),
+            Some(parley::StyleProperty::FontFamily(parley::FontFamily::Source(name))) if name == "\"Inter\""));
+    }
 
     /// Toggling an OpenType feature (or the opsz axis) off on a *persistent*
     /// editor must clear the prior property, not leave it stuck (the 0.16
@@ -1125,7 +1179,7 @@ mod tests {
             optical: OpticalSizing::Auto,
             ..Default::default()
         };
-        apply_style(&mut editor, &resolve_text(&on, &theme));
+        apply_style(&mut editor, &resolve_text(&on, &theme), None);
         assert!(
             editor.edit_styles().inner().contains_key(&feat_key),
             "feature property is set when enabled"
@@ -1142,7 +1196,7 @@ mod tests {
             optical: OpticalSizing::Default,
             ..Default::default()
         };
-        apply_style(&mut editor, &resolve_text(&off, &theme));
+        apply_style(&mut editor, &resolve_text(&off, &theme), None);
         assert!(
             !editor.edit_styles().inner().contains_key(&feat_key),
             "feature property is removed when toggled off"

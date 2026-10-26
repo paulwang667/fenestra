@@ -6,7 +6,7 @@
 //! at once.
 
 use fenestra_core::{
-    Element, Fonts, FrameState, InputEvent, Key, KeyInput, Theme, build_frame, col, dispatch,
+    Element, Fonts, FrameState, InputEvent, Key, KeyInput, Theme, build_frame, by, col, dispatch,
     raw_text_area,
 };
 
@@ -14,23 +14,34 @@ use fenestra_core::{
 enum Msg {
     Input(String),
     Sent,
+    Pressed,
 }
 
 fn view(value: &str) -> Element<Msg> {
-    col().children([raw_text_area(value.to_owned(), "type here")
-        // As a chat composer is: the editor leaves Enter to the app
-        // instead of inserting a newline, which is what puts the key in
-        // reach of the binding below.
-        .submit_on_enter(true)
-        .w(200.0)
-        .h(80.0)
-        .on_input(|v| Msg::Input(v.to_owned()))
-        // What a chat composer binds, and what accepting a candidate
-        // presses.
-        .on_key(|k| match k.key {
-            Key::Enter if !k.shift => Some(Msg::Sent),
-            _ => None,
-        })])
+    col().children([
+        raw_text_area(value.to_owned(), "type here")
+            .id("field")
+            // As a chat composer is: the editor leaves Enter to the app
+            // instead of inserting a newline, which is what puts the key in
+            // reach of the binding below.
+            .submit_on_enter(true)
+            .w(200.0)
+            .h(80.0)
+            .on_input(|v| Msg::Input(v.to_owned()))
+            // What a chat composer binds, and what accepting a candidate
+            // presses.
+            .on_key(|k| match k.key {
+                Key::Enter if !k.shift => Some(Msg::Sent),
+                _ => None,
+            }),
+        // Somewhere else to click, as a composer's send button is.
+        col()
+            .id("elsewhere")
+            .w(200.0)
+            .h(32.0)
+            .focusable(true)
+            .on_click(Msg::Pressed),
+    ])
 }
 
 struct Fixture {
@@ -84,6 +95,30 @@ impl Fixture {
                 cursor: Some((5, 5)),
             },
         )
+    }
+
+    /// A full click at the centre of the element with this id.
+    fn click(&mut self, value: &str, id: &str) -> Vec<Msg> {
+        let v = view(value);
+        let frame = build_frame(
+            &v,
+            &self.theme,
+            &mut self.fonts,
+            &mut self.state,
+            (240.0, 120.0),
+            1.0,
+        );
+        let at = frame.get(&by::id(id)).rect.center();
+        let mut msgs = self.send(
+            value,
+            InputEvent::PointerMove {
+                x: at.x as f32,
+                y: at.y as f32,
+            },
+        );
+        msgs.extend(self.send(value, InputEvent::PointerDown));
+        msgs.extend(self.send(value, InputEvent::PointerUp));
+        msgs
     }
 
     fn composing(&self) -> bool {
@@ -152,4 +187,28 @@ fn the_binding_comes_back_when_the_composition_ends() {
     let msgs = f.send("明天见", InputEvent::Key(KeyInput::plain(Key::Enter)));
 
     assert_eq!(msgs, vec![Msg::Sent], "Enter never came back");
+}
+
+/// **A composition does not outlive the focus it was typed into.**
+///
+/// A click elsewhere mid-composition moves focus inside the window, which the
+/// platform never hears about, so the preedit that would end the composition
+/// goes to whatever has focus next. The editor left behind kept its preedit,
+/// and with the keyboard the input method's while it composes, a click back
+/// found a field where Backspace, the arrows and Tab did nothing.
+#[test]
+fn clicking_away_mid_composition_drops_it() {
+    let mut f = Fixture::focused();
+    f.compose("明天见");
+    f.draw("明天见");
+
+    f.click("明天见", "elsewhere");
+    f.click("明天见", "field");
+
+    assert!(!f.composing(), "the composition outlived its focus");
+    assert_eq!(
+        f.send("明天见", InputEvent::Key(KeyInput::plain(Key::Backspace))),
+        vec![Msg::Input("明天".to_owned())],
+        "Backspace did nothing, or deleted into a stale preedit"
+    );
 }
