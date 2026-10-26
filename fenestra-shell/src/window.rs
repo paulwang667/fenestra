@@ -2048,6 +2048,17 @@ impl<A: App> AppRunner<A> {
         self.ime.pushed(now, self.started.elapsed().as_secs_f64());
     }
 
+    /// Re-reads the UI language (the system's may have changed while the app
+    /// ran); returns whether it changed, which marks the frame dirty.
+    fn refresh_locale(&mut self) -> bool {
+        let tag = self.shell.options.ui_locale();
+        let before = self.fonts.locale();
+        self.fonts.set_locale(tag.as_deref());
+        let changed = self.fonts.locale() != before;
+        self.dirty |= changed;
+        changed
+    }
+
     /// Android types only through the soft keyboard, so it follows focus:
     /// shown while a text field holds the caret (again after a tap, in case
     /// the user dismissed it), hidden when focus leaves.
@@ -2815,12 +2826,20 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                 self.shell.resized(size.width, size.height);
             }
             WindowEvent::ScaleFactorChanged { .. } => {
+                // On Android every configuration change arrives as this
+                // event, a new system language included.
+                self.refresh_locale();
                 self.dirty = true;
                 if let Some(w) = self.shell.window() {
                     w.request_redraw();
                 }
             }
             WindowEvent::Focused(true) => {
+                if self.refresh_locale()
+                    && let Some(w) = self.shell.window()
+                {
+                    w.request_redraw();
+                }
                 // Re-read the OS "reduce motion" setting on focus, so a change
                 // made while the app was in the background takes effect.
                 #[cfg(not(target_arch = "wasm32"))]
