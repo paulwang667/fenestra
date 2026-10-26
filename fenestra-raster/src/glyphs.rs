@@ -283,18 +283,21 @@ impl Atlas {
         if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
             return None;
         }
-        // Oversized: rasterize smaller, draw scaled up.
+        // Oversized: rasterize smaller, draw scaled up. Such a cell is placed
+        // at the exact origin, so it bakes in no subpixel shift; the smaller
+        // size may still be oversized, so the scales multiply.
         let k = (w.max(h) / f64::from(MAX_CELL)).ceil().max(1.0);
         if k > 1.0 {
             let mut cell = self.rasterize(
                 run,
                 &Key {
                     size: 0,
+                    bin: (0, 0),
                     ..key.clone()
                 },
                 size / k,
             )?;
-            cell.scale = k;
+            cell.scale *= k;
             return Some(cell);
         }
         #[expect(

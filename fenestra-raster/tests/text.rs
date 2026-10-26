@@ -244,3 +244,58 @@ fn a_frame_larger_than_one_page_draws_every_glyph() {
     render_raster(&mut r, &few, (600, 60));
     assert!(r.cache_sizes().atlas_pages <= 4, "{:?}", r.cache_sizes());
 }
+
+/// Darkness-weighted ink: total and centroid.
+fn ink(image: &support::Image) -> (f64, f64, f64) {
+    let (mut mass, mut sx, mut sy) = (0.0, 0.0, 0.0);
+    for y in 0..image.height {
+        for x in 0..image.width {
+            let dark = 255.0 - f64::from(image.pixel(x, y)[0]);
+            mass += dark;
+            sx += dark * (f64::from(x) + 0.5);
+            sy += dark * (f64::from(y) + 0.5);
+        }
+    }
+    (mass, sx / mass, sy / mass)
+}
+
+/// An `H` whose cap height is `cap` device pixels, at `origin`.
+fn big_h(cap: f64, origin: (f32, f32)) -> Text {
+    let font = inter();
+    let f = FontRef::from_index(font.data.data(), font.index).expect("a font");
+    let id = f.charmap().map('H').expect("an H");
+    let per_em = f
+        .glyph_metrics(Size::new(1.0), skrifa::instance::LocationRef::default())
+        .bounds(id)
+        .expect("bounds")
+        .y_max;
+    #[expect(clippy::cast_possible_truncation, reason = "a font size")]
+    let size = (cap / f64::from(per_em)) as f32;
+    Text::new(font, size, &[("H", origin)])
+}
+
+/// The raster glyph's ink matches vello's in amount and position.
+fn assert_ink_like_vello(text: &Text, size: (u32, u32)) {
+    let (raster, _) = render_raster(&mut renderer(), text, size);
+    let vello = support::render_vello(text, size);
+    let (rm, rx, ry) = ink(&raster);
+    let (vm, vx, vy) = ink(&vello);
+    assert!((rm / vm - 1.0).abs() < 0.03, "ink {rm} vs vello {vm}");
+    assert!(
+        (rx - vx).abs() < 0.3 && (ry - vy).abs() < 0.3,
+        "centroid ({rx:.2}, {ry:.2}) vs vello ({vx:.2}, {vy:.2})"
+    );
+}
+
+/// Just under twice the cell limit: the half-size cell is itself still
+/// oversized, so the glyph is shrunk twice and must be scaled up by both.
+#[test]
+fn a_glyph_shrunk_twice_draws_at_full_size() {
+    assert_ink_like_vello(&big_h(961.0, (40.0, 1000.0)), (1100, 1040));
+}
+
+/// An oversized glyph at a fractional position lands where vello puts it.
+#[test]
+fn an_oversized_glyph_keeps_its_subpixel_position() {
+    assert_ink_like_vello(&big_h(600.0, (40.75, 660.75)), (700, 700));
+}
