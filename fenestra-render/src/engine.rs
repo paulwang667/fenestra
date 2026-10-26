@@ -297,7 +297,7 @@ fn resolve(h: &Harness<DescribedApp>, sel: &Selector, index: usize) -> Result<Qu
         message,
         tree: h.frame().access_yaml(),
     };
-    let q = sel.to_query().map_err(&fail)?;
+    let q = sel.to_query().map_err(fail)?;
     h.frame()
         .try_get(&q)
         .map_err(|e| fail(format!("target [{q}]: {e}")))?;
