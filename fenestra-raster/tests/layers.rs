@@ -205,3 +205,52 @@ fn layer_textures_are_pooled() {
     assert_eq!(second.layer_textures_created, 0);
     assert!(r.cache_sizes().layer_textures > 0);
 }
+
+/// A small faded element: fenestra pushes its opacity layer with the whole
+/// canvas as the clip, but the layer only needs to cover what it draws.
+struct SmallFade;
+impl Paint for SmallFade {
+    fn paint<T: DrawTarget>(&self, t: &mut T) {
+        t.push_layer(
+            Fill::NonZero,
+            0.5,
+            Affine::IDENTITY,
+            &Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+        t.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            RED,
+            None,
+            &RoundedRect::new(100.0, 100.0, 120.0, 120.0, 4.0),
+        );
+        t.pop_layer();
+        let about = Affine::translate((300.0, 200.0));
+        t.push_layer(
+            Fill::NonZero,
+            0.5,
+            Affine::IDENTITY,
+            &Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+        t.push_transform(about * Affine::rotate(0.4) * about.inverse());
+        t.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            BLUE,
+            None,
+            &Rect::new(280.0, 180.0, 330.0, 220.0),
+        );
+        t.pop_transform();
+        t.pop_layer();
+    }
+}
+
+#[test]
+fn a_layer_covers_only_what_it_draws() {
+    assert_like_vello_all("small_fade", &SmallFade, (400, 300), &[EDGES, FILLS]);
+    let (_, stats) = render_raster(&mut renderer(), &SmallFade, (400, 300));
+    assert_eq!(stats.layers, 2);
+    // Two layers of at most 64x64 and 128x128 (sizes round up to 64 px),
+    // not two of the canvas's 400x300.
+    assert!(stats.layer_pixels <= 64 * 64 + 128 * 128, "{stats:?}");
+}

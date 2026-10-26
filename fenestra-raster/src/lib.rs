@@ -39,6 +39,8 @@ pub struct RenderStats {
     pub layers: u32,
     /// Layer textures created (not reused from the pool).
     pub layer_textures_created: u32,
+    /// Pixels of the offscreen layers rendered (their textures' area).
+    pub layer_pixels: u64,
     /// Images uploaded to the GPU (not found in the cache).
     pub images_uploaded: u32,
     /// Glyphs rasterized into the atlas (not found in it).
@@ -186,6 +188,11 @@ struct Layer {
     alpha: f32,
     /// The layer's clip shape in the paint mesh (drawn into the parent).
     clip: Range<u32>,
+    /// The first quad-mesh vertex of its composite in the parent.
+    composite: Option<usize>,
+    /// The texture it renders into: `bounds`' size rounded up to a pool
+    /// bucket (set by [`shrink_layers`]).
+    texture: (u32, u32),
 }
 
 impl Layer {
@@ -196,6 +203,8 @@ impl Layer {
             bounds: Some((0, 0, size.0, size.1)),
             alpha: 1.0,
             clip: 0..0,
+            composite: None,
+            texture: size,
         }
     }
 }
@@ -376,10 +385,16 @@ impl RasterFrame<'_> {
                 .images
                 .upload(device, queue, renderer.max_texture_dimension);
 
-        // One globals slot per layer: the device rectangle its pass covers.
+        let mut layers = layers;
+        let mut quads = quads;
+        shrink_layers(&mut layers, &mesh, &mut quads, &shadows);
+
+        // One globals slot per layer: the device rectangle its pass covers
+        // (an offscreen layer's bounds map onto its texture's top-left).
         let mut uniform = vec![0u8; layers.len() * GLOBALS_STRIDE as usize];
         for (i, layer) in layers.iter().enumerate() {
-            let (x, y, w, h) = layer.bounds.unwrap_or((0, 0, 1, 1));
+            let (x, y, _, _) = layer.bounds.unwrap_or((0, 0, 1, 1));
+            let (w, h) = layer.texture;
             #[expect(
                 clippy::cast_precision_loss,
                 reason = "pixel coordinates are exact in f32"
@@ -439,9 +454,10 @@ impl RasterFrame<'_> {
             label: Some("fenestra-raster frame"),
         });
         for (i, layer) in layers.iter().enumerate().rev() {
-            let Some((_, _, w, h)) = layer.bounds else {
+            let Some(_) = layer.bounds else {
                 continue;
             };
+            let (w, h) = layer.texture;
             let target_layer;
             let (attachments, resolve, clear) = if i == 0 {
                 let [r, g, b, a] = premultiply(base_color);
@@ -461,6 +477,7 @@ impl RasterFrame<'_> {
                 )
             } else {
                 stats.layers += 1;
+                stats.layer_pixels += u64::from(w) * u64::from(h);
                 target_layer = renderer.pool.take(
                     device,
                     renderer.format,
@@ -729,6 +746,8 @@ impl DrawTarget for RasterFrame<'_> {
             bounds,
             alpha: alpha.max(0.0),
             clip,
+            composite: None,
+            texture: (0, 0),
         });
         self.active.push(child);
         self.pushed.push(Pushed::Group(child));
@@ -760,6 +779,7 @@ impl DrawTarget for RasterFrame<'_> {
                     return;
                 };
                 self.clip_push(parent, clip.clone());
+                self.layers[child].composite = Some(self.quads.vertices.len());
                 let start = len32(&self.quads.indices);
                 let (x0, y0) = (f64::from(x), f64::from(y));
                 let (x1, y1) = (f64::from(x + w), f64::from(y + h));
@@ -865,5 +885,105 @@ impl DrawTarget for RasterFrame<'_> {
 
     fn pop_transform(&mut self) {
         self.stack.pop();
+    }
+}
+
+/// Rounds a layer's size up to its pool bucket, so layers whose content
+/// size changes a little every frame (an animated fade) reuse targets.
+fn bucket((w, h): (u32, u32)) -> (u32, u32) {
+    (w.next_multiple_of(64), h.next_multiple_of(64))
+}
+
+/// Shrinks each offscreen layer to the device pixels its draws touch
+/// (fenestra pushes an opacity layer with the whole canvas as its clip) and
+/// moves its composite quad to match. Children first, so a parent measures
+/// its children's composites after they shrank.
+fn shrink_layers(
+    layers: &mut [Layer],
+    mesh: &Mesh,
+    quads: &mut QuadMesh,
+    shadows: &geometry::ShadowMesh,
+) {
+    for i in (1..layers.len()).rev() {
+        let Some((bx, by, bw, bh)) = layers[i].bounds else {
+            continue;
+        };
+        let mut content = Rect::new(
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        );
+        let mut add = |p: [f32; 2]| {
+            content = content.union_pt(Point::new(f64::from(p[0]), f64::from(p[1])));
+        };
+        for draw in &layers[i].draws {
+            let range = draw.indices.start as usize..draw.indices.end as usize;
+            match draw.pipe {
+                Pipe::Paint => mesh.indices[range]
+                    .iter()
+                    .for_each(|&v| add(mesh.vertices[v as usize].pos)),
+                Pipe::Shadow => shadows.indices[range]
+                    .iter()
+                    .for_each(|&v| add(shadows.vertices[v as usize].pos)),
+                Pipe::Textured(Tex::Layer(child)) if layers[child].bounds.is_none() => {}
+                Pipe::Textured(_) | Pipe::Mask(_) => {
+                    quads.indices[range]
+                        .iter()
+                        .for_each(|&v| add(quads.vertices[v as usize].pos));
+                }
+                Pipe::ClipPush | Pipe::ClipPop => {}
+            }
+        }
+        // A pixel of margin for antialiased edges.
+        let content = content.inflate(1.0, 1.0);
+        let bounds = Rect::new(
+            f64::from(bx),
+            f64::from(by),
+            f64::from(bx + bw),
+            f64::from(by + bh),
+        );
+        let r = content.intersect(bounds);
+        let shrunk = (r.width() > 0.0 && r.height() > 0.0).then(|| {
+            let (x0, y0) = (r.x0.floor().max(bounds.x0), r.y0.floor().max(bounds.y0));
+            let (x1, y1) = (r.x1.ceil().min(bounds.x1), r.y1.ceil().min(bounds.y1));
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "within the layer's non-negative pixel bounds"
+            )]
+            let b = (x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+            b
+        });
+        let layer = &mut layers[i];
+        layer.bounds = shrunk;
+        let Some((x, y, w, h)) = shrunk else {
+            continue;
+        };
+        layer.texture = bucket((w, h));
+        if let Some(v) = layer.composite {
+            let (tw, th) = layer.texture;
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "pixel coordinates are exact in f32"
+            )]
+            let (x0, y0, x1, y1, u, t) = (
+                x as f32,
+                y as f32,
+                (x + w) as f32,
+                (y + h) as f32,
+                w as f32 / tw as f32,
+                h as f32 / th as f32,
+            );
+            for (vertex, (pos, uv)) in quads.vertices[v..v + 4].iter_mut().zip([
+                ([x0, y0], [0.0, 0.0]),
+                ([x1, y0], [u, 0.0]),
+                ([x1, y1], [u, t]),
+                ([x0, y1], [0.0, t]),
+            ]) {
+                vertex.pos = pos;
+                vertex.uv = uv;
+            }
+        }
     }
 }
