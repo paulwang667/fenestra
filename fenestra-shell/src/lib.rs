@@ -9,6 +9,7 @@ use std::fmt;
 // exists. `fenestra-core` and `fenestra-kit` compile everywhere.
 #[cfg(not(target_arch = "wasm32"))]
 mod access;
+mod backend;
 #[cfg(not(target_arch = "wasm32"))]
 mod blur;
 #[cfg(not(target_arch = "wasm32"))]
@@ -39,6 +40,7 @@ pub mod testing;
 mod web_clipboard;
 mod window;
 
+pub use backend::{Backend, RENDERER_ENV, backend_from_env};
 #[cfg(not(target_arch = "wasm32"))]
 pub use blur::{apply_element_filter, box_blur_rgba8};
 #[cfg(not(target_arch = "wasm32"))]

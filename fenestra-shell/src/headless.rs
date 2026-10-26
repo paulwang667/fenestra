@@ -3,6 +3,7 @@
 
 use std::num::NonZeroUsize;
 
+use fenestra_core::draw::DrawTarget;
 use fenestra_core::{Fonts, Frame, FrameState};
 use image::RgbaImage;
 use vello::peniko::Color;
@@ -14,6 +15,7 @@ use vello::wgpu::{
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 
 use crate::ShellError;
+use crate::backend::{Backend, backend_from_env, raster_supported};
 
 /// Env var selecting vello's CPU compute pipeline (any value but `0` or
 /// empty): the renderer's shader stages run as native Rust instead of GPU
@@ -37,40 +39,93 @@ fn cpu_flag(v: Option<&std::ffi::OsStr>) -> bool {
     v.is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-/// A reusable offscreen renderer. Creating one compiles vello's shaders, so
+/// A reusable offscreen renderer. Creating one compiles its shaders, so
 /// tests should create it once and render many scenes through it.
 pub struct Headless {
     context: RenderContext,
     dev_id: usize,
-    renderer: Renderer,
+    /// vello, built on first use: frames go through it with
+    /// [`Backend::Vello`], and [`render`](Self::render) always does.
+    renderer: Option<Renderer>,
+    /// The raster backend, with [`Backend::Raster`].
+    raster: Option<fenestra_raster::RasterRenderer>,
+    backend: Backend,
     max_dim: u32,
 }
 
+/// Prints once that raster was asked for on an adapter it cannot use.
+fn warn_raster_fallback(adapter: wgpu::Backend) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "fenestra: the raster backend needs Vulkan, Metal, or DX12; {adapter:?} renders with vello"
+        );
+    }
+}
+
 impl Headless {
-    /// Acquires a compute-capable adapter (no surface required) and builds a
-    /// vello renderer on it. Set [`CPU_ENV`] to run vello's compute stages
-    /// on the CPU (software-adapter environments).
+    /// Acquires an adapter (no surface required) and renders through the
+    /// [`Backend`] `FENESTRA_RENDERER` chooses. Set [`CPU_ENV`] to run
+    /// vello's compute stages on the CPU (software-adapter environments).
     pub fn new() -> Result<Self, ShellError> {
+        Self::with_backend(backend_from_env())
+    }
+
+    /// [`Headless::new`] rendering frames through `backend` — or vello, when
+    /// the adapter cannot run the raster backend.
+    pub fn with_backend(backend: Backend) -> Result<Self, ShellError> {
         let mut context = RenderContext::new();
         let dev_id = pollster::block_on(context.device(None)).ok_or(ShellError::NoDevice)?;
-        let device = &context.devices[dev_id].device;
-        let max_dim = device.limits().max_texture_dimension_2d;
-        let renderer = Renderer::new(
-            device,
-            RendererOptions {
-                use_cpu: cpu_compute_requested(),
-                antialiasing_support: AaSupport::area_only(),
-                num_init_threads: NonZeroUsize::new(1),
-                pipeline_cache: None,
-            },
-        )
-        .map_err(ShellError::Vello)?;
-        Ok(Self {
+        let handle = &context.devices[dev_id];
+        let max_dim = handle.device.limits().max_texture_dimension_2d;
+        let adapter = handle.adapter().get_info().backend;
+        let backend = match backend {
+            Backend::Raster if !raster_supported(adapter) => {
+                warn_raster_fallback(adapter);
+                Backend::Vello
+            }
+            b => b,
+        };
+        let raster = (backend == Backend::Raster).then(|| {
+            fenestra_raster::RasterRenderer::new(&handle.device, TextureFormat::Rgba8Unorm)
+        });
+        let mut headless = Self {
             context,
             dev_id,
-            renderer,
+            renderer: None,
+            raster,
+            backend,
             max_dim,
-        })
+        };
+        if backend == Backend::Vello {
+            headless.vello()?;
+        }
+        Ok(headless)
+    }
+
+    /// The backend frames render through.
+    pub fn backend(&self) -> Backend {
+        self.backend
+    }
+
+    /// vello's renderer, built on first use.
+    fn vello(&mut self) -> Result<&mut Renderer, ShellError> {
+        if self.renderer.is_none() {
+            let device = &self.context.devices[self.dev_id].device;
+            self.renderer = Some(
+                Renderer::new(
+                    device,
+                    RendererOptions {
+                        use_cpu: cpu_compute_requested(),
+                        antialiasing_support: AaSupport::area_only(),
+                        num_init_threads: NonZeroUsize::new(1),
+                        pipeline_cache: None,
+                    },
+                )
+                .map_err(ShellError::Vello)?,
+            );
+        }
+        Ok(self.renderer.as_mut().expect("just built"))
     }
 
     /// The largest texture dimension the device supports; render sizes are
@@ -97,29 +152,16 @@ impl Headless {
         base_color: Color,
     ) -> Result<RgbaImage, ShellError> {
         let (width, height) = self.clamp_size(width, height);
-        let handle = &self.context.devices[self.dev_id];
-        let (device, queue) = (&handle.device, &handle.queue);
-
-        let size = Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        };
-        let target = device.create_texture(&TextureDescriptor {
-            label: Some("fenestra headless target"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: TextureFormat::Rgba8Unorm,
-            usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let target = self.target(width, height, TextureUsages::STORAGE_BINDING);
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        self.vello()?;
+        let handle = &self.context.devices[self.dev_id];
         self.renderer
+            .as_mut()
+            .expect("built above")
             .render_to_texture(
-                device,
-                queue,
+                &handle.device,
+                &handle.queue,
                 scene,
                 &view,
                 &RenderParams {
@@ -130,7 +172,37 @@ impl Headless {
                 },
             )
             .map_err(ShellError::Vello)?;
+        self.read(&target, (0, 0, width, height))
+    }
 
+    /// An RGBA8 texture to render into and read back.
+    fn target(&self, width: u32, height: u32, usage: TextureUsages) -> wgpu::Texture {
+        self.context.devices[self.dev_id]
+            .device
+            .create_texture(&TextureDescriptor {
+                label: Some("fenestra headless target"),
+                size: Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                usage: usage | TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+    }
+
+    /// Reads the `(x, y, width, height)` part of `texture` back.
+    fn read(
+        &self,
+        texture: &wgpu::Texture,
+        (x, y, width, height): (u32, u32, u32, u32),
+    ) -> Result<RgbaImage, ShellError> {
+        let handle = &self.context.devices[self.dev_id];
+        let (device, queue) = (&handle.device, &handle.queue);
         // wgpu requires copy rows padded to 256 bytes.
         let padded_byte_width = (width * 4).next_multiple_of(256);
         let buffer = device.create_buffer(&BufferDescriptor {
@@ -143,7 +215,12 @@ impl Headless {
             label: Some("fenestra headless copy"),
         });
         encoder.copy_texture_to_buffer(
-            target.as_image_copy(),
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
             TexelCopyBufferInfo {
                 buffer: &buffer,
                 layout: TexelCopyBufferLayout {
@@ -152,7 +229,11 @@ impl Headless {
                     rows_per_image: None,
                 },
             },
-            size,
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
         );
         queue.submit([encoder.finish()]);
 
@@ -203,6 +284,9 @@ impl Headless {
         height: u32,
         base_color: Color,
     ) -> Result<RgbaImage, ShellError> {
+        if self.raster.is_some() {
+            return self.render_plan_raster(frame, fonts, state, width, height, base_color);
+        }
         // Paint produces logical-space scenes; a hi-DPI frame (scale != 1)
         // scales them onto the physical texture here. `process_specs`
         // already maps spec rects logical→physical via the same factor, and
@@ -233,6 +317,57 @@ impl Headless {
         );
         let final_scene = Self::at_scale(frame.paint_final(fonts, state, &injected), scale);
         self.render(&final_scene, width, height, base_color)
+    }
+
+    /// [`render_plan`](Self::render_plan) through the raster backend. The
+    /// backdrop pass renders the whole frame and only the part the glass
+    /// reads is copied back (the raster backend paints straight into its
+    /// frame, so there is no scene to shift into a smaller target).
+    fn render_plan_raster(
+        &mut self,
+        frame: &Frame,
+        fonts: &mut Fonts,
+        state: &mut FrameState,
+        width: u32,
+        height: u32,
+        base_color: Color,
+    ) -> Result<RgbaImage, ShellError> {
+        let (width, height) = self.clamp_size(width, height);
+        let scale = vello::kurbo::Affine::scale(frame.scale());
+        let usage = TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING;
+        let target = self.target(width, height, usage);
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let handle = &self.context.devices[self.dev_id];
+        let raster = self.raster.as_mut().expect("raster backend");
+        let mut f = raster.frame(width, height);
+        f.push_transform(scale);
+        let specs = frame.paint_backdrop_into(&mut f, fonts, state);
+        f.pop_transform();
+        f.render(&handle.device, &handle.queue, &view, base_color);
+        if specs.is_empty() {
+            return self.read(&target, (0, 0, width, height));
+        }
+        let region = crate::multi_pass::backdrop_region(&specs, frame.scale(), width, height)
+            .unwrap_or((0, 0, 1.min(width), 1.min(height)));
+        let backdrop = self.read(&target, region)?;
+        let injected = crate::multi_pass::process_specs_in(
+            &backdrop,
+            (region.0, region.1),
+            (width, height),
+            &specs,
+            frame.scale(),
+            &|_, _, _| None, // no custom renderers registered in the headless path
+            &mut std::collections::HashMap::new(),
+            &mut crate::multi_pass::GlassCache::default(),
+        );
+        let handle = &self.context.devices[self.dev_id];
+        let raster = self.raster.as_mut().expect("raster backend");
+        let mut f = raster.frame(width, height);
+        f.push_transform(scale);
+        frame.paint_final_into(&mut f, fonts, state, &injected);
+        f.pop_transform();
+        f.render(&handle.device, &handle.queue, &view, base_color);
+        self.read(&target, (0, 0, width, height))
     }
 
     /// Wraps a logical-space scene for a physical target. Returns the scene

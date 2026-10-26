@@ -1335,6 +1335,7 @@ dependencies = [
  "accesskit_winit",
  "arboard",
  "fenestra-core",
+ "fenestra-raster",
  "image",
  "kurbo",
  "muda",

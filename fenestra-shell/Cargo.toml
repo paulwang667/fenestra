@@ -24,6 +24,7 @@ android-game-activity = ["winit/android-game-activity"]
 
 [dependencies]
 fenestra-core.workspace = true
+fenestra-raster.workspace = true
 winit.workspace = true
 kurbo.workspace = true
 wgpu.workspace = true
