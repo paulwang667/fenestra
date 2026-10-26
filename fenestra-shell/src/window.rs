@@ -973,6 +973,7 @@ impl WindowShell {
         self.scene.append(fragment, None);
 
         let handle = &self.context.devices[surface.dev_id];
+        let t = Instant::now();
         self.renderers[surface.dev_id]
             .as_mut()
             .expect("renderer exists for surface device")
@@ -992,7 +993,17 @@ impl WindowShell {
                 },
             )
             .map_err(ShellError::Vello)?;
+        crate::frame_stats::record(crate::frame_stats::Phase::Render, t.elapsed());
+        if crate::frame_stats::sync() {
+            let t = Instant::now();
+            handle
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .map_err(ShellError::Poll)?;
+            crate::frame_stats::record(crate::frame_stats::Phase::Gpu, t.elapsed());
+        }
 
+        let t = Instant::now();
         let surface_texture = match surface.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(texture) => texture,
             CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Suboptimal(_) => {
@@ -1013,6 +1024,8 @@ impl WindowShell {
             CurrentSurfaceTexture::Validation => return Err(ShellError::SurfaceValidation),
         };
 
+        crate::frame_stats::record(crate::frame_stats::Phase::Acquire, t.elapsed());
+        let t = Instant::now();
         let mut encoder = handle
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1032,6 +1045,7 @@ impl WindowShell {
             .device
             .poll(wgpu::PollType::Poll)
             .map_err(ShellError::Poll)?;
+        crate::frame_stats::record(crate::frame_stats::Phase::Present, t.elapsed());
         Ok(())
     }
 
@@ -1821,6 +1835,8 @@ impl<A: App> AppRunner<A> {
             }
             return;
         }
+        crate::frame_stats::frame_start();
+        let t = Instant::now();
         let theme = self.app.theme();
         self.shell.background = theme.bg;
         self.state.tick(self.started.elapsed().as_secs_f64());
@@ -1835,6 +1851,8 @@ impl<A: App> AppRunner<A> {
             logical,
             scale,
         );
+        crate::frame_stats::record(crate::frame_stats::Phase::Build, t.elapsed());
+        let t = Instant::now();
         // Two-pass render when the frame has filtered regions (glass blur,
         // element filters, custom GPU renders): paint the backdrop scene
         // (every filtered subtree skipped), read it back, run
@@ -1856,6 +1874,7 @@ impl<A: App> AppRunner<A> {
                     .as_ref()
                     .and_then(|f| f(key, w, h).map(|d| d.image))
             };
+            crate::frame_stats::two_pass(specs.len());
             // Two-pass: render backdrop to off-screen, readback, process, final.
             let physical_backdrop = WindowShell::at_scale(backdrop_scene, scale);
             #[expect(
@@ -1866,11 +1885,14 @@ impl<A: App> AppRunner<A> {
             let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
             let (region, origin_scene) =
                 crate::multi_pass::region_scene(&physical_backdrop, &specs, scale, (pw, ph));
-            match self
+            let tr = Instant::now();
+            let readback = self
                 .shell
-                .render_to_image(&origin_scene, region.2, region.3, theme.bg)
-            {
+                .render_to_image(&origin_scene, region.2, region.3, theme.bg);
+            crate::frame_stats::record(crate::frame_stats::Phase::Readback, tr.elapsed());
+            match readback {
                 Some(Ok(backdrop_pixels)) => {
+                    let tf = Instant::now();
                     let injected = crate::multi_pass::process_specs_in(
                         &backdrop_pixels,
                         (region.0, region.1),
@@ -1881,6 +1903,7 @@ impl<A: App> AppRunner<A> {
                         &mut self.custom_cache,
                         &mut self.shell.glass_cache,
                     );
+                    crate::frame_stats::record(crate::frame_stats::Phase::Filters, tf.elapsed());
                     WindowShell::at_scale(
                         frame.paint_final(&mut self.fonts, &mut self.state, &injected),
                         scale,
@@ -1893,10 +1916,12 @@ impl<A: App> AppRunner<A> {
                 None => return, // no active surface; nothing to present
             }
         };
+        crate::frame_stats::record(crate::frame_stats::Phase::Paint, t.elapsed());
         if let Err(e) = self.shell.present_physical(&scene) {
             self.shell.fail(event_loop, e);
             return;
         }
+        crate::frame_stats::frame_end();
         // The frame is clean until something changes it; animation and
         // hover refresh keep it dirty so the pipeline runs again.
         self.cached_scene = Some((scene, (lw, lh, scale)));

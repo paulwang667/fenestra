@@ -16,6 +16,8 @@ mod element_render;
 #[cfg(not(target_arch = "wasm32"))]
 mod embed;
 #[cfg(not(target_arch = "wasm32"))]
+mod frame_stats;
+#[cfg(not(target_arch = "wasm32"))]
 mod harness;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
