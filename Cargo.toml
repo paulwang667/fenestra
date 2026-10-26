@@ -21,7 +21,7 @@ unsafe_code = "forbid"
 # crate meant for external consumers (e.g. cochlea) to depend on directly.
 fenestra-anim = { version = "0.1.0", path = "fenestra-anim" }
 fenestra-core = { version = "0.41.0", path = "fenestra-core" }
-fenestra-shell = { version = "0.41.0", path = "fenestra-shell" }
+fenestra-shell = { version = "0.41.0", path = "fenestra-shell", default-features = false }
 fenestra-kit = { version = "0.41.0", path = "fenestra-kit" }
 fenestra-describe = { version = "0.41.0", path = "fenestra-describe" }
 fenestra-render = { version = "0.41.0", path = "fenestra-render" }

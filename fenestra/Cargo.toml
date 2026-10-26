@@ -15,6 +15,12 @@ exclude = ["examples/assets", "tests/snapshots"]
 [lints]
 workspace = true
 
+# See `fenestra-shell`'s features: the Android activity flavor.
+[features]
+default = ["android-native-activity"]
+android-native-activity = ["fenestra-shell/android-native-activity"]
+android-game-activity = ["fenestra-shell/android-game-activity"]
+
 [dependencies]
 fenestra-core.workspace = true
 fenestra-kit.workspace = true

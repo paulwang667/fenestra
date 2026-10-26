@@ -1354,6 +1354,10 @@ where
         state,
         cursor: Point::ORIGIN,
         finger: None,
+        #[cfg(target_os = "android")]
+        keyboard_shown: false,
+        #[cfg(target_os = "android")]
+        keyboard_tap: false,
         started: Instant::now(),
         last: None,
         dirty: true,
@@ -1424,6 +1428,13 @@ struct AppRunner<A: App> {
     cursor: Point,
     /// The touch driving the pointer, while a finger is down.
     finger: Option<u64>,
+    /// Whether the soft keyboard was last asked to show (Android).
+    #[cfg(target_os = "android")]
+    keyboard_shown: bool,
+    /// A finger lifted since the last frame: a tap on the focused field
+    /// re-shows a keyboard the user dismissed (Android).
+    #[cfg(target_os = "android")]
+    keyboard_tap: bool,
     started: Instant,
     /// View and frame from the last redraw, for input routing.
     last: Option<(Element<A::Msg>, fenestra_core::Frame)>,
@@ -1891,8 +1902,25 @@ impl<A: App> AppRunner<A> {
                 winit::dpi::LogicalSize::new(1.0, caret.height()),
             );
         }
+        #[cfg(target_os = "android")]
+        self.sync_soft_keyboard();
         #[cfg(not(target_arch = "wasm32"))]
         self.push_access_tree();
+    }
+
+    /// Android types only through the soft keyboard, so it follows focus:
+    /// shown while a text field holds the caret (again after a tap, in case
+    /// the user dismissed it), hidden when focus leaves.
+    #[cfg(target_os = "android")]
+    fn sync_soft_keyboard(&mut self) {
+        let want = self.state.ime_caret().is_some();
+        let tapped = std::mem::take(&mut self.keyboard_tap);
+        if want != self.keyboard_shown || (want && tapped) {
+            if let Some(w) = self.shell.window() {
+                w.set_ime_allowed(want);
+            }
+            self.keyboard_shown = want;
+        }
     }
 
     /// Pushes the current frame's accessibility projection to the platform
@@ -2451,8 +2479,16 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
             self.shell.fail(event_loop, e);
             return;
         }
+        // Android: the keyboard follows focus (`sync_soft_keyboard`); the
+        // OS dropped it with the old surface, so the next frame re-shows it
+        // if a field still holds focus.
+        #[cfg(not(target_os = "android"))]
         if let Some(w) = self.shell.window() {
             w.set_ime_allowed(true);
+        }
+        #[cfg(target_os = "android")]
+        {
+            self.keyboard_shown = false;
         }
         for bundle in self.secondary.values_mut() {
             if let Err(e) = bundle.shell.resumed(event_loop) {
@@ -2680,6 +2716,10 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
             }
             WindowEvent::CursorLeft { .. } => self.input_main(event_loop, InputEvent::PointerLeave),
             WindowEvent::Touch(touch) => {
+                #[cfg(target_os = "android")]
+                if touch.phase == TouchPhase::Ended {
+                    self.keyboard_tap = true;
+                }
                 let scale = self.shell.window().map_or(1.0, |w| w.scale_factor());
                 let (x, y) = (touch.location.x, touch.location.y);
                 if let Some((at, events)) =

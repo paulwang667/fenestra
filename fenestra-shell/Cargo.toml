@@ -12,6 +12,16 @@ categories.workspace = true
 [lints]
 workspace = true
 
+# Android: which activity the app is packaged with. winit exposes the
+# `AndroidApp` the event loop binds to (see `WindowOptions::with_android_app`)
+# only behind one of these, and they are mutually exclusive — pick
+# `android-game-activity` with `default-features = false`. GameActivity is
+# the one with an `InputConnection`, so IME text (pinyin, accents) arrives.
+[features]
+default = ["android-native-activity"]
+android-native-activity = ["winit/android-native-activity"]
+android-game-activity = ["winit/android-game-activity"]
+
 [dependencies]
 fenestra-core.workspace = true
 winit.workspace = true
@@ -44,7 +54,3 @@ wasm-bindgen-futures.workspace = true
 web-time.workspace = true
 web-sys.workspace = true
 
-# Android: winit exposes the `AndroidApp` the event loop binds to (see
-# `WindowOptions::with_android_app`) only behind this feature.
-[target.'cfg(target_os = "android")'.dependencies]
-winit = { workspace = true, features = ["android-native-activity"] }
