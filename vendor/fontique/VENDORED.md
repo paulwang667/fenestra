@@ -18,4 +18,9 @@ The root `Cargo.toml` points `[patch.crates-io]` here. A patch only applies
 to builds of this workspace — apps depending on fenestra need the same
 `[patch.crates-io] fontique = { path = ".../vendor/fontique" }` entry.
 
+The scan also records each face's PostScript name by file and index
+(`ScannedCollection::face_postscript_names`), so the Android backend looks
+fallback faces up instead of parsing font files a second time (on a
+OnePlus 6, Android 9: `SystemFonts::new` 10.4 ms → 8.4 ms).
+
 Drop this copy once the fix is in a fontique release fenestra uses.

@@ -12,7 +12,6 @@ use alloc::{
 use std::path::Path;
 
 use hashbrown::HashMap;
-use read_fonts::types::NameId;
 use roxmltree::{Document, Node};
 
 use super::{
@@ -56,6 +55,7 @@ impl SystemFonts {
             family_names: mut name_map,
             families: family_map,
             postscript_names,
+            face_postscript_names,
             ..
         } = scan::ScannedCollection::from_paths(Path::new(&android_root).join("fonts").to_str(), 8);
         let mut generic_families = GenericFamilyMap::default();
@@ -134,13 +134,14 @@ impl SystemFonts {
                                                 .attribute("index")
                                                 .and_then(|i| i.parse().ok())
                                                 .unwrap_or(0);
+                                            // Named by the scan above: the files
+                                            // are not parsed a second time.
                                             let name = font
                                                 .text()
                                                 .and_then(|file| {
-                                                    postscript_name_in_file(
-                                                        &fonts_dir.join(file.trim()),
-                                                        index,
-                                                    )
+                                                    face_postscript_names
+                                                        .get(&(fonts_dir.join(file.trim()), index))
+                                                        .cloned()
                                                 })
                                                 .or_else(|| {
                                                     font.attribute("postScriptName").map(Into::into)
@@ -237,22 +238,4 @@ impl SystemFonts {
                     .copied()
             })
     }
-}
-
-/// The PostScript name of face `index` in the font file at `path`.
-fn postscript_name_in_file(path: &Path, index: u32) -> Option<String> {
-    // A blank or missing file name would make `path` the fonts directory,
-    // and scanning that would answer with some unrelated font.
-    if !path.is_file() {
-        return None;
-    }
-    let mut name = None;
-    scan::scan_paths([path], 0, |font| {
-        if font.index == index {
-            name = font
-                .english_or_first_name(NameId::POSTSCRIPT_NAME)
-                .map(|n| n.chars().collect());
-        }
-    });
-    name
 }

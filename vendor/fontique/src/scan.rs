@@ -30,6 +30,8 @@ use alloc::vec::Vec;
 pub struct ScannedCollection {
     pub family_names: FamilyNameMap,
     pub postscript_names: HashMap<String, FamilyId>,
+    /// Each face's PostScript name by file and index within it.
+    pub face_postscript_names: HashMap<(std::path::PathBuf, u32), String>,
     pub data_paths: SourcePathMap,
     pub families: HashMap<FamilyId, FamilyInfo>,
 }
@@ -115,6 +117,10 @@ fn scan_collection(
         } else {
             return;
         }
+        collection.face_postscript_names.insert(
+            (path.to_path_buf(), scanned_font.index),
+            postscript_name.clone(),
+        );
         let data = collection.data_paths.get_or_insert(path);
         let Some(font) = FontInfo::from_font_ref(&scanned_font.font, data, scanned_font.index)
         else {
@@ -309,4 +315,29 @@ fn english_or_first<'a>(names: &name::Name<'a>, id: NameId) -> Option<name::Name
         }
     }
     best_record.and_then(|record| record.string(names.string_data()).ok())
+}
+
+#[cfg(all(test, feature = "std"))]
+mod face_name_tests {
+    use super::ScannedCollection;
+    use alloc::string::String;
+    use std::path::PathBuf;
+
+    /// The scan records each face's PostScript name by file and index, so
+    /// a backend that names faces by file (Android's fonts.xml) need not
+    /// parse the file again.
+    #[test]
+    fn faces_are_named_by_file_and_index() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fenestra-core/assets/inter/Inter-Regular.otf");
+        let collection = ScannedCollection::from_paths([&path], 0);
+        assert_eq!(
+            collection
+                .face_postscript_names
+                .get(&(path.clone(), 0))
+                .map(String::as_str),
+            Some("Inter-Regular")
+        );
+        assert_eq!(collection.face_postscript_names.get(&(path, 1)), None);
+    }
 }
