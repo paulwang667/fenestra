@@ -1116,6 +1116,27 @@ mod squircle_tests {
         }
     }
 
+    /// A corner paints the same path whether its fit comes from the cache or
+    /// was just computed, so a box's pixels never change between frames.
+    #[test]
+    fn cached_and_fresh_corners_are_identical() {
+        let corner = |center: Point| {
+            let mut path = BezPath::new();
+            let (u, v) = (Vec2::new(0.0, -1.0), Vec2::new(1.0, 0.0));
+            append_corner(&mut path, center, u, v, 18.0, squircle_exponent(0.6), true);
+            path
+        };
+        let clear = || CORNERS.with(|c| c.borrow_mut().clear());
+        for center in [Point::new(40.0, 25.5), Point::new(-311.25, 4096.75)] {
+            clear();
+            let fresh = corner(center);
+            // Cached from a corner elsewhere, then translated here.
+            clear();
+            corner(Point::new(7.0, 3.0));
+            assert_eq!(corner(center), fresh, "at {center:?}");
+        }
+    }
+
     #[test]
     fn squircle_exponent_zero_is_circle() {
         // smoothing 0 maps to the Lamé exponent n=2 (a true circle); the
