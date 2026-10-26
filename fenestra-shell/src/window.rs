@@ -193,6 +193,11 @@ pub struct WindowOptions {
     /// Custom faces registered on the runner's fonts before the first
     /// frame: design languages work in windows, not just headlessly.
     pub fonts: Vec<(fenestra_core::FamilyRole, Vec<u8>)>,
+    /// The UI language as a BCP 47 tag (`"zh-CN"`), which picks among
+    /// fallback faces that draw the same characters differently — Han in
+    /// Simplified, Traditional or Japanese forms. `None` takes the system's
+    /// where the runner can read it (Android).
+    pub locale: Option<String>,
     /// Android: the `AndroidApp` received in `android_main`, which winit
     /// needs to bind the event loop to the activity.
     #[cfg(target_os = "android")]
@@ -215,6 +220,7 @@ impl WindowOptions {
             always_on_top: false,
             icon: None,
             fonts: Vec::new(),
+            locale: None,
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -307,6 +313,31 @@ impl WindowOptions {
     pub fn with_font(mut self, role: fenestra_core::FamilyRole, data: Vec<u8>) -> Self {
         self.fonts.push((role, data));
         self
+    }
+
+    /// Sets the UI language (a BCP 47 tag such as `"zh-CN"`); see
+    /// [`WindowOptions::locale`].
+    pub fn with_locale(mut self, tag: impl Into<String>) -> Self {
+        self.locale = Some(tag.into());
+        self
+    }
+
+    /// The UI language: the one set with [`WindowOptions::with_locale`], else
+    /// the system's where the runner can read it.
+    fn ui_locale(&self) -> Option<String> {
+        if self.locale.is_some() {
+            return self.locale.clone();
+        }
+        #[cfg(target_os = "android")]
+        if let Some(app) = &self.android_app {
+            let config = app.config();
+            let language = config.language()?;
+            return Some(match config.country() {
+                Some(country) => format!("{language}-{country}"),
+                None => language,
+            });
+        }
+        None
     }
 
     /// Attaches the `AndroidApp` received in `android_main` so winit can
@@ -1148,6 +1179,7 @@ pub fn run_static(
     for (role, data) in &options.fonts {
         fonts.register(*role, data.clone());
     }
+    fonts.set_locale(options.ui_locale().as_deref());
     let mut app = StaticApp {
         shell: WindowShell::new(options, background),
         theme,
@@ -1334,6 +1366,7 @@ where
     for (role, data) in &options.fonts {
         fonts.register(*role, data.clone());
     }
+    fonts.set_locale(options.ui_locale().as_deref());
     let mut state = live_state();
     #[cfg(not(target_arch = "wasm32"))]
     state.set_clipboard(Box::new(crate::OsClipboard::default()));

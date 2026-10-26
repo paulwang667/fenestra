@@ -116,7 +116,7 @@ impl UndoStack {
 impl EditorState {
     pub(crate) fn new(style: &ResolvedText, now: f64, multiline: bool) -> Self {
         let mut editor = parley::PlainEditor::new(style.px);
-        apply_style(&mut editor, style, None);
+        apply_style(&mut editor, style, None, None);
         editor.set_width(None); // multiline editors get their width at paint
         Self {
             editor,
@@ -163,7 +163,12 @@ impl EditorState {
         // it did not survive one rebuild, which is one redraw, which is what
         // every runner does after the preedit that started it.
         if self.editor.is_composing() {
-            apply_style(&mut self.editor, style, fonts.role_family(style.family));
+            apply_style(
+                &mut self.editor,
+                style,
+                fonts.role_family(style.family),
+                fonts.locale(),
+            );
             return;
         }
         if self.editor.raw_text() != value {
@@ -173,7 +178,12 @@ impl EditorState {
             if fresh {
                 // First fill of a brand-new editor: nothing to undo.
                 self.editor.set_text(value);
-                apply_style(&mut self.editor, style, fonts.role_family(style.family));
+                apply_style(
+                    &mut self.editor,
+                    style,
+                    fonts.role_family(style.family),
+                    fonts.locale(),
+                );
                 self.caret_to_end(fonts);
                 return;
             }
@@ -186,11 +196,21 @@ impl EditorState {
             self.undo.redos.clear();
             self.undo.break_run();
             self.editor.set_text(value);
-            apply_style(&mut self.editor, style, fonts.role_family(style.family));
+            apply_style(
+                &mut self.editor,
+                style,
+                fonts.role_family(style.family),
+                fonts.locale(),
+            );
             self.caret_to_end(fonts);
             return;
         }
-        apply_style(&mut self.editor, style, fonts.role_family(style.family));
+        apply_style(
+            &mut self.editor,
+            style,
+            fonts.role_family(style.family),
+            fonts.locale(),
+        );
     }
 
     /// Puts the caret after the last character. Styles have to be applied
@@ -237,9 +257,11 @@ fn apply_style(
     editor: &mut parley::PlainEditor<LayoutBrush>,
     style: &ResolvedText,
     registered_family: Option<&str>,
+    locale: Option<parley::Language>,
 ) {
     use parley::{FontFamily, FontWeight, GenericFamily, LineHeight, StyleProperty};
     let styles = editor.edit_styles();
+    styles.insert(StyleProperty::Locale(locale));
     styles.insert(StyleProperty::FontSize(style.px));
     styles.insert(StyleProperty::FontWeight(FontWeight::new(style.weight)));
     styles.insert(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
@@ -1265,7 +1287,7 @@ mod tests {
             optical: OpticalSizing::Auto,
             ..Default::default()
         };
-        apply_style(&mut editor, &resolve_text(&on, &theme), None);
+        apply_style(&mut editor, &resolve_text(&on, &theme), None, None);
         assert!(
             editor.edit_styles().inner().contains_key(&feat_key),
             "feature property is set when enabled"
@@ -1282,7 +1304,7 @@ mod tests {
             optical: OpticalSizing::Default,
             ..Default::default()
         };
-        apply_style(&mut editor, &resolve_text(&off, &theme), None);
+        apply_style(&mut editor, &resolve_text(&off, &theme), None, None);
         assert!(
             !editor.edit_styles().inner().contains_key(&feat_key),
             "feature property is removed when toggled off"

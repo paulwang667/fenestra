@@ -296,6 +296,9 @@ pub struct Fonts {
     cache: HashMap<LayoutKey, Layout<LayoutBrush>>,
     /// Family names registered per role (Display/Serif design faces).
     roles: HashMap<FamilyRole, String>,
+    /// The UI language, which picks among faces that draw the same
+    /// characters differently (Han in Chinese, Japanese and Korean forms).
+    locale: Option<parley::Language>,
 }
 
 /// Which family a registered blob binds its role to.
@@ -371,7 +374,25 @@ impl Fonts {
             layout_cx: LayoutContext::new(),
             cache: HashMap::new(),
             roles: HashMap::new(),
+            locale: None,
         }
+    }
+
+    /// Sets the UI language from a BCP 47 tag (`"zh-CN"`, `"ja"`, `None` to
+    /// clear). Fallback fonts follow it: Han text takes Simplified forms
+    /// under `zh-CN`, Traditional under `zh-TW`, Japanese under `ja`. An
+    /// unparsable tag clears it. The layout cache is cleared on a change.
+    pub fn set_locale(&mut self, tag: Option<&str>) {
+        let locale = tag.and_then(|t| parley::Language::parse(t).ok());
+        if locale != self.locale {
+            self.locale = locale;
+            self.cache.clear();
+        }
+    }
+
+    /// The UI language set with [`Fonts::set_locale`].
+    pub fn locale(&self) -> Option<parley::Language> {
+        self.locale
     }
 
     /// Which characters of this text have no glyph to draw.
@@ -532,6 +553,7 @@ impl Fonts {
             .layout_cx
             .ranged_builder(&mut self.font_cx, text, 1.0, true);
         builder.push_default(StyleProperty::FontFamily(family));
+        builder.push_default(StyleProperty::Locale(self.locale));
         builder.push_default(StyleProperty::FontSize(style.px));
         if style.break_anywhere {
             builder.push_default(StyleProperty::OverflowWrap(parley::OverflowWrap::Anywhere));
@@ -654,6 +676,7 @@ impl Fonts {
             .layout_cx
             .ranged_builder(&mut self.font_cx, &text, 1.0, true);
         builder.push_default(StyleProperty::FontFamily(to_family(&base_family)));
+        builder.push_default(StyleProperty::Locale(self.locale));
         builder.push_default(StyleProperty::FontSize(style.px));
         if style.break_anywhere {
             builder.push_default(StyleProperty::OverflowWrap(parley::OverflowWrap::Anywhere));
@@ -1000,6 +1023,21 @@ impl Fonts {
 
 #[cfg(test)]
 mod tests {
+
+    /// The UI language parses from a BCP 47 tag; `None` or garbage clears it.
+    #[test]
+    fn set_locale_parses_and_clears() {
+        let mut fonts = super::Fonts::embedded();
+        assert_eq!(fonts.locale(), None);
+        fonts.set_locale(Some("zh-CN"));
+        let locale = fonts.locale().expect("zh-CN parses");
+        assert_eq!((locale.language(), locale.region()), ("zh", Some("CN")));
+        fonts.set_locale(Some("not a tag!"));
+        assert_eq!(fonts.locale(), None);
+        fonts.set_locale(Some("ja"));
+        fonts.set_locale(None);
+        assert_eq!(fonts.locale(), None);
+    }
 
     /// The embedded collection cannot draw CJK, and says so.
     ///
