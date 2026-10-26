@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use taffy::prelude::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 
+use crate::draw::{DrawTarget, SceneTarget};
 use crate::element::{
     DrawerSide, Element, ExitAnim, Kind, Overlay, OverlayMode, OverlayPlacement, PathData,
     RovingAxis, Semantics,
@@ -2271,11 +2272,12 @@ impl Frame {
         // Recomputed below when a focused editor paints its caret.
         state.ime_caret = None;
         let mut scene = Scene::new();
-        self.paint_node(&mut scene, fonts, state, &self.root, mode);
+        let mut target = SceneTarget::new(&mut scene);
+        self.paint_node(&mut target, fonts, state, &self.root, mode);
         for overlay in &self.overlays {
             if overlay.backdrop {
                 let alpha = 0.4 * overlay.progress;
-                scene.fill(
+                target.fill(
                     peniko::Fill::NonZero,
                     kurbo::Affine::IDENTITY,
                     crate::Color::new([0.0, 0.0, 0.0, alpha]),
@@ -2285,30 +2287,35 @@ impl Frame {
             }
             let faded = overlay.progress < 1.0;
             if faded {
-                scene.push_layer(
+                target.push_layer(
                     peniko::Fill::NonZero,
-                    peniko::Mix::Normal,
                     overlay.progress,
                     kurbo::Affine::IDENTITY,
                     &self.canvas,
                 );
             }
-            self.paint_node(&mut scene, fonts, state, &overlay.node, mode);
+            self.paint_node(&mut target, fonts, state, &overlay.node, mode);
             if faded {
-                scene.pop_layer();
+                target.pop_layer();
             }
         }
-        self.paint_exits(&mut scene, fonts, state);
+        self.paint_exits(&mut target, fonts, state);
+        target.finish();
         scene
     }
 
     /// Paints every in-flight exit ghost on top of the frame. Each ghost
     /// advances its own spring/ease progress from `now - t0`, marks itself
     /// settled when complete (the next build GCs it), and draws inside an
-    /// opacity layer and a scale/translate sub-scene about its center. Settled
+    /// opacity layer and a pushed scale/translate about its center. Settled
     /// records are skipped, so under reduced motion (where exits settle on
     /// creation) nothing is drawn and goldens are byte-identical.
-    fn paint_exits(&self, scene: &mut Scene, fonts: &mut Fonts, state: &mut FrameState) {
+    fn paint_exits<T: DrawTarget>(
+        &self,
+        target: &mut T,
+        fonts: &mut Fonts,
+        state: &mut FrameState,
+    ) {
         let now = state.now();
         for record in state.exiting.values_mut() {
             if record.settled {
@@ -2333,25 +2340,24 @@ impl Frame {
             let clip = record.ghost.visible.unwrap_or(self.canvas);
             let layered = opacity < 1.0;
             if layered {
-                scene.push_layer(
+                target.push_layer(
                     peniko::Fill::NonZero,
-                    peniko::Mix::Normal,
                     opacity,
                     kurbo::Affine::IDENTITY,
                     &clip,
                 );
             }
-            let mut sub = Scene::new();
-            self.paint_ghost_node(&mut sub, fonts, &record.ghost);
             let c = record.ghost.rect.center();
             let mut a = kurbo::Affine::translate((tx, ty)) * kurbo::Affine::translate((c.x, c.y));
             if (scale - 1.0).abs() > 1e-4 {
                 a *= kurbo::Affine::scale(f64::from(scale));
             }
             a *= kurbo::Affine::translate((-c.x, -c.y));
-            scene.append(&sub, Some(a));
+            target.push_transform(a);
+            self.paint_ghost_node(target, fonts, &record.ghost);
+            target.pop_transform();
             if layered {
-                scene.pop_layer();
+                target.pop_layer();
             }
         }
     }
@@ -2363,31 +2369,42 @@ impl Frame {
     /// it last painted rather than snapping to its untransformed layout rect.
     /// The exit animation's own transform composes on top (applied by the
     /// [`Self::paint_exits`] caller).
-    fn paint_ghost_node(&self, scene: &mut Scene, fonts: &mut Fonts, node: &GhostNode) {
+    fn paint_ghost_node<T: DrawTarget>(&self, target: &mut T, fonts: &mut Fonts, node: &GhostNode) {
         if node.style.display == Display::None {
             return;
         }
         if let Some(a) = node.style.paint_affine(node.rect) {
-            let mut sub = Scene::new();
-            self.paint_ghost_node_unscaled(&mut sub, fonts, node);
-            scene.append(&sub, Some(a));
+            target.push_transform(a);
+            self.paint_ghost_node_unscaled(target, fonts, node);
+            target.pop_transform();
             return;
         }
-        self.paint_ghost_node_unscaled(scene, fonts, node);
+        self.paint_ghost_node_unscaled(target, fonts, node);
     }
 
     /// Paints one ghost subtree without its transform (mirrors
     /// [`Self::paint_node_unscaled`] over a [`GhostNode`]): the box layers, then
     /// the frozen content by kind, then children. No focus ring, scrollbars,
     /// selection, or caret — a ghost is an inert snapshot.
-    fn paint_ghost_node_unscaled(&self, scene: &mut Scene, fonts: &mut Fonts, node: &GhostNode) {
+    fn paint_ghost_node_unscaled<T: DrawTarget>(
+        &self,
+        target: &mut T,
+        fonts: &mut Fonts,
+        node: &GhostNode,
+    ) {
         // Exit ghosts are inert snapshots — never glass — so no backdrop image.
-        let layers =
-            painter::push_box(scene, &node.style, node.rect, self.canvas, self.scale, None);
+        let layers = painter::push_box(
+            target,
+            &node.style,
+            node.rect,
+            self.canvas,
+            self.scale,
+            None,
+        );
         match &node.paint {
             GhostPaint::Text { text, style } => {
                 fonts.paint(
-                    scene,
+                    target,
                     text,
                     style,
                     content_rect(node.rect, &node.style),
@@ -2396,7 +2413,7 @@ impl Frame {
             }
             GhostPaint::Rich { spans, style } => {
                 fonts.paint_rich(
-                    scene,
+                    target,
                     spans,
                     style,
                     content_rect(node.rect, &node.style),
@@ -2406,7 +2423,7 @@ impl Frame {
             GhostPaint::Path(data) => {
                 let color = node.style.text.color.unwrap_or(self.thumb_color);
                 painter::draw_path_rotated(
-                    scene,
+                    target,
                     data,
                     node.style.path_trim,
                     color,
@@ -2416,7 +2433,7 @@ impl Frame {
             }
             GhostPaint::Image(data) => {
                 painter::draw_image(
-                    scene,
+                    target,
                     &data.image,
                     node.rect,
                     node.style.corner_radius,
@@ -2426,14 +2443,14 @@ impl Frame {
             GhostPaint::Box | GhostPaint::InputBox => {}
         }
         for child in &node.children {
-            self.paint_ghost_node(scene, fonts, child);
+            self.paint_ghost_node(target, fonts, child);
         }
-        painter::pop_box(scene, layers);
+        painter::pop_box(target, layers);
     }
 
-    fn paint_node(
+    fn paint_node<T: DrawTarget>(
         &self,
-        scene: &mut Scene,
+        target: &mut T,
         fonts: &mut Fonts,
         state: &mut FrameState,
         node: &FrameNode,
@@ -2452,22 +2469,22 @@ impl Frame {
             return;
         }
         // Paint-time transform (translate / rotate / skew / scale, about the
-        // element center): paint the subtree into a child scene, then append it
-        // under the node's affine. `node_transform` is the single source of
+        // element center): paint the subtree under the node's affine, pushed
+        // onto the target's transform stack. `node_transform` is the single source of
         // truth — `walk_hit` inverts the same matrix so the activatable region
         // follows the painted one. Press-scale is the common case.
         if let Some(a) = node_transform(node) {
-            let mut sub = Scene::new();
-            self.paint_node_unscaled(&mut sub, fonts, state, node, mode);
-            scene.append(&sub, Some(a));
+            target.push_transform(a);
+            self.paint_node_unscaled(target, fonts, state, node, mode);
+            target.pop_transform();
             return;
         }
-        self.paint_node_unscaled(scene, fonts, state, node, mode);
+        self.paint_node_unscaled(target, fonts, state, node, mode);
     }
 
-    fn paint_node_unscaled(
+    fn paint_node_unscaled<T: DrawTarget>(
         &self,
-        scene: &mut Scene,
+        target: &mut T,
         fonts: &mut Fonts,
         state: &mut FrameState,
         node: &FrameNode,
@@ -2533,7 +2550,7 @@ impl Frame {
             && let Some(image) = mode.injected(node.id)
         {
             painter::draw_image(
-                scene,
+                target,
                 image,
                 node.rect,
                 node.style.corner_radius,
@@ -2593,7 +2610,7 @@ impl Frame {
             Some((body, rest)) => (rest, Some(body)),
             None => (style, None),
         };
-        let layers = painter::push_box(scene, style, node.rect, self.canvas, self.scale, backdrop);
+        let layers = painter::push_box(target, style, node.rect, self.canvas, self.scale, backdrop);
         if node.meta.focus_ring {
             let ring = if node.meta.invalid {
                 self.ring_color_invalid
@@ -2601,7 +2618,7 @@ impl Frame {
                 self.ring_color
             };
             painter::focus_ring(
-                scene,
+                target,
                 node.rect,
                 node.style.corner_radius,
                 node.style.corner_smoothing.unwrap_or(0.0),
@@ -2615,7 +2632,7 @@ impl Frame {
                     .filter(|(sid, ..)| *sid == node.id)
                     .map(|(_, sel, _)| (sel, self.selection_color));
                 fonts.paint(
-                    scene,
+                    target,
                     text,
                     style,
                     content_rect(node.rect, &node.style),
@@ -2628,7 +2645,7 @@ impl Frame {
                     .filter(|(sid, ..)| *sid == node.id)
                     .map(|(_, sel, _)| (sel, self.selection_color));
                 fonts.paint_rich(
-                    scene,
+                    target,
                     spans,
                     style,
                     content_rect(node.rect, &node.style),
@@ -2645,7 +2662,7 @@ impl Frame {
                         (state.now() % period) / period * std::f64::consts::TAU
                     });
                 painter::draw_path_rotated(
-                    scene,
+                    target,
                     data,
                     node.style.path_trim,
                     color,
@@ -2658,7 +2675,7 @@ impl Frame {
                 let reduced = state.reduced_motion;
                 if let Some(editor) = state.editors.get_mut(&node.id) {
                     let caret =
-                        crate::input::paint(scene, fonts, editor, data, node.rect, now, reduced);
+                        crate::input::paint(target, fonts, editor, data, node.rect, now, reduced);
                     if caret.is_some() {
                         state.ime_caret = caret;
                     }
@@ -2666,7 +2683,7 @@ impl Frame {
             }
             PaintKind::Image(data) => {
                 painter::draw_image(
-                    scene,
+                    target,
                     &data.image,
                     node.rect,
                     node.style.corner_radius,
@@ -2677,21 +2694,21 @@ impl Frame {
         }
         // Non-sticky children first, then sticky children on top.
         for child in node.children.iter().filter(|c| !c.is_sticky) {
-            self.paint_node(scene, fonts, state, child, mode);
+            self.paint_node(target, fonts, state, child, mode);
         }
         for child in node.children.iter().filter(|c| c.is_sticky) {
-            self.paint_node(scene, fonts, state, child, mode);
+            self.paint_node(target, fonts, state, child, mode);
         }
         if let Some(scroll) = &node.scroll {
             let color = self.thumb_color.multiply_alpha(scroll.alpha * 0.6);
             if let Some(thumb) = scroll.thumb_v {
-                painter::fill_rounded(scene, thumb, R_FULL, color);
+                painter::fill_rounded(target, thumb, R_FULL, color);
             }
             if let Some(thumb) = scroll.thumb_h {
-                painter::fill_rounded(scene, thumb, R_FULL, color);
+                painter::fill_rounded(target, thumb, R_FULL, color);
             }
         }
-        painter::pop_box(scene, layers);
+        painter::pop_box(target, layers);
     }
 
     // ------------------------------------------------------------- queries
@@ -3208,7 +3225,7 @@ impl Frame {
         // computed by `realize` purely from untransformed layout rects — it
         // has no knowledge of paint-time transforms. Paint matches that: an
         // ancestor's clip layer is pushed in the ancestor's own paint call,
-        // wrapping this node's transformed sub-scene from the outside, so it
+        // wrapping this node's transformed subtree from the outside, so it
         // clips in the space *before* this node's own transform is entered.
         // Test it against the incoming point first.
         if let Some(v) = node.visible

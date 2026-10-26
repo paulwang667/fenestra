@@ -10,8 +10,8 @@ use kurbo::{
     Rect, RoundedRect, RoundedRectRadii, Shape, Stroke, Vec2, fit_to_bezpath,
 };
 use peniko::{Color, ColorStop, ColorStops, Fill, Gradient};
-use vello::Scene;
 
+use crate::draw::DrawTarget;
 use crate::element::PathData;
 use crate::style::{
     AdaptiveTint, Border, CornerRadius, GradientStop, Paint, Shadow, Sheen, SpecularEdge, Style,
@@ -349,7 +349,7 @@ fn uniform_radius(rect: Rect, corners: CornerRadius) -> f64 {
     0.25 * (c(corners.tl) + c(corners.tr) + c(corners.br) + c(corners.bl))
 }
 
-fn shadow_layer(scene: &mut Scene, rect: Rect, corners: CornerRadius, shadow: &Shadow) {
+fn shadow_layer<T: DrawTarget>(target: &mut T, rect: Rect, corners: CornerRadius, shadow: &Shadow) {
     if shadow.color.components[3] <= 0.0 {
         return;
     }
@@ -361,7 +361,7 @@ fn shadow_layer(scene: &mut Scene, rect: Rect, corners: CornerRadius, shadow: &S
     let radius = (uniform_radius(rect, corners) + spread).max(0.0);
     let std_dev = f64::from(shadow.blur * BLUR_TO_STD_DEV);
     if std_dev <= 0.0 {
-        scene.fill(
+        target.fill(
             Fill::NonZero,
             Affine::IDENTITY,
             shadow.color,
@@ -369,7 +369,7 @@ fn shadow_layer(scene: &mut Scene, rect: Rect, corners: CornerRadius, shadow: &S
             &RoundedRect::from_rect(shadow_rect, radius),
         );
     } else {
-        scene.draw_blurred_rounded_rect(
+        target.draw_blurred_rounded_rect(
             Affine::IDENTITY,
             shadow_rect,
             shadow.color,
@@ -454,7 +454,7 @@ fn reduce_corners(mut c: CornerRadius, by: f32) -> CornerRadius {
 /// — white toward the light, fading through transparent to an optional shade on
 /// the far side — composited source-over the fill so a translucent pane reads as
 /// lit glass. The gradient axis follows [`Sheen::light_deg`].
-fn glass_sheen(scene: &mut Scene, path: &BoxPath, rect: Rect, sheen: &Sheen) {
+fn glass_sheen<T: DrawTarget>(target: &mut T, path: &BoxPath, rect: Rect, sheen: &Sheen) {
     let stops = vec![
         GradientStop {
             offset: 0.0,
@@ -473,7 +473,7 @@ fn glass_sheen(scene: &mut Scene, path: &BoxPath, rect: Rect, sheen: &Sheen) {
         angle_deg: sheen.light_deg,
         stops,
     };
-    scene.fill(
+    target.fill(
         Fill::NonZero,
         Affine::IDENTITY,
         &brush_for(&paint, rect),
@@ -488,8 +488,8 @@ fn glass_sheen(scene: &mut Scene, path: &BoxPath, rect: Rect, sheen: &Sheen) {
 /// one hairline further in (the lower half of the "double edge"). The stroke
 /// follows the same superellipse path as the fill, inset concentrically so it
 /// sits cleanly within the border.
-fn specular_rim(
-    scene: &mut Scene,
+fn specular_rim<T: DrawTarget>(
+    target: &mut T,
     rect: Rect,
     corners: CornerRadius,
     smoothing: f32,
@@ -532,7 +532,7 @@ fn specular_rim(
         angle_deg: edge.light_deg,
         stops,
     };
-    scene.stroke(
+    target.stroke(
         &Stroke::new(w),
         Affine::IDENTITY,
         &brush_for(&paint, rim_rect),
@@ -564,8 +564,13 @@ fn snap_hairline_rect(rect: Rect, scale: f64) -> Rect {
 }
 
 /// Fills a uniformly-rounded rect (used for scrollbar thumbs).
-pub(crate) fn fill_rounded(scene: &mut Scene, rect: Rect, radius: f32, color: peniko::Color) {
-    scene.fill(
+pub(crate) fn fill_rounded<T: DrawTarget>(
+    target: &mut T,
+    rect: Rect,
+    radius: f32,
+    color: peniko::Color,
+) {
+    target.fill(
         Fill::NonZero,
         Affine::IDENTITY,
         color,
@@ -582,8 +587,8 @@ pub(crate) fn fill_rounded(scene: &mut Scene, rect: Rect, radius: f32, color: pe
 /// translucent fill (between the drop shadow and the tint, clipped to the same
 /// rounded silhouette). It is `None` for every non-glass element and for the
 /// single-pass paths, which then render byte-identically to before glass blur.
-pub(crate) fn push_box(
-    scene: &mut Scene,
+pub(crate) fn push_box<T: DrawTarget>(
+    target: &mut T,
     style: &Style,
     rect: Rect,
     canvas: Rect,
@@ -598,9 +603,8 @@ pub(crate) fn push_box(
         // CSS group semantics: the element's own shadows, fill, and border
         // fade together with its children. Bounded by the canvas so
         // overflowing children and shadows stay inside the group.
-        scene.push_layer(
+        target.push_layer(
             Fill::NonZero,
-            peniko::Mix::Normal,
             style.opacity.clamp(0.0, 1.0),
             Affine::IDENTITY,
             &rounded_rect(canvas, CornerRadius::default()),
@@ -609,7 +613,7 @@ pub(crate) fn push_box(
     }
 
     for shadow in &style.shadows {
-        shadow_layer(scene, rect, style.corner_radius, shadow);
+        shadow_layer(target, rect, style.corner_radius, shadow);
     }
 
     let path = corner_path(rect, style.corner_radius, smoothing);
@@ -626,9 +630,9 @@ pub(crate) fn push_box(
                 rect.width() / f64::from(image.width),
                 rect.height() / f64::from(image.height),
             );
-        scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &path);
-        scene.draw_image(image, transform);
-        scene.pop_layer();
+        target.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &path);
+        target.draw_image(image, transform);
+        target.pop_layer();
     }
     if let Some(paint) = &style.fill {
         let fill_rect = snap_hairline_rect(rect, scale);
@@ -647,7 +651,7 @@ pub(crate) fn push_box(
             _ => None,
         };
         let paint = adapted.as_ref().unwrap_or(paint);
-        scene.fill(
+        target.fill(
             Fill::NonZero,
             Affine::IDENTITY,
             &brush_for(paint, fill_rect),
@@ -659,7 +663,7 @@ pub(crate) fn push_box(
     // Glass body sheen: a raking light wash over the fill, clipped to the
     // silhouette by filling the same path. `None` for every non-glass element.
     if let Some(sheen) = &style.sheen {
-        glass_sheen(scene, &path, rect, sheen);
+        glass_sheen(target, &path, rect, sheen);
     }
 
     if let Some(border) = style.border
@@ -695,7 +699,7 @@ pub(crate) fn push_box(
         } else {
             Stroke::new(width)
         };
-        scene.stroke(
+        target.stroke(
             &stroke,
             Affine::IDENTITY,
             border.color,
@@ -723,7 +727,7 @@ pub(crate) fn push_box(
                 let mut line = BezPath::new();
                 line.move_to(p0);
                 line.line_to(p1);
-                scene.stroke(&Stroke::new(w), Affine::IDENTITY, edge.color, None, &line);
+                target.stroke(&Stroke::new(w), Affine::IDENTITY, edge.color, None, &line);
             }
         };
         stroke_edge(sb.top, Point::new(r.x0, r.y0), Point::new(r.x1, r.y0));
@@ -735,7 +739,7 @@ pub(crate) fn push_box(
     // Glass specular rim: the luminous perimeter light, painted over the border
     // so it reads as light catching the edge. `None` for every non-glass box.
     if let Some(edge) = &style.specular_edge {
-        specular_rim(scene, rect, style.corner_radius, smoothing, edge, scale);
+        specular_rim(target, rect, style.corner_radius, smoothing, edge, scale);
     }
 
     if let Some(highlight) = style.highlight_top
@@ -746,22 +750,22 @@ pub(crate) fn push_box(
         let h = 1.0 / scale;
         let top = snap(rect.y0, scale);
         let bar = Rect::new(rect.x0, top, rect.x1, top + h);
-        scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &path);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, highlight, None, &bar);
-        scene.pop_layer();
+        target.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &path);
+        target.fill(Fill::NonZero, Affine::IDENTITY, highlight, None, &bar);
+        target.pop_layer();
     }
 
     if style.clip {
-        scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &path);
+        target.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &path);
         layers += 1;
     }
     layers
 }
 
 /// Pops layers pushed by [`push_box`].
-pub(crate) fn pop_box(scene: &mut Scene, layers: usize) {
+pub(crate) fn pop_box<T: DrawTarget>(target: &mut T, layers: usize) {
     for _ in 0..layers {
-        scene.pop_layer();
+        target.pop_layer();
     }
 }
 
@@ -807,8 +811,8 @@ fn adapt_tint(tint: Color, image: &peniko::ImageData, adaptive: &AdaptiveTint) -
 }
 
 /// Draws an RGBA image stretched to `rect`, clipped to the corner radius.
-pub(crate) fn draw_image(
-    scene: &mut Scene,
+pub(crate) fn draw_image<T: DrawTarget>(
+    target: &mut T,
     image: &peniko::ImageData,
     rect: Rect,
     corners: CornerRadius,
@@ -822,21 +826,21 @@ pub(crate) fn draw_image(
             rect.width() / f64::from(image.width),
             rect.height() / f64::from(image.height),
         );
-    scene.push_clip_layer(
+    target.push_clip_layer(
         Fill::NonZero,
         Affine::IDENTITY,
         &corner_path(rect, corners, smoothing),
     );
-    scene.draw_image(image, transform);
-    scene.pop_layer();
+    target.draw_image(image, transform);
+    target.pop_layer();
 }
 
 /// Paints the keyboard focus halo: a soft [`FOCUS_RING`]-width stroke
 /// (3px) at the ring color, sitting flush just outside the element edge so it
 /// reads as a glow around the (ring-colored) border. The border swap itself
 /// happens during style resolution.
-pub(crate) fn focus_ring(
-    scene: &mut Scene,
+pub(crate) fn focus_ring<T: DrawTarget>(
+    target: &mut T,
     rect: Rect,
     corners: CornerRadius,
     smoothing: f32,
@@ -853,7 +857,7 @@ pub(crate) fn focus_ring(
     ] {
         *r += FOCUS_RING.offset;
     }
-    scene.stroke(
+    target.stroke(
         &Stroke::new(f64::from(FOCUS_RING.width)),
         Affine::IDENTITY,
         color,
@@ -868,8 +872,8 @@ pub(crate) fn focus_ring(
 /// Paints a vector path scaled from its viewbox into `rect`, optionally
 /// trimmed to the first `trim` fraction of its arc length and rotated
 /// (radians) around the rect center (spinners).
-pub(crate) fn draw_path_rotated(
-    scene: &mut Scene,
+pub(crate) fn draw_path_rotated<T: DrawTarget>(
+    target: &mut T,
     data: &PathData,
     trim: f32,
     color: Color,
@@ -906,9 +910,9 @@ pub(crate) fn draw_path_rotated(
             let stroke = Stroke::new(width)
                 .with_caps(kurbo::Cap::Round)
                 .with_join(kurbo::Join::Round);
-            scene.stroke(&stroke, transform, color, None, path);
+            target.stroke(&stroke, transform, color, None, path);
         }
-        None => scene.fill(Fill::NonZero, transform, color, None, path),
+        None => target.fill(Fill::NonZero, transform, color, None, path),
     }
 }
 

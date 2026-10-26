@@ -12,8 +12,8 @@ use parley::{
     LineHeight, PositionedLayoutItem, StyleProperty,
 };
 use peniko::{Color, Fill};
-use vello::Scene;
 
+use crate::draw::{DrawTarget, Glyph, GlyphRun};
 use crate::style::{FontFeatures, OpticalSizing, TextAlign, TextStyle, TextWrap};
 use crate::theme::Theme;
 use crate::tokens::{FamilyRole, tracking_em};
@@ -785,9 +785,9 @@ impl Fonts {
     }
 
     /// Paints a rich paragraph; each glyph run draws with its span brush.
-    pub(crate) fn paint_rich(
+    pub(crate) fn paint_rich<T: DrawTarget>(
         &mut self,
-        scene: &mut Scene,
+        target: &mut T,
         spans: &[crate::element::Span],
         style: &ResolvedText,
         rect: Rect,
@@ -803,7 +803,7 @@ impl Fonts {
                 max_advance,
                 sel,
             ) {
-                scene.fill(Fill::NonZero, transform, highlight, None, &r);
+                target.fill(Fill::NonZero, transform, highlight, None, &r);
             }
         }
         let layout = self.shape_rich(spans, style, max_advance);
@@ -821,27 +821,27 @@ impl Fonts {
                     .synthesis()
                     .skew()
                     .map(|angle| Affine::skew(f64::from(angle.to_radians().tan()), 0.0));
-                scene
-                    .draw_glyphs(run.font())
-                    .brush(color)
-                    .hint(true)
-                    .transform(transform)
-                    .glyph_transform(glyph_xform)
-                    .font_size(run.font_size())
-                    .normalized_coords(run.normalized_coords())
-                    .draw(
-                        Fill::NonZero,
-                        glyph_run.glyphs().map(|glyph| {
-                            let gx = x + glyph.x;
-                            let gy = y + glyph.y;
-                            x += glyph.advance;
-                            vello::Glyph {
-                                id: glyph.id,
-                                x: gx,
-                                y: gy,
-                            }
-                        }),
-                    );
+                target.draw_glyphs(
+                    &GlyphRun {
+                        font: run.font(),
+                        font_size: run.font_size(),
+                        hint: true,
+                        normalized_coords: run.normalized_coords(),
+                        transform,
+                        glyph_transform: glyph_xform,
+                        color,
+                    },
+                    glyph_run.glyphs().map(|glyph| {
+                        let gx = x + glyph.x;
+                        let gy = y + glyph.y;
+                        x += glyph.advance;
+                        Glyph {
+                            id: glyph.id,
+                            x: gx,
+                            y: gy,
+                        }
+                    }),
+                );
             }
         }
     }
@@ -960,9 +960,9 @@ impl Fonts {
     }
 
     /// Paints `text` into the scene at `rect` (the laid-out text box).
-    pub(crate) fn paint(
+    pub(crate) fn paint<T: DrawTarget>(
         &mut self,
-        scene: &mut Scene,
+        target: &mut T,
         text: &str,
         style: &ResolvedText,
         rect: Rect,
@@ -979,7 +979,7 @@ impl Fonts {
                 max_advance,
                 sel,
             ) {
-                scene.fill(Fill::NonZero, transform, highlight, None, &r);
+                target.fill(Fill::NonZero, transform, highlight, None, &r);
             }
         }
         let layout = self.layout(text, style, max_advance);
@@ -995,27 +995,27 @@ impl Fonts {
                     .synthesis()
                     .skew()
                     .map(|angle| Affine::skew(f64::from(angle.to_radians().tan()), 0.0));
-                scene
-                    .draw_glyphs(run.font())
-                    .brush(color)
-                    .hint(true)
-                    .transform(transform)
-                    .glyph_transform(glyph_xform)
-                    .font_size(run.font_size())
-                    .normalized_coords(run.normalized_coords())
-                    .draw(
-                        Fill::NonZero,
-                        glyph_run.glyphs().map(|glyph| {
-                            let gx = x + glyph.x;
-                            let gy = y + glyph.y;
-                            x += glyph.advance;
-                            vello::Glyph {
-                                id: glyph.id,
-                                x: gx,
-                                y: gy,
-                            }
-                        }),
-                    );
+                target.draw_glyphs(
+                    &GlyphRun {
+                        font: run.font(),
+                        font_size: run.font_size(),
+                        hint: true,
+                        normalized_coords: run.normalized_coords(),
+                        transform,
+                        glyph_transform: glyph_xform,
+                        color,
+                    },
+                    glyph_run.glyphs().map(|glyph| {
+                        let gx = x + glyph.x;
+                        let gy = y + glyph.y;
+                        x += glyph.advance;
+                        Glyph {
+                            id: glyph.id,
+                            x: gx,
+                            y: gy,
+                        }
+                    }),
+                );
             }
         }
     }

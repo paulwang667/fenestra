@@ -5,9 +5,9 @@
 use kurbo::{Affine, Rect};
 use parley::PositionedLayoutItem;
 use peniko::{Color, Fill};
-use vello::Scene;
 
 use crate::clipboard::Clipboard;
+use crate::draw::{DrawTarget, Glyph, GlyphRun};
 use crate::events::{Key, KeyInput};
 use crate::text::{Fonts, LayoutBrush, ResolvedText};
 
@@ -925,8 +925,8 @@ pub(crate) struct InputPaint {
 /// Paints an input's content (selection, text or placeholder, caret) inside
 /// `rect`, clipped, vertically centered, with horizontal follow-scroll.
 /// Returns the focused caret rect (for IME positioning), if any.
-pub(crate) fn paint(
-    scene: &mut Scene,
+pub(crate) fn paint<T: DrawTarget>(
+    target: &mut T,
     fonts: &mut Fonts,
     state: &mut EditorState,
     data: &InputPaint,
@@ -938,7 +938,7 @@ pub(crate) fn paint(
 
     // A masked field paints bullets, not the value.
     if data.masked {
-        return paint_masked(scene, fonts, state, data, rect, now, reduced_motion);
+        return paint_masked(target, fonts, state, data, rect, now, reduced_motion);
     }
 
     // Multiline editors wrap to the content width (set before layout).
@@ -985,7 +985,7 @@ pub(crate) fn paint(
     }
     let text_origin = (content.x0 - state.scroll_x, text_y);
 
-    scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
+    target.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
 
     // Selection behind the glyphs.
     if data.focused {
@@ -996,7 +996,7 @@ pub(crate) fn paint(
                 text_origin.0 + bb.x1,
                 text_origin.1 + bb.y1,
             );
-            scene.fill(
+            target.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
                 data.selection_color,
@@ -1017,13 +1017,13 @@ pub(crate) fn paint(
                 text_y + layout_height
             };
             let ph_rect = Rect::new(content.x0, text_y, content.x1, ph_bottom);
-            fonts.paint(scene, &data.placeholder, &placeholder_style, ph_rect, None);
+            fonts.paint(target, &data.placeholder, &placeholder_style, ph_rect, None);
         }
     } else {
         let color = data.style.color;
         let (font_cx, layout_cx) = fonts.editor_contexts();
         let layout = state.editor.layout(font_cx, layout_cx);
-        draw_text(scene, layout, text_origin, color);
+        draw_text(target, layout, text_origin, color);
     }
 
     // The caret, blinking on a 530ms half-period. The rect is computed
@@ -1042,7 +1042,7 @@ pub(crate) fn paint(
             );
             caret_rect = Some(caret);
             if visible {
-                scene.fill(
+                target.fill(
                     Fill::NonZero,
                     Affine::IDENTITY,
                     data.caret_color,
@@ -1053,7 +1053,7 @@ pub(crate) fn paint(
         }
     }
 
-    scene.pop_layer();
+    target.pop_layer();
     caret_rect
 }
 
@@ -1067,8 +1067,8 @@ pub(crate) fn paint(
 /// a bullet over each glyph would leak the width of every character, and the
 /// spacing of the bullets would say as much about the secret as the glyphs
 /// did.
-fn paint_masked(
-    scene: &mut Scene,
+fn paint_masked<T: DrawTarget>(
+    target: &mut T,
     fonts: &mut Fonts,
     state: &mut EditorState,
     data: &InputPaint,
@@ -1117,7 +1117,7 @@ fn paint_masked(
 
     let text_origin = (content.x0 - *scroll_x, text_y);
 
-    scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
+    target.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
 
     // Selection behind the bullets.
     if data.focused {
@@ -1134,7 +1134,7 @@ fn paint_masked(
                 text_origin.0 + bb.x1,
                 text_origin.1 + bb.y1,
             );
-            scene.fill(
+            target.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
                 data.selection_color,
@@ -1150,10 +1150,10 @@ fn paint_masked(
             let mut placeholder_style = data.style;
             placeholder_style.color = data.placeholder_color;
             let ph_rect = Rect::new(content.x0, text_y, content.x1, text_y + layout_height);
-            fonts.paint(scene, &data.placeholder, &placeholder_style, ph_rect, None);
+            fonts.paint(target, &data.placeholder, &placeholder_style, ph_rect, None);
         }
     } else {
-        draw_text(scene, layout, text_origin, data.style.color);
+        draw_text(target, layout, text_origin, data.style.color);
     }
 
     // The caret, blinking on a 530ms half-period. The rect is computed
@@ -1172,7 +1172,7 @@ fn paint_masked(
         );
         caret_rect = Some(caret);
         if visible {
-            scene.fill(
+            target.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
                 data.caret_color,
@@ -1182,13 +1182,13 @@ fn paint_masked(
         }
     }
 
-    scene.pop_layer();
+    target.pop_layer();
     caret_rect
 }
 
 /// Draws a laid-out text into the scene, its origin at `origin`.
-fn draw_text(
-    scene: &mut Scene,
+fn draw_text<T: DrawTarget>(
+    target: &mut T,
     layout: &parley::Layout<LayoutBrush>,
     origin: (f64, f64),
     color: Color,
@@ -1202,26 +1202,27 @@ fn draw_text(
             let mut x = glyph_run.offset();
             let y = glyph_run.baseline();
             let run = glyph_run.run();
-            scene
-                .draw_glyphs(run.font())
-                .brush(color)
-                .hint(true)
-                .transform(transform)
-                .font_size(run.font_size())
-                .normalized_coords(run.normalized_coords())
-                .draw(
-                    Fill::NonZero,
-                    glyph_run.glyphs().map(|glyph| {
-                        let gx = x + glyph.x;
-                        let gy = y + glyph.y;
-                        x += glyph.advance;
-                        vello::Glyph {
-                            id: glyph.id,
-                            x: gx,
-                            y: gy,
-                        }
-                    }),
-                );
+            target.draw_glyphs(
+                &GlyphRun {
+                    font: run.font(),
+                    font_size: run.font_size(),
+                    hint: true,
+                    normalized_coords: run.normalized_coords(),
+                    transform,
+                    glyph_transform: None,
+                    color,
+                },
+                glyph_run.glyphs().map(|glyph| {
+                    let gx = x + glyph.x;
+                    let gy = y + glyph.y;
+                    x += glyph.advance;
+                    Glyph {
+                        id: glyph.id,
+                        x: gx,
+                        y: gy,
+                    }
+                }),
+            );
         }
     }
 }
