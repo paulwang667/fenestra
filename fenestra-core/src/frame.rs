@@ -2486,10 +2486,13 @@ impl Frame {
         if node.style.display == Display::None {
             return;
         }
-        // SPIKE: skip subtrees wholly outside their ancestors' clip (a
-        // scrolled-away row). The margin covers shadows and small transforms.
+        // SPIKE, opt-in (`FENESTRA_CULL=1`): skip subtrees whose own rect lies
+        // wholly outside their ancestors' clip (a scrolled-away row). Unsound
+        // in general — a paint transform, an overflowing absolute or sticky
+        // descendant, or a wide shadow can still reach into the clip — so it
+        // stays off until it culls against a real subtree paint bound.
         static CULL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *CULL.get_or_init(|| std::env::var_os("FENESTRA_NO_CULL").is_none())
+        if *CULL.get_or_init(|| std::env::var_os("FENESTRA_CULL").is_some_and(|v| v == "1"))
             && let Some(v) = node.visible
             && node.rect.inflate(64.0, 64.0).intersect(v).is_zero_area()
         {
