@@ -254,3 +254,56 @@ fn a_layer_covers_only_what_it_draws() {
     // not two of the canvas's 400x300.
     assert!(stats.layer_pixels <= 64 * 64 + 128 * 128, "{stats:?}");
 }
+
+/// More nested clips than an 8-bit stencil counts, one of them past the
+/// 255th narrowing what shows: a fading group inside them, then a clipped
+/// fill straight in the root at that depth.
+struct ManyClips;
+impl Paint for ManyClips {
+    fn paint<T: DrawTarget>(&self, t: &mut T) {
+        let full = Rect::new(0.0, 0.0, 240.0, 160.0);
+        for i in 0..300 {
+            let clip = if i == 270 {
+                Rect::new(0.0, 0.0, 200.0, 160.0)
+            } else {
+                full
+            };
+            t.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &clip);
+            if i == 280 {
+                t.push_layer(
+                    Fill::NonZero,
+                    0.5,
+                    Affine::IDENTITY,
+                    &Rect::new(0.0, 0.0, 240.0, 120.0),
+                );
+            }
+        }
+        cross(t);
+        // The clips inside the group, then the group.
+        for _ in 281..=300 {
+            t.pop_layer();
+        }
+        t.push_clip_layer(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &Rect::new(20.0, 125.0, 100.0, 155.0),
+        );
+        t.fill(Fill::NonZero, Affine::IDENTITY, RED, None, &full);
+        t.pop_layer();
+        for _ in 0..=280 {
+            t.pop_layer();
+        }
+        t.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            GREEN,
+            None,
+            &Rect::new(170.0, 130.0, 230.0, 150.0),
+        );
+    }
+}
+
+#[test]
+fn clips_nest_deeper_than_the_stencil_counts() {
+    assert_like_vello_all("many_clips", &ManyClips, (240, 160), &[EDGES, FILLS]);
+}

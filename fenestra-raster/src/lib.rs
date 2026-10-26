@@ -173,6 +173,10 @@ struct Draw {
     indices: Range<u32>,
 }
 
+/// Clip levels one layer's stencil holds: the 255th is kept for compositing
+/// a child layer, and a deeper clip opens a layer with a fresh stencil.
+const STENCIL_CLIPS: u32 = 254;
+
 /// A device-pixel rectangle: x, y, width, height.
 type Bounds = (u32, u32, u32, u32);
 
@@ -324,6 +328,28 @@ impl RasterFrame<'_> {
         let level = self.layers[layer].clip_level;
         self.record(layer, Pipe::ClipPop, level, clip);
         self.layers[layer].clip_level = level.saturating_sub(1);
+    }
+
+    /// Opens an offscreen layer that its parent composites at `alpha`,
+    /// clipped by `clip`.
+    fn push_group(&mut self, clip_style: Fill, alpha: f32, transform: Affine, clip: &impl Shape) {
+        let parent = self.layer_index();
+        let bounds = self.layers[parent]
+            .bounds
+            .and_then(|b| self.bounds(b, transform, clip));
+        let clip = self.clip_triangles(clip_style, transform, clip);
+        let child = self.layers.len();
+        self.layers.push(Layer {
+            draws: Vec::new(),
+            clip_level: 0,
+            bounds,
+            alpha: alpha.max(0.0),
+            clip,
+            composite: None,
+            texture: (0, 0),
+        });
+        self.active.push(child);
+        self.pushed.push(Pushed::Group(child));
     }
 
     /// The device pixels `clip` (under `transform`) covers within `parent`.
@@ -732,30 +758,19 @@ impl DrawTarget for RasterFrame<'_> {
         // A layer that does not fade only clips.
         if alpha >= 1.0 {
             self.push_clip_layer(clip_style, transform, clip);
-            return;
+        } else {
+            self.push_group(clip_style, alpha, transform, clip);
         }
-        let parent = self.layer_index();
-        let bounds = self.layers[parent]
-            .bounds
-            .and_then(|b| self.bounds(b, transform, clip));
-        let clip = self.clip_triangles(clip_style, transform, clip);
-        let child = self.layers.len();
-        self.layers.push(Layer {
-            draws: Vec::new(),
-            clip_level: 0,
-            bounds,
-            alpha: alpha.max(0.0),
-            clip,
-            composite: None,
-            texture: (0, 0),
-        });
-        self.active.push(child);
-        self.pushed.push(Pushed::Group(child));
     }
 
     fn push_clip_layer(&mut self, clip_style: Fill, transform: Affine, clip: &impl Shape) {
-        let clip = self.clip_triangles(clip_style, transform, clip);
         let layer = self.layer_index();
+        // A full stencil: the clip opens a layer with a fresh one.
+        if self.layers[layer].clip_level >= STENCIL_CLIPS {
+            self.push_group(clip_style, 1.0, transform, clip);
+            return;
+        }
+        let clip = self.clip_triangles(clip_style, transform, clip);
         self.clip_push(layer, clip.clone());
         self.pushed.push(Pushed::Clip(clip));
     }
