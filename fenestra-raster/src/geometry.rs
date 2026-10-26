@@ -229,3 +229,59 @@ pub(crate) fn stroke(
     }
     result
 }
+
+/// A vertex of a blurred rounded rect's quad.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub(crate) struct ShadowV {
+    /// Device position.
+    pub pos: [f32; 2],
+    /// Position relative to the rect's center, in its own space.
+    pub local: [f32; 2],
+    /// The rect's width and height.
+    pub size: [f32; 2],
+    /// Corner radius, standard deviation.
+    pub params: [f32; 2],
+    /// Premultiplied color.
+    pub color: [f32; 4],
+}
+
+/// Triangles for every blurred rounded rect of a frame.
+pub(crate) type ShadowMesh = VertexBuffers<ShadowV, u32>;
+
+/// Appends the quad a blurred rounded rect covers: the rect grown by 2.5
+/// standard deviations, as vello's `draw_blurred_rounded_rect` does (the
+/// gaussian is cut off there).
+pub(crate) fn shadow(
+    mesh: &mut ShadowMesh,
+    transform: Affine,
+    rect: kurbo::Rect,
+    radius: f64,
+    std_dev: f64,
+    color: [f32; 4],
+) {
+    let center = rect.center();
+    let (hw, hh) = (
+        rect.width() * 0.5 + 2.5 * std_dev,
+        rect.height() * 0.5 + 2.5 * std_dev,
+    );
+    #[expect(clippy::cast_possible_truncation, reason = "vertex counts fit in u32")]
+    let base = mesh.vertices.len() as u32;
+    // vello evaluates the blur at each pixel's integer (top-left)
+    // coordinate, a fragment is shaded at its center: the local coordinate
+    // each vertex carries is that of its device position less half a pixel.
+    let inverse = transform.inverse();
+    for (dx, dy) in [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)] {
+        let device = transform * (center + kurbo::Vec2::new(dx, dy));
+        let local = inverse * (device - kurbo::Vec2::new(0.5, 0.5)) - center;
+        #[expect(clippy::cast_possible_truncation, reason = "geometry fits in f32")]
+        mesh.vertices.push(ShadowV {
+            pos: [device.x as f32, device.y as f32],
+            local: [local.x as f32, local.y as f32],
+            size: [rect.width() as f32, rect.height() as f32],
+            params: [radius as f32, std_dev as f32],
+            color,
+        });
+    }
+    mesh.indices.extend([0, 1, 2, 0, 2, 3].map(|i| base + i));
+}

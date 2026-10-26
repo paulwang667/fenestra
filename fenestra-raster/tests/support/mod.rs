@@ -3,7 +3,7 @@
 
 #![allow(dead_code, reason = "each test binary uses a different subset")]
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use fenestra_core::draw::{DrawTarget, SceneTarget};
 use fenestra_raster::{RasterRenderer, RenderStats};
@@ -12,12 +12,10 @@ use peniko::Color;
 /// The format both renderers draw into.
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// One device for every test in the binary; vello's renderer is shared too
-/// (building it compiles its shaders).
+/// One device for every test in the binary.
 pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    vello: Mutex<vello::Renderer>,
 }
 
 pub fn gpu() -> &'static Gpu {
@@ -33,21 +31,7 @@ pub fn gpu() -> &'static Gpu {
             ..Default::default()
         }))
         .expect("a GPU device");
-        let vello = vello::Renderer::new(
-            &device,
-            vello::RendererOptions {
-                use_cpu: false,
-                antialiasing_support: vello::AaSupport::area_only(),
-                num_init_threads: std::num::NonZeroUsize::new(1),
-                pipeline_cache: None,
-            },
-        )
-        .expect("vello renderer");
-        Gpu {
-            device,
-            queue,
-            vello: Mutex::new(vello),
-        }
+        Gpu { device, queue }
     })
 }
 
@@ -176,10 +160,20 @@ pub fn render_vello(scene: &impl Paint, size: (u32, u32)) -> Image {
     t.finish();
     let texture = target(size, wgpu::TextureUsages::STORAGE_BINDING);
     let view = texture.create_view(&Default::default());
-    gpu()
-        .vello
-        .lock()
-        .unwrap()
+    // A renderer per render: a shared one, used from parallel test threads,
+    // drew images white on a later render of the same scene (its image atlas
+    // carried over between renders); a fresh one is cheap and always right.
+    let mut vello = vello::Renderer::new(
+        &gpu().device,
+        vello::RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::area_only(),
+            num_init_threads: std::num::NonZeroUsize::new(1),
+            pipeline_cache: None,
+        },
+    )
+    .expect("vello renderer");
+    vello
         .render_to_texture(
             &gpu().device,
             &gpu().queue,

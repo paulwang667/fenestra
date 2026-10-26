@@ -1,6 +1,6 @@
 //! Pipelines and render attachments.
 
-use crate::geometry::{ImageV, PaintV};
+use crate::geometry::{ImageV, PaintV, ShadowV};
 
 /// Samples per pixel of every color and stencil attachment.
 pub(crate) const MSAA: u32 = 4;
@@ -81,6 +81,7 @@ pub(crate) struct Pipelines {
     pub clip_push: wgpu::RenderPipeline,
     pub clip_pop: wgpu::RenderPipeline,
     pub image: wgpu::RenderPipeline,
+    pub shadow: wgpu::RenderPipeline,
 }
 
 impl Pipelines {
@@ -160,6 +161,13 @@ impl Pipelines {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4],
         }];
+        let shadow_buffers = [wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<ShadowV>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![
+                0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Float32x4
+            ],
+        }];
         let pipeline = |label: &str,
                         layout: &wgpu::PipelineLayout,
                         buffers: &[wgpu::VertexBufferLayout<'_>],
@@ -229,6 +237,13 @@ impl Pipelines {
                 &textured_layout,
                 &image_buffers,
                 ("vs_image", "fs_image"),
+                StencilOp::Test,
+            ),
+            shadow: pipeline(
+                "fenestra-raster shadow",
+                &paint_layout,
+                &shadow_buffers,
+                ("vs_shadow", "fs_shadow"),
                 StencilOp::Test,
             ),
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {

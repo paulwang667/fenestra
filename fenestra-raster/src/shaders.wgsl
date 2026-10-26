@@ -101,3 +101,64 @@ struct ImageOut {
 @fragment fn fs_image(i: ImageOut) -> @location(0) vec4f {
     return textureSample(tex, samp, i.uv) * i.tint;
 }
+
+// ---------------------------------------------------------------- shadows
+
+struct ShadowIn {
+    @location(0) pos: vec2f,
+    @location(1) local: vec2f,
+    @location(2) size: vec2f,
+    @location(3) params: vec2f,
+    @location(4) color: vec4f,
+};
+
+struct ShadowOut {
+    @builtin(position) pos: vec4f,
+    @location(0) local: vec2f,
+    @location(1) @interpolate(flat) size: vec2f,
+    @location(2) @interpolate(flat) params: vec2f,
+    @location(3) @interpolate(flat) color: vec4f,
+};
+
+@vertex fn vs_shadow(v: ShadowIn) -> ShadowOut {
+    return ShadowOut(to_clip(v.pos), v.local, v.size, v.params, v.color);
+}
+
+// vello_shaders 0.9.0 fine.wgsl (MIT OR Apache-2.0).
+fn erf7(x: f32) -> f32 {
+    let y = clamp(x * 1.1283791671, -100.0, 100.0);
+    let yy = y * y;
+    let z = y + (0.24295 + (0.03395 + 0.0104 * yy) * yy) * (y * yy);
+    return z / sqrt(1.0 + z * z);
+}
+
+fn hypot(a: f32, b: f32) -> f32 {
+    return sqrt(a * a + b * b);
+}
+
+// vello's CMD_BLUR_RECT: Raph Levien's closed-form approximation of a
+// gaussian-blurred rounded rect, evaluated in the rect's centered space.
+@fragment fn fs_shadow(i: ShadowOut) -> @location(0) vec4f {
+    let std_dev = max(i.params.y, 1e-5);
+    let inv_std_dev = 1.0 / std_dev;
+    let radius = i.params.x;
+    let min_edge = min(i.size.x, i.size.y);
+    let radius_max = 0.5 * min_edge;
+    let r0 = min(hypot(radius, std_dev * 1.15), radius_max);
+    let r1 = min(hypot(radius, std_dev * 2.0), radius_max);
+    let exponent = 2.0 * r1 / r0;
+    let inv_exponent = 1.0 / exponent;
+    let delta = 1.25 * std_dev * (exp(-pow(0.5 * inv_std_dev * i.size.x, 2.0)) - exp(-pow(0.5 * inv_std_dev * i.size.y, 2.0)));
+    let width = i.size.x + min(delta, 0.0);
+    let height = i.size.y - max(delta, 0.0);
+    let scale = 0.5 * erf7(inv_std_dev * 0.5 * (max(width, height) - 0.5 * radius));
+    let y0 = abs(i.local.y) - (height * 0.5 - r1);
+    let y1 = max(y0, 0.0);
+    let x0 = abs(i.local.x) - (width * 0.5 - r1);
+    let x1 = max(x0, 0.0);
+    let d_pos = pow(pow(x1, exponent) + pow(y1, exponent), inv_exponent);
+    let d_neg = min(max(x0, y0), 0.0);
+    let d = d_pos + d_neg - r1;
+    let alpha = scale * (erf7(inv_std_dev * (min_edge + d)) - erf7(inv_std_dev * d));
+    return i.color * alpha;
+}

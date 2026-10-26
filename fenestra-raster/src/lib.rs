@@ -10,6 +10,7 @@
 
 mod geometry;
 mod gpu;
+mod images;
 mod layers;
 mod paint;
 
@@ -22,7 +23,7 @@ use lyon_tessellation::{FillTessellator, StrokeTessellator};
 use peniko::{BrushRef, Color, Fill, ImageData};
 use wgpu::util::DeviceExt;
 
-use geometry::{Mesh, PaintParams, QuadMesh};
+use geometry::{Mesh, PaintParams, QuadMesh, ShadowMesh};
 use gpu::{Attachments, GLOBALS_STRIDE, Globals, Pipelines};
 use layers::{LayerPool, LayerTarget};
 
@@ -66,12 +67,26 @@ pub struct RasterRenderer {
     root: Option<Attachments>,
     ramps: paint::Ramps,
     pool: LayerPool,
+    images: images::ImageCache,
+    /// The device's largest texture side; bigger images are downscaled.
+    max_texture_dimension: u32,
 }
 
 impl RasterRenderer {
     /// Builds the pipelines for targets of `format` (fenestra renders into
     /// `Rgba8Unorm`).
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::with_max_texture_dimension(device, format, device.limits().max_texture_dimension_2d)
+    }
+
+    /// [`RasterRenderer::new`] with a smaller texture size cap than the
+    /// device's, so tests can exercise image downscaling.
+    #[doc(hidden)]
+    pub fn with_max_texture_dimension(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        max_texture_dimension: u32,
+    ) -> Self {
         Self {
             format,
             pipelines: Pipelines::new(device, format),
@@ -80,6 +95,8 @@ impl RasterRenderer {
             root: None,
             ramps: paint::Ramps::default(),
             pool: LayerPool::default(),
+            images: images::ImageCache::default(),
+            max_texture_dimension,
         }
     }
 
@@ -87,6 +104,7 @@ impl RasterRenderer {
     pub fn frame(&mut self, width: u32, height: u32) -> RasterFrame<'_> {
         self.ramps.begin_frame();
         self.pool.begin_frame();
+        self.images.begin_frame();
         let size = (width.max(1), height.max(1));
         RasterFrame {
             renderer: self,
@@ -94,6 +112,7 @@ impl RasterRenderer {
             stack: Vec::new(),
             mesh: Mesh::new(),
             quads: QuadMesh::new(),
+            shadows: ShadowMesh::new(),
             layers: vec![Layer::root(size)],
             active: vec![0],
             pushed: Vec::new(),
@@ -104,6 +123,7 @@ impl RasterRenderer {
     pub fn cache_sizes(&self) -> CacheSizes {
         CacheSizes {
             layer_textures: self.pool.len(),
+            images: self.images.len(),
             ramp_rows: self.ramps.len(),
             ..CacheSizes::default()
         }
@@ -119,8 +139,19 @@ enum Pipe {
     ClipPush,
     /// Lowers it again.
     ClipPop,
-    /// Draws a quad-mesh quad sampling an offscreen layer's texture.
-    Composite(usize),
+    /// Draws a quad-mesh quad sampling a texture.
+    Textured(Tex),
+    /// Draws shadow-mesh quads (blurred rounded rects).
+    Shadow,
+}
+
+/// The texture a textured draw samples.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tex {
+    /// An offscreen layer's (by layer index).
+    Layer(usize),
+    /// A cached image's.
+    Image(images::Key),
 }
 
 /// One draw call: a pipeline, its stencil reference, and an index range into
@@ -177,6 +208,7 @@ pub struct RasterFrame<'r> {
     stack: Vec<Affine>,
     mesh: Mesh,
     quads: QuadMesh,
+    shadows: ShadowMesh,
     /// Every layer recorded this frame; 0 is the root. A layer's index is
     /// always above its parent's.
     layers: Vec<Layer>,
@@ -222,7 +254,7 @@ impl RasterFrame<'_> {
         match draws.last_mut() {
             Some(last)
                 if last.pipe == pipe
-                    && !matches!(pipe, Pipe::Composite(_))
+                    && !matches!(pipe, Pipe::Textured(_))
                     && last.stencil == stencil
                     && last.indices.end == indices.start =>
             {
@@ -318,17 +350,22 @@ impl RasterFrame<'_> {
             size,
             mesh,
             quads,
+            shadows,
             layers,
             ..
         } = self;
         let mut stats = RenderStats {
-            vertices: len32(&mesh.vertices) + len32(&quads.vertices),
+            vertices: len32(&mesh.vertices) + len32(&quads.vertices) + len32(&shadows.vertices),
             ..RenderStats::default()
         };
         if renderer.root.as_ref().is_none_or(|a| a.size != size) {
             renderer.root = Some(Attachments::new(device, renderer.format, size));
         }
         let ramps = renderer.ramps.upload(device, queue);
+        stats.images_uploaded =
+            renderer
+                .images
+                .upload(device, queue, renderer.max_texture_dimension);
 
         // One globals slot per layer: the device rectangle its pass covers.
         let mut uniform = vec![0u8; layers.len() * GLOBALS_STRIDE as usize];
@@ -372,6 +409,7 @@ impl RasterFrame<'_> {
         let buffers = Buffers {
             paint: upload(device, "paint", &mesh.vertices, &mesh.indices),
             quads: upload(device, "quads", &quads.vertices, &quads.indices),
+            shadows: upload(device, "shadows", &shadows.vertices, &shadows.indices),
         };
 
         // Children before parents: every descendant has a higher index.
@@ -408,17 +446,23 @@ impl RasterFrame<'_> {
                 let t = targets[i].as_ref().expect("just stored");
                 (&t.msaa, &t.view, wgpu::Color::TRANSPARENT)
             };
-            // Composited children's textures, bound before the pass begins.
-            let child_binds: Vec<(usize, wgpu::BindGroup)> = layer
-                .draws
-                .iter()
-                .filter_map(|d| match d.pipe {
-                    Pipe::Composite(child) => targets[child]
-                        .as_ref()
-                        .map(|t| (child, renderer.pipelines.texture_bind(device, &t.view))),
-                    _ => None,
-                })
-                .collect();
+            // The textures this pass samples, bound before it begins.
+            let mut binds: Vec<(Tex, wgpu::BindGroup)> = Vec::new();
+            for draw in &layer.draws {
+                let Pipe::Textured(tex) = draw.pipe else {
+                    continue;
+                };
+                if binds.iter().any(|(t, _)| *t == tex) {
+                    continue;
+                }
+                let view = match tex {
+                    Tex::Layer(child) => targets[child].as_ref().map(|t| &t.view),
+                    Tex::Image(k) => renderer.images.view(&k),
+                };
+                if let Some(view) = view {
+                    binds.push((tex, renderer.pipelines.texture_bind(device, view)));
+                }
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fenestra-raster layer"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -450,7 +494,7 @@ impl RasterFrame<'_> {
                 &renderer.pipelines,
                 &buffers,
                 &layer.draws,
-                &child_binds,
+                &binds,
             );
         }
         queue.submit([encoder.finish()]);
@@ -469,6 +513,7 @@ type Uploaded = Option<(wgpu::Buffer, wgpu::Buffer)>;
 struct Buffers {
     paint: Uploaded,
     quads: Uploaded,
+    shadows: Uploaded,
 }
 
 fn upload<V: bytemuck::Pod>(
@@ -499,6 +544,7 @@ enum Bound {
     None,
     Paint,
     Quads,
+    Shadows,
 }
 
 /// Issues `draws` into `pass`; returns how many it issued.
@@ -507,7 +553,7 @@ fn encode_draws(
     pipelines: &Pipelines,
     buffers: &Buffers,
     draws: &[Draw],
-    child_binds: &[(usize, wgpu::BindGroup)],
+    binds: &[(Tex, wgpu::BindGroup)],
 ) -> u32 {
     let mut bound = Bound::None;
     let mut issued = 0;
@@ -516,8 +562,9 @@ fn encode_draws(
             Pipe::Paint => (&pipelines.paint, &buffers.paint, Bound::Paint),
             Pipe::ClipPush => (&pipelines.clip_push, &buffers.paint, Bound::Paint),
             Pipe::ClipPop => (&pipelines.clip_pop, &buffers.paint, Bound::Paint),
-            Pipe::Composite(child) => {
-                let Some((_, bind)) = child_binds.iter().find(|(c, _)| *c == child) else {
+            Pipe::Shadow => (&pipelines.shadow, &buffers.shadows, Bound::Shadows),
+            Pipe::Textured(tex) => {
+                let Some((_, bind)) = binds.iter().find(|(t, _)| *t == tex) else {
                     continue;
                 };
                 pass.set_bind_group(1, bind, &[]);
@@ -663,26 +710,64 @@ impl DrawTarget for RasterFrame<'_> {
                 );
                 let level = self.layers[parent].clip_level;
                 let end = len32(&self.quads.indices);
-                self.record(parent, Pipe::Composite(child), level, start..end);
+                self.record(parent, Pipe::Textured(Tex::Layer(child)), level, start..end);
                 self.clip_pop(parent, clip);
             }
             None => debug_assert!(false, "pop_layer without a push"),
         }
     }
 
-    fn draw_image(&mut self, _image: &ImageData, _transform: Affine) {
-        todo!("Task 5: images")
+    fn draw_image(&mut self, image: &ImageData, transform: Affine) {
+        let t = self.current() * transform;
+        if !t.is_finite() || image.width == 0 || image.height == 0 {
+            return;
+        }
+        let key = self.renderer.images.use_image(image);
+        let (w, h) = (f64::from(image.width), f64::from(image.height));
+        let start = len32(&self.quads.indices);
+        geometry::quad(
+            &mut self.quads,
+            [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].map(|p| t * Point::from(p)),
+            [1.0; 4],
+        );
+        let layer = self.layer_index();
+        let stencil = self.layers[layer].clip_level;
+        let end = len32(&self.quads.indices);
+        self.record(layer, Pipe::Textured(Tex::Image(key)), stencil, start..end);
     }
 
     fn draw_blurred_rounded_rect(
         &mut self,
-        _transform: Affine,
-        _rect: Rect,
-        _color: Color,
-        _radius: f64,
-        _std_dev: f64,
+        transform: Affine,
+        rect: Rect,
+        color: Color,
+        radius: f64,
+        std_dev: f64,
     ) {
-        todo!("Task 5: shadows")
+        let t = self.current() * transform;
+        if !t.is_finite() || rect.is_zero_area() {
+            return;
+        }
+        // Also takes a NaN deviation.
+        if std_dev.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+            // No blur: the rounded rect itself.
+            let shape = kurbo::RoundedRect::from_rect(rect, radius);
+            self.fill(Fill::NonZero, transform, color, None, &shape);
+            return;
+        }
+        let start = len32(&self.shadows.indices);
+        geometry::shadow(
+            &mut self.shadows,
+            t,
+            rect,
+            radius,
+            std_dev,
+            premultiply(color),
+        );
+        let layer = self.layer_index();
+        let stencil = self.layers[layer].clip_level;
+        let end = len32(&self.shadows.indices);
+        self.record(layer, Pipe::Shadow, stencil, start..end);
     }
 
     fn draw_glyphs(&mut self, _run: &GlyphRun<'_>, _glyphs: impl Iterator<Item = Glyph>) {
