@@ -260,7 +260,7 @@ where
         // Resolves a target strictly, with the tree in the error.
         macro_rules! target {
             ($spec:expr) => {{
-                let q = $spec.to_query().map_err(&fail)?;
+                let q = $spec.to_query().map_err(fail)?;
                 harness.frame().try_get(&q).map_err(|e| {
                     fail(format!(
                         "target [{q}]: {e}\naccessibility tree:\n{}",
@@ -297,7 +297,7 @@ where
             }
             Step::Type(text) => harness.type_text(text.clone()),
             Step::Key(spec) => {
-                let key = key_from_str(spec).map_err(&fail)?;
+                let key = key_from_str(spec).map_err(fail)?;
                 harness.key(key);
             }
             Step::Tab(count) => {
@@ -316,7 +316,7 @@ where
             }
             Step::Drag { from, to } => {
                 let from = target!(from);
-                let to = to.to_query().map_err(&fail)?;
+                let to = to.to_query().map_err(fail)?;
                 harness.drag(&from, &to);
             }
             Step::DropFile { target, path } => {
@@ -343,7 +343,7 @@ where
                     .map_err(|e| fail(format!("write {}: {e}", path.display())))?;
                 shots.push(path);
             }
-            Step::Assert(assert) => run_assert(harness, assert).map_err(&fail)?,
+            Step::Assert(assert) => run_assert(harness, assert).map_err(fail)?,
         }
     }
     Ok(ScenarioReport {
