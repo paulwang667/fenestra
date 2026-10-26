@@ -15,7 +15,8 @@ const WINDOW: usize = 20;
 pub(crate) enum Phase {
     /// `build_frame`: view, layout, text shaping.
     Build,
-    /// Scene painting (both passes when the frame has filtered regions).
+    /// Scene painting (both passes when the frame has filtered regions;
+    /// the readback and filters between them are their own phases).
     Paint,
     /// Two-pass only: rendering the backdrop off-screen and reading it back.
     Readback,
@@ -38,6 +39,9 @@ const PHASES: [&str; 8] = [
 #[derive(Default)]
 struct Stats {
     phases: [Vec<f64>; 8],
+    /// The current frame's phases (ms), committed by [`Stats::end`]: a
+    /// frame abandoned before then leaves nothing behind.
+    current: [Option<f64>; 8],
     /// Frames that took the two-pass path, and filtered regions seen.
     two_pass: usize,
     specs: usize,
@@ -75,14 +79,14 @@ fn stats() -> &'static Mutex<Stats> {
 /// Marks the start of a full frame.
 pub(crate) fn frame_start() {
     if enabled() {
-        stats().lock().unwrap().frame_start = Some(Instant::now());
+        stats().lock().unwrap().start(Instant::now());
     }
 }
 
 /// Records one phase's duration in the current frame.
 pub(crate) fn record(phase: Phase, d: Duration) {
     if enabled() {
-        stats().lock().unwrap().phases[phase as usize].push(d.as_secs_f64() * 1e3);
+        stats().lock().unwrap().record(phase, d);
     }
 }
 
@@ -97,50 +101,148 @@ pub(crate) fn two_pass(specs: usize) {
 
 /// Ends a full frame; every [`WINDOW`] frames logs a summary and resets.
 pub(crate) fn frame_end() {
-    if !enabled() {
-        return;
+    if enabled()
+        && let Some(line) = stats().lock().unwrap().end(Instant::now())
+    {
+        eprintln!("{line}");
     }
-    let mut s = stats().lock().unwrap();
-    let now = Instant::now();
-    if let Some(start) = s.frame_start.take() {
-        s.total.push((now - start).as_secs_f64() * 1e3);
+}
+
+impl Stats {
+    fn start(&mut self, now: Instant) {
+        self.frame_start = Some(now);
+        self.current = [None; 8];
     }
-    if let Some(last) = s.last_end.replace(now) {
-        s.interval.push((now - last).as_secs_f64() * 1e3);
+
+    fn record(&mut self, phase: Phase, d: Duration) {
+        *self.current[phase as usize].get_or_insert(0.0) += d.as_secs_f64() * 1e3;
     }
-    if s.total.len() < WINDOW {
-        return;
-    }
-    let mut line = format!(
-        "FRAMESTATS n={WINDOW} two_pass={} specs={}",
-        s.two_pass, s.specs
-    );
-    s.two_pass = 0;
-    s.specs = 0;
-    let mut fmt = |name: &str, v: &mut Vec<f64>| {
-        if v.is_empty() {
-            return;
+
+    /// Ends the frame at `now`; returns the summary line every [`WINDOW`]
+    /// frames.
+    fn end(&mut self, now: Instant) -> Option<String> {
+        let start = self.frame_start.take()?;
+        self.total.push((now - start).as_secs_f64() * 1e3);
+        let mut current = std::mem::take(&mut self.current);
+        // Paint is timed around the readback and filters of a two-pass frame.
+        let between: f64 = [Phase::Readback, Phase::Filters]
+            .iter()
+            .filter_map(|p| current[*p as usize])
+            .sum();
+        if let Some(paint) = &mut current[Phase::Paint as usize] {
+            *paint = (*paint - between).max(0.0);
         }
-        v.sort_by(f64::total_cmp);
-        let at = |q: f64| v[((v.len() - 1) as f64 * q).round() as usize];
-        line += &format!(
-            " {name}={:.1}/{:.1}/{:.1}",
-            at(0.5),
-            at(0.95),
-            v[v.len() - 1]
+        for (v, ms) in self.phases.iter_mut().zip(current) {
+            v.extend(ms);
+        }
+        if let Some(last) = self.last_end.replace(now) {
+            self.interval.push((now - last).as_secs_f64() * 1e3);
+        }
+        if self.total.len() < WINDOW {
+            return None;
+        }
+        let mut line = format!(
+            "FRAMESTATS n={WINDOW} two_pass={} specs={}",
+            self.two_pass, self.specs
         );
-        v.clear();
-    };
-    let Stats {
-        phases,
-        total,
-        interval,
-        ..
-    } = &mut *s;
-    for (name, v) in PHASES.iter().zip(phases.iter_mut()) {
-        fmt(name, v);
+        self.two_pass = 0;
+        self.specs = 0;
+        let mut fmt = |name: &str, v: &mut Vec<f64>| {
+            if v.is_empty() {
+                return;
+            }
+            v.sort_by(f64::total_cmp);
+            let at = |q: f64| v[((v.len() - 1) as f64 * q).round() as usize];
+            line += &format!(
+                " {name}={:.1}/{:.1}/{:.1}",
+                at(0.5),
+                at(0.95),
+                v[v.len() - 1]
+            );
+            v.clear();
+        };
+        for (name, v) in PHASES.iter().zip(self.phases.iter_mut()) {
+            fmt(name, v);
+        }
+        fmt("total", &mut self.total);
+        fmt("interval", &mut self.interval);
+        Some(line)
     }
-    fmt("total", total);
-    fmt("interval", interval);
-    eprintln!("{line}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ms(v: u64) -> Duration {
+        Duration::from_millis(v)
+    }
+
+    /// Runs one frame through `stats`: `phases` recorded, then ended at
+    /// `start + total`.
+    fn frame(
+        stats: &mut Stats,
+        start: Instant,
+        total: u64,
+        phases: &[(Phase, u64)],
+    ) -> Option<String> {
+        stats.start(start);
+        for (phase, d) in phases {
+            stats.record(*phase, ms(*d));
+        }
+        stats.end(start + ms(total))
+    }
+
+    /// A field of the summary line, e.g. `paint=4.0/4.0/4.0` for "paint".
+    fn field<'a>(line: &'a str, name: &str) -> &'a str {
+        line.split(' ')
+            .find_map(|f| f.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("no {name} in {line}"))
+    }
+
+    /// Paint is the painting alone: in a two-pass frame the readback and the
+    /// filters it waits on are reported as their own phases.
+    #[test]
+    fn paint_excludes_readback_and_filters() {
+        let mut stats = Stats::default();
+        let t0 = Instant::now();
+        let mut line = None;
+        for i in 0..WINDOW {
+            line = frame(
+                &mut stats,
+                t0 + ms(100 * i as u64),
+                20,
+                &[
+                    (Phase::Readback, 5),
+                    (Phase::Filters, 3),
+                    (Phase::Paint, 12),
+                ],
+            );
+        }
+        let line = line.expect("a summary after WINDOW frames");
+        assert_eq!(field(&line, "paint"), "4.0/4.0/4.0");
+        assert_eq!(field(&line, "readback"), "5.0/5.0/5.0");
+    }
+
+    /// A frame abandoned before `end` (no surface, a failed readback) leaves
+    /// nothing behind: every summary covers exactly WINDOW complete frames.
+    #[test]
+    fn an_abandoned_frame_is_not_counted() {
+        let mut stats = Stats::default();
+        let t0 = Instant::now();
+        stats.start(t0);
+        stats.record(Phase::Build, ms(50));
+        let mut line = None;
+        for i in 0..WINDOW {
+            line = frame(
+                &mut stats,
+                t0 + ms(100 * (i as u64 + 1)),
+                10,
+                &[(Phase::Build, 2)],
+            );
+        }
+        let line = line.expect("a summary after WINDOW complete frames");
+        assert_eq!(field(&line, "build"), "2.0/2.0/2.0");
+        assert_eq!(field(&line, "total"), "10.0/10.0/10.0");
+    }
 }
