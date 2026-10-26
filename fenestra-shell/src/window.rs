@@ -437,6 +437,9 @@ struct RasterTarget {
     view: wgpu::TextureView,
 }
 
+/// A width and height in physical pixels.
+type PxSize = (u32, u32);
+
 /// Whether the raster target must be (re)built for a `surface`-sized frame.
 fn needs_new_target(current: Option<(u32, u32)>, surface: (u32, u32)) -> bool {
     current != Some(surface)
@@ -1170,7 +1173,7 @@ impl WindowShell {
 
     /// The raster target's size (if built) and the surface's, while a
     /// surface is active.
-    fn raster_sizes(&self) -> Option<(Option<(u32, u32)>, (u32, u32))> {
+    fn raster_sizes(&self) -> Option<(Option<PxSize>, PxSize)> {
         let RenderState::Active { surface, .. } = &self.state else {
             return None;
         };
