@@ -2442,6 +2442,15 @@ impl Frame {
         if node.style.display == Display::None {
             return;
         }
+        // SPIKE: skip subtrees wholly outside their ancestors' clip (a
+        // scrolled-away row). The margin covers shadows and small transforms.
+        static CULL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *CULL.get_or_init(|| std::env::var_os("FENESTRA_NO_CULL").is_none())
+            && let Some(v) = node.visible
+            && node.rect.inflate(64.0, 64.0).intersect(v).is_zero_area()
+        {
+            return;
+        }
         // Paint-time transform (translate / rotate / skew / scale, about the
         // element center): paint the subtree into a child scene, then append it
         // under the node's affine. `node_transform` is the single source of
