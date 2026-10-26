@@ -42,6 +42,9 @@ struct Stats {
     /// The current frame's phases (ms), committed by [`Stats::end`]: a
     /// frame abandoned before then leaves nothing behind.
     current: [Option<f64>; 8],
+    /// The current frame's filtered regions when it takes the two-pass
+    /// path, committed by [`Stats::end`] like `current`.
+    current_specs: Option<usize>,
     /// Frames that took the two-pass path, and filtered regions seen.
     two_pass: usize,
     specs: usize,
@@ -93,9 +96,7 @@ pub(crate) fn record(phase: Phase, d: Duration) {
 /// Notes a two-pass frame with `specs` filtered regions.
 pub(crate) fn two_pass(specs: usize) {
     if enabled() {
-        let mut s = stats().lock().unwrap();
-        s.two_pass += 1;
-        s.specs += specs;
+        stats().lock().unwrap().two_pass(specs);
     }
 }
 
@@ -112,6 +113,11 @@ impl Stats {
     fn start(&mut self, now: Instant) {
         self.frame_start = Some(now);
         self.current = [None; 8];
+        self.current_specs = None;
+    }
+
+    fn two_pass(&mut self, specs: usize) {
+        *self.current_specs.get_or_insert(0) += specs;
     }
 
     fn record(&mut self, phase: Phase, d: Duration) {
@@ -124,6 +130,10 @@ impl Stats {
         let start = self.frame_start.take()?;
         self.total.push((now - start).as_secs_f64() * 1e3);
         let mut current = std::mem::take(&mut self.current);
+        if let Some(specs) = self.current_specs.take() {
+            self.two_pass += 1;
+            self.specs += specs;
+        }
         // Paint is timed around the readback and filters of a two-pass frame.
         let between: f64 = [Phase::Readback, Phase::Filters]
             .iter()
@@ -178,8 +188,9 @@ mod tests {
         Duration::from_millis(v)
     }
 
-    /// Runs one frame through `stats`: `phases` recorded, then ended at
-    /// `start + total`.
+    /// Runs one frame through `stats`: `phases` recorded (a two-pass frame
+    /// with one filtered region when they include a readback), then ended
+    /// at `start + total`.
     fn frame(
         stats: &mut Stats,
         start: Instant,
@@ -189,6 +200,9 @@ mod tests {
         stats.start(start);
         for (phase, d) in phases {
             stats.record(*phase, ms(*d));
+        }
+        if phases.iter().any(|(p, _)| matches!(p, Phase::Readback)) {
+            stats.two_pass(1);
         }
         stats.end(start + ms(total))
     }
@@ -222,6 +236,7 @@ mod tests {
         let line = line.expect("a summary after WINDOW frames");
         assert_eq!(field(&line, "paint"), "4.0/4.0/4.0");
         assert_eq!(field(&line, "readback"), "5.0/5.0/5.0");
+        assert_eq!(field(&line, "two_pass"), WINDOW.to_string());
     }
 
     /// A frame abandoned before `end` (no surface, a failed readback) leaves
@@ -232,6 +247,7 @@ mod tests {
         let t0 = Instant::now();
         stats.start(t0);
         stats.record(Phase::Build, ms(50));
+        stats.two_pass(3);
         let mut line = None;
         for i in 0..WINDOW {
             line = frame(
@@ -244,5 +260,7 @@ mod tests {
         let line = line.expect("a summary after WINDOW complete frames");
         assert_eq!(field(&line, "build"), "2.0/2.0/2.0");
         assert_eq!(field(&line, "total"), "10.0/10.0/10.0");
+        assert_eq!(field(&line, "two_pass"), "0");
+        assert_eq!(field(&line, "specs"), "0");
     }
 }
