@@ -64,8 +64,9 @@ fn extend(t: f32, mode: u32) -> f32 {
         var v = p - i.grad.xy;
         // The seam at angle 0 is a jump in the ramp: vello evaluates exactly
         // on it (y = 0) where an interpolated coordinate lands a hair off,
-        // which would flip a whole row to the ramp's other end.
-        v.y = select(v.y, 0.0, abs(v.y) < 1e-4 * max(1.0, abs(v.x)));
+        // which would flip a whole row to the ramp's other end. A row a real
+        // fraction of a pixel off it stays off it, however far it reaches.
+        v.y = select(v.y, 0.0, abs(v.y) < 1e-3);
         var phi = atan2(v.y, v.x) / TAU;
         phi = select(phi, phi + 1.0, phi < 0.0);
         t = (phi - i.grad.z) / (i.grad.w - i.grad.z);

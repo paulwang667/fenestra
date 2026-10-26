@@ -123,3 +123,43 @@ fn steep_gradients_sample_where_vello_does() {
         );
     }
 }
+
+/// A sweep centred at height `.0` on a 1200 px wide fill. On pixel row 20
+/// (sampled at y = 20), a centre at 20.05 puts the row just above the seam,
+/// where vello samples the ramp's far end however far the row reaches; a
+/// centre at 20 puts the row exactly on the seam.
+struct FarSeam(f64);
+impl Paint for FarSeam {
+    fn paint<T: DrawTarget>(&self, t: &mut T) {
+        let g = Gradient::new_sweep((10.0, self.0), 0.0, std::f32::consts::TAU).with_stops(stops());
+        t.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &g,
+            None,
+            &Rect::new(0.0, 0.0, 1200.0, 40.0),
+        );
+    }
+}
+
+#[test]
+fn the_sweep_seam_is_exact_far_from_the_centre() {
+    let size = (1200, 40);
+    for centre in [20.05, 20.0] {
+        let scene = FarSeam(centre);
+        let (raster, _) = support::render_raster(&mut support::renderer(), &scene, size);
+        let vello = support::render_vello(&scene, size);
+        let wrong: Vec<u32> = (0..size.0)
+            .filter(|&x| {
+                let (r, v) = (raster.pixel(x, 20), vello.pixel(x, 20));
+                r.iter().zip(v).any(|(a, b)| a.abs_diff(b) > 80)
+            })
+            .collect();
+        assert!(
+            wrong.len() <= 2,
+            "centre {centre}: {} pixels of the seam row differ, from x = {:?}",
+            wrong.len(),
+            wrong.first()
+        );
+    }
+}
