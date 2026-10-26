@@ -2,9 +2,8 @@
 //! layout rect lies outside its ancestors' clip can still paint into view
 //! through its transform or through an overflowing descendant.
 
-use fenestra_core::{
-    Color, DrawTarget, Element, Fonts, FrameState, Glyph, GlyphRun, Theme, build_frame, col, div,
-};
+use fenestra_core::draw::{DrawTarget, Glyph, GlyphRun};
+use fenestra_core::{Color, Element, Fonts, FrameState, Theme, build_frame, col, div};
 use kurbo::{Affine, Rect, Shape, Stroke};
 use peniko::{Brush, BrushRef, Fill, ImageData};
 

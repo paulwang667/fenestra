@@ -13,7 +13,7 @@ mod children;
 mod chrome;
 mod clipboard;
 mod cmd;
-mod draw;
+pub mod draw;
 pub mod effects;
 mod element;
 mod events;
@@ -48,7 +48,6 @@ pub use children::{FromIter, FromTuple, IntoChildren};
 pub use chrome::{ChromeElevation, ChromeText};
 pub use clipboard::{ClipImage, Clipboard, MemoryClipboard};
 pub use cmd::{Cmd, CmdFuture, CmdUnit, Sub, apply_cmd};
-pub use draw::{DrawTarget, Glyph, GlyphRun, SceneTarget};
 pub use element::{
     Cursor, DrawerSide, Element, ExitAnim, ImageData, InputData, Kind, MAX_TREE_DEPTH,
     OpticalCorrection, Overlay, OverlayMode, OverlayPlacement, PathData, RovingAxis, Semantics,

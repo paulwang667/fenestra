@@ -1,5 +1,18 @@
 //! A backend-neutral drawing interface. Everything fenestra paints goes
 //! through [`DrawTarget`]; [`SceneTarget`] records it into a vello scene.
+//!
+//! These names live in this module rather than the crate root, so an app's
+//! `use fenestra::prelude::*` does not pick up generic names like `Glyph`:
+//!
+//! ```compile_fail
+//! use fenestra_core::*;
+//! let _ = Glyph { id: 0, x: 0.0, y: 0.0 };
+//! ```
+//!
+//! ```
+//! use fenestra_core::draw::Glyph;
+//! let _ = Glyph { id: 0, x: 0.0, y: 0.0 };
+//! ```
 
 use kurbo::{Affine, Rect, Shape, Stroke};
 use peniko::{BrushRef, Color, Fill, FontData, ImageData, Mix};
