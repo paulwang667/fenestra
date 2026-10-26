@@ -3245,6 +3245,17 @@ PR #15 and PR #16 (stacked: `feat/motion` → `harden/review-fixes` → `main`).
   pattern; revisit when muda moves its Linux backend off gtk3 or grows an opt-out
   feature.
 
+  **2026-10-26 addendum (zbus 5 sub-crates, unmaintained).** RUSTSEC-2026-0370/0371/0372
+  mark `zvariant`, `zbus_names` and `zvariant_derive` unmaintained: they were folded into
+  `zbus` 6.0 as modules. Every path to them is zbus 5 through the Linux AT-SPI
+  accessibility stack (`accesskit_winit` → `accesskit_unix` → `atspi`/`zbus`), which
+  still requires zbus 5; the advisories list no safe upgrade. Unmaintained, not
+  vulnerable, and Linux-only. Ignored in both files; revisit when `accesskit_unix` and
+  `atspi` move to zbus 6. The same pass fixed, rather than ignored, the five
+  vulnerability/unsound advisories in `rustls`, `rustls-webpki`, `tokio` and
+  `webpki-roots` and the yanked `clipboard-win`, all by semver-compatible
+  `cargo update -p`.
+
 A new workspace member, `fenestra-anim` (published independently at `0.1.0`, not
 lockstepped with the workspace's `0.39.0` series), extracts the frame-pure keyframe
 machinery so an external project (a headless audio engine, `cochlea`) can depend on it

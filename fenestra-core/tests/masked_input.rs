@@ -18,7 +18,6 @@ fn masked(value: &str) -> Element<Msg> {
         .id("pw")
         .w(200.0)
         .on_input(|s| Msg::Value(s.to_owned()))
-        .into()
 }
 
 /// An ordinary field showing `value` — the control the masked one is
@@ -28,7 +27,6 @@ fn plain(value: &str) -> Element<Msg> {
         .id("pw")
         .w(200.0)
         .on_input(|s| Msg::Value(s.to_owned()))
-        .into()
 }
 
 /// The byte range the field's editor holds selected (collapsed = the caret).

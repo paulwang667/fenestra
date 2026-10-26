@@ -26,4 +26,9 @@ ignore = [
   "RUSTSEC-2024-0419", # gtk3-macros: gtk3-rs unmaintained
   "RUSTSEC-2024-0420", # gtk-sys: gtk3-rs unmaintained
   "RUSTSEC-2024-0370", # proc-macro-error: unmaintained, only via gtk3-macros/muda
+  # zbus 5 sub-crates folded into zbus 6, via accesskit_unix's AT-SPI stack
+  # (Linux only); see ARCHITECTURE.md.
+  "RUSTSEC-2026-0370", # zvariant: unmaintained
+  "RUSTSEC-2026-0371", # zbus_names: unmaintained
+  "RUSTSEC-2026-0372", # zvariant_derive: unmaintained
 ]
