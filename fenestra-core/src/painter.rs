@@ -1,9 +1,13 @@
 //! Paints one resolved, laid-out element into a vello scene, following the
 //! spec order: shadows, fill, border, clip layer, alpha layer, children.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use kurbo::{
-    Affine, BezPath, CurveFitSample, ParamCurve, ParamCurveArclen, ParamCurveFit, Point, Rect,
-    RoundedRect, RoundedRectRadii, Shape, Stroke, Vec2, fit_to_bezpath,
+    Affine, BezPath, CurveFitSample, ParamCurve, ParamCurveArclen, ParamCurveFit, PathEl, Point,
+    Rect, RoundedRect, RoundedRectRadii, Shape, Stroke, Vec2, fit_to_bezpath,
 };
 use peniko::{Color, ColorStop, ColorStops, Fill, Gradient};
 use vello::Scene;
@@ -280,13 +284,62 @@ fn append_corner(path: &mut BezPath, center: Point, u: Vec2, v: Vec2, r: f64, n:
         // the next corner connects straight from here.
         return;
     }
-    let quad = SuperellipseQuadrant { center, u, v, r, n };
-    // `fit_to_bezpath` opens with a `move_to` at our `start`; replay only its
-    // curve/line segments so the corner continues the existing subpath.
-    let fitted = fit_to_bezpath(&quad, SQUIRCLE_ACCURACY);
-    for el in fitted.elements().iter().skip(1) {
-        path.push(*el);
+    // The fit runs once per (radius, exponent, orientation) with the corner
+    // centered at the origin, and is translated onto this corner. Fitting is
+    // the bulk of painting a squircle, and the same corners recur on every
+    // frame and at every scroll offset. (Only a translation: kurbo's fitter
+    // is not exactly rotation-invariant, and a rotated cached fit drifts a
+    // fraction of a pixel from the direct one.)
+    let offset = center.to_vec2();
+    let map = |p: Point| p + offset;
+    // The fit opens with a `move_to` at `start`; replay only its curve/line
+    // segments so the corner continues the existing subpath.
+    for el in origin_corner(u, v, r, n).iter().skip(1) {
+        path.push(match *el {
+            PathEl::MoveTo(p) => PathEl::MoveTo(map(p)),
+            PathEl::LineTo(p) => PathEl::LineTo(map(p)),
+            PathEl::QuadTo(a, b) => PathEl::QuadTo(map(a), map(b)),
+            PathEl::CurveTo(a, b, c) => PathEl::CurveTo(map(a), map(b), map(c)),
+            PathEl::ClosePath => PathEl::ClosePath,
+        });
     }
+}
+
+/// Distinct corners kept before the cache starts over: far more than a real
+/// UI uses, small enough to never matter for memory.
+const CORNER_CACHE_LIMIT: usize = 512;
+
+/// Fitted superellipse corners centered at the origin, keyed by the bits of
+/// (u, v, radius, exponent).
+type CornerCache = HashMap<[u64; 6], Rc<[PathEl]>>;
+
+thread_local! {
+    static CORNERS: RefCell<CornerCache> = RefCell::new(HashMap::new());
+}
+
+/// The superellipse quadrant of radius `r` and exponent `n` fitted to cubics,
+/// centered at the origin and running from `r·u` to `r·v`.
+fn origin_corner(u: Vec2, v: Vec2, r: f64, n: f64) -> Rc<[PathEl]> {
+    let key = [u.x, u.y, v.x, v.y, r, n].map(f64::to_bits);
+    if let Some(hit) = CORNERS.with(|c| c.borrow().get(&key).cloned()) {
+        return hit;
+    }
+    let quad = SuperellipseQuadrant {
+        center: Point::ORIGIN,
+        u,
+        v,
+        r,
+        n,
+    };
+    let fitted: Rc<[PathEl]> = fit_to_bezpath(&quad, SQUIRCLE_ACCURACY).elements().into();
+    CORNERS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= CORNER_CACHE_LIMIT {
+            c.clear();
+        }
+        c.insert(key, Rc::clone(&fitted));
+    });
+    fitted
 }
 
 /// Average corner radius, used where vello takes a single radius (shadows).
@@ -1019,6 +1072,45 @@ mod optical_tests {
 #[cfg(test)]
 mod squircle_tests {
     use super::*;
+
+    /// A cached corner, translated onto corners at each orientation and at
+    /// several positions, starts and ends on the edge joins and stays within
+    /// the fit tolerance of the true superellipse. It need not match a direct
+    /// fit segment for segment: near its tolerance threshold the fitter's
+    /// segment count flips on float noise, so even a translated fit can use
+    /// one cubic fewer — either holds the tolerance.
+    #[test]
+    fn cached_corner_tracks_the_superellipse() {
+        use kurbo::ParamCurveNearest;
+        let (x, y) = (Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0));
+        let orientations = [(-y, x), (x, y), (y, -x), (-x, -y)];
+        for r in [4.0, 12.0, 24.0, 61.5] {
+            for smoothing in [0.3_f32, 0.6, 1.0] {
+                let n = squircle_exponent(smoothing);
+                for (u, v) in orientations {
+                    for center in [Point::new(100.0, 50.0), Point::new(-7.25, 913.5)] {
+                        let mut path = BezPath::new();
+                        append_corner(&mut path, center, u, v, r, n, true);
+                        let segs: Vec<_> = path.segments().collect();
+                        let (first, last) = (segs[0].start(), segs[segs.len() - 1].end());
+                        // `cos(π/2)` is ~6e-17, not 0, so the far join lands a
+                        // hair (≲1e-5 px at n = 5) off: sub-pixel, as before caching.
+                        assert!((first - (center + u * r)).hypot() < 1e-4);
+                        assert!((last - (center + v * r)).hypot() < 1e-4);
+                        for i in 0..=64 {
+                            let theta = f64::from(i) / 64.0 * std::f64::consts::FRAC_PI_2;
+                            let p = superellipse_point(center, u, v, r, n, theta);
+                            let d = segs
+                                .iter()
+                                .map(|s| s.nearest(p, 1e-6).distance_sq.sqrt())
+                                .fold(f64::INFINITY, f64::min);
+                            assert!(d <= SQUIRCLE_ACCURACY, "r={r} n={n} u={u:?}: {d}");
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn squircle_exponent_zero_is_circle() {
