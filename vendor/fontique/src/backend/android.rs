@@ -12,6 +12,7 @@ use alloc::{
 use std::path::Path;
 
 use hashbrown::HashMap;
+use read_fonts::types::NameId;
 use roxmltree::{Document, Node};
 
 use super::{
@@ -49,6 +50,7 @@ pub(crate) struct SystemFonts {
 impl SystemFonts {
     pub(crate) fn new() -> Self {
         let android_root: String = std::env::var("ANDROID_ROOT").unwrap_or("/system".to_string());
+        let fonts_dir = Path::new(&android_root).join("fonts");
 
         let scan::ScannedCollection {
             family_names: mut name_map,
@@ -107,26 +109,43 @@ impl SystemFonts {
                                     }
                                 } else if let Some(langs) = child
                                     .attribute("lang")
-                                    .map(|s| s.split(',').collect::<Vec<&str>>())
+                                    // Comma-separated since Android 12, space-separated before.
+                                    .map(|s| {
+                                        s.split([',', ' '])
+                                            .filter(|lang| !lang.is_empty())
+                                            .collect::<Vec<&str>>()
+                                    })
                                 {
                                     let (_has_for, hasnt_for): (
                                         Vec<Node<'_, '_>>,
                                         Vec<Node<'_, '_>>,
                                     ) = child
                                         .children()
+                                        .filter(|c| c.has_tag_name("font"))
                                         .partition(|c| c.attribute("fallbackFor").is_some());
                                     {
-                                        // general fallback families
-                                        let (ps_named, _ps_unnamed): (
-                                            Vec<Node<'_, '_>>,
-                                            Vec<Node<'_, '_>>,
-                                        ) = hasnt_for
-                                            .iter()
-                                            .partition(|c| c.attribute("postScriptName").is_some());
-
-                                        if let Some(family) = ps_named.iter().find_map(|x| {
-                                            postscript_names
-                                                .get(x.attribute("postScriptName").unwrap())
+                                        // general fallback families. Find each face by its
+                                        // file and index, as Android does: fonts.xml before
+                                        // Android 12 names no faces, and later ones give every
+                                        // face of a CJK collection the first face's
+                                        // postScriptName (so zh-Hans would get Japanese forms).
+                                        if let Some(family) = hasnt_for.iter().find_map(|font| {
+                                            let index = font
+                                                .attribute("index")
+                                                .and_then(|i| i.parse().ok())
+                                                .unwrap_or(0);
+                                            let name = font
+                                                .text()
+                                                .and_then(|file| {
+                                                    postscript_name_in_file(
+                                                        &fonts_dir.join(file.trim()),
+                                                        index,
+                                                    )
+                                                })
+                                                .or_else(|| {
+                                                    font.attribute("postScriptName").map(Into::into)
+                                                })?;
+                                            postscript_names.get(&name)
                                         }) {
                                             for lang in langs {
                                                 if let Some(scr) = lang.strip_prefix("und-") {
@@ -158,9 +177,6 @@ impl SystemFonts {
                                                 }
                                             }
                                         }
-
-                                        // TODO: handle mapping to family names from file names
-                                        //       when postScriptName is unavailable.
                                     }
 
                                     // family-specific fallback families, currently unimplemented
@@ -218,4 +234,22 @@ impl SystemFonts {
                     .copied()
             })
     }
+}
+
+/// The PostScript name of face `index` in the font file at `path`.
+fn postscript_name_in_file(path: &Path, index: u32) -> Option<String> {
+    // A blank or missing file name would make `path` the fonts directory,
+    // and scanning that would answer with some unrelated font.
+    if !path.is_file() {
+        return None;
+    }
+    let mut name = None;
+    scan::scan_paths([path], 0, |font| {
+        if font.index == index {
+            name = font
+                .english_or_first_name(NameId::POSTSCRIPT_NAME)
+                .map(|n| n.chars().collect());
+        }
+    });
+    name
 }
