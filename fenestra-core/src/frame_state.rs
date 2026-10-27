@@ -483,7 +483,9 @@ impl FrameState {
             return false;
         };
         #[expect(clippy::cast_possible_truncation, reason = "a frame's dt fits in f32")]
-        let dt = s.last_step.map_or(0.0, |t| (now - t).clamp(0.0, 0.1) as f32);
+        let dt = s
+            .last_step
+            .map_or(0.0, |t| (now - t).clamp(0.0, 0.1) as f32);
         s.last_step = Some(now);
         if s.held {
             return false;

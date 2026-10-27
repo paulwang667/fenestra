@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use kurbo::Point;
 
 use crate::element::{Cursor, Element, Kind, SwipeDir};
-use crate::frame_state::Axis;
 use crate::frame::Frame;
+use crate::frame_state::Axis;
 use crate::frame_state::FrameState;
 use crate::id::WidgetId;
 use crate::input;
