@@ -51,6 +51,11 @@ pub struct Headless {
     raster: Option<fenestra_raster::RasterRenderer>,
     backend: Backend,
     max_dim: u32,
+    /// Raster glass composites on the GPU (the default) rather than read
+    /// back and blurred on the CPU.
+    gpu_glass: bool,
+    /// Backdrop regions read back for the CPU filters so far.
+    backdrop_reads: u32,
 }
 
 impl Headless {
@@ -84,6 +89,8 @@ impl Headless {
             raster,
             backend,
             max_dim,
+            gpu_glass: true,
+            backdrop_reads: 0,
         };
         if backend == Backend::Vello {
             headless.vello()?;
@@ -103,6 +110,21 @@ impl Headless {
     )> {
         let handle = &self.context.devices[self.dev_id];
         Some((&handle.device, &handle.queue, self.raster.as_mut()?))
+    }
+
+    /// Composite raster glass on the GPU (`true`, the default) or through the
+    /// old read-back-and-CPU path — the reference the GPU path is tested
+    /// against.
+    #[doc(hidden)]
+    pub fn set_gpu_glass(&mut self, on: bool) {
+        self.gpu_glass = on;
+    }
+
+    /// How many backdrop regions this renderer has read back for the CPU
+    /// filters (not counting the frame read that returns the image).
+    #[doc(hidden)]
+    pub fn backdrop_reads(&self) -> u32 {
+        self.backdrop_reads
     }
 
     /// The backend frames render through.
@@ -292,24 +314,38 @@ impl Headless {
         if specs.is_empty() {
             return self.read(&target, (0, 0, width, height));
         }
-        let region = crate::multi_pass::backdrop_region(&specs, frame.scale(), width, height)
-            .unwrap_or((0, 0, 1.min(width), 1.min(height)));
-        let backdrop = self.read(&target, region)?;
-        let injected = crate::multi_pass::process_specs_in(
-            &backdrop,
-            (region.0, region.1),
-            (width, height),
-            &specs,
-            frame.scale(),
-            &|_, _, _| None, // no custom renderers registered in the headless path
-            &mut std::collections::HashMap::new(),
-            &mut crate::multi_pass::GlassCache::default(),
-        );
+        // Glass composites on the GPU straight from the backdrop texture;
+        // only the other filters (if any) still read their region back.
+        let (mut injected, specs) = if self.gpu_glass {
+            let (panes, rest) =
+                crate::multi_pass::glass_panes(&specs, frame, frame.scale(), (width, height));
+            let (glass, _) = raster.glass(&handle.device, &handle.queue, &target, &panes);
+            (glass, rest)
+        } else {
+            (std::collections::HashMap::new(), specs)
+        };
+        let baked: std::collections::HashSet<_> = injected.keys().copied().collect();
+        if !specs.is_empty() {
+            let region = crate::multi_pass::backdrop_region(&specs, frame.scale(), width, height)
+                .unwrap_or((0, 0, 1.min(width), 1.min(height)));
+            let backdrop = self.read(&target, region)?;
+            self.backdrop_reads += 1;
+            injected.extend(crate::multi_pass::process_specs_in(
+                &backdrop,
+                (region.0, region.1),
+                (width, height),
+                &specs,
+                frame.scale(),
+                &|_, _, _| None, // no custom renderers registered in the headless path
+                &mut std::collections::HashMap::new(),
+                &mut crate::multi_pass::GlassCache::default(),
+            ));
+        }
         let handle = &self.context.devices[self.dev_id];
         let raster = self.raster.as_mut().expect("raster backend");
         let mut f = raster.frame(width, height);
         f.push_transform(scale);
-        frame.paint_final_into(&mut f, fonts, state, &injected);
+        frame.paint_final_baked_into(&mut f, fonts, state, &injected, &baked);
         f.pop_transform();
         f.render(&handle.device, &handle.queue, &view, base_color);
         self.read(&target, (0, 0, width, height))

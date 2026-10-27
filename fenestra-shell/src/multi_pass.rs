@@ -11,7 +11,7 @@ use kurbo::Rect;
 use vello::peniko;
 
 use crate::blur::{apply_element_filter, blur_linear_crop, box_radius_for_std_dev, refract_edges};
-use fenestra_raster::glass::blur_reach;
+use fenestra_raster::glass::{GlassPane, blur_reach};
 
 /// Filters each spec's region of the read-back `backdrop`, returning the image
 /// the final pass draws for that element (keyed by [`WidgetId`]). `scale` maps a
@@ -313,6 +313,64 @@ pub fn process_specs_in(
         out.insert(spec.id, image);
     }
     out
+}
+
+/// Splits `specs` for the raster backend's GPU glass: each backdrop blur
+/// becomes a [`GlassPane`] over the pane's whole physical rect (not clamped to
+/// the `size`d frame — the GPU extends the frame's edge past it rather than
+/// stretch the visible slice), lensed only when it lies wholly inside, with
+/// its body from `frame`. Every other spec comes back as it was, for the CPU.
+pub(crate) fn glass_panes(
+    specs: &[MultiPassSpec],
+    frame: &fenestra_core::Frame,
+    scale: f64,
+    (iw, ih): (u32, u32),
+) -> (Vec<GlassPane>, Vec<MultiPassSpec>) {
+    let mut panes = Vec::new();
+    let mut rest = Vec::new();
+    for spec in specs {
+        let PassKind::BackdropBlur {
+            std_dev,
+            radius,
+            saturation,
+        } = spec.kind
+        else {
+            rest.push(*spec);
+            continue;
+        };
+        let r = spec.rect;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "device coordinates fit in i32"
+        )]
+        let (x0, y0, x1, y1) = (
+            (r.x0 * scale).floor() as i32,
+            (r.y0 * scale).floor() as i32,
+            (r.x1 * scale).ceil() as i32,
+            (r.y1 * scale).ceil() as i32,
+        );
+        if x1 <= x0 || y1 <= y0 {
+            continue;
+        }
+        #[expect(clippy::cast_sign_loss, reason = "positive by the check above")]
+        let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "physical radius and band fit in f32"
+        )]
+        panes.push(GlassPane {
+            id: spec.id,
+            rect: (x0, y0, w, h),
+            std_dev,
+            saturation,
+            corner_radius: (f64::from(radius) * scale) as f32,
+            edge_band: (f64::from(crate::blur::EDGE) * scale) as f32,
+            lensed: fully_inside(r, scale, iw, ih),
+            body: frame.glass_body(spec.id),
+            scale,
+        });
+    }
+    (panes, rest)
 }
 
 /// A logical rect scaled to an integer pixel rect clamped to the image, or

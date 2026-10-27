@@ -1261,6 +1261,26 @@ impl WindowShell {
         Some((out, t.elapsed()))
     }
 
+    /// Composites glass `panes` on the GPU straight from the raster target
+    /// (no readback); returns each pane's placeholder image for the final
+    /// pass. `None` with no drawable surface.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn raster_glass(
+        &mut self,
+        panes: &[fenestra_raster::GlassPane],
+    ) -> Option<std::collections::HashMap<fenestra_core::WidgetId, vello::peniko::ImageData>> {
+        let RenderState::Active { surface, .. } = &self.state else {
+            return None;
+        };
+        let handle = &self.context.devices[surface.dev_id];
+        let raster = self.raster.as_mut()?;
+        let target = raster.target.as_ref()?;
+        let (out, _) = raster
+            .renderer
+            .glass(&handle.device, &handle.queue, &target.texture, panes);
+        Some(out)
+    }
+
     /// Reads the `(x, y, width, height)` part of the raster target back (the
     /// backdrop of a two-pass frame).
     #[cfg(not(target_arch = "wasm32"))]
@@ -2432,14 +2452,33 @@ impl<A: App> AppRunner<A> {
             // The web paints glass unblurred and filters inert, as on the
             // vello path: the final pass with nothing injected.
             #[cfg(target_arch = "wasm32")]
-            let injected = Default::default();
+            let (injected, baked) = (
+                std::collections::HashMap::new(),
+                std::collections::HashSet::new(),
+            );
             #[cfg(not(target_arch = "wasm32"))]
-            let injected =
-                {
-                    crate::frame_stats::two_pass(specs.len());
-                    let Some((pw, ph)) = self.shell.physical_size() else {
+            let (injected, baked) = {
+                crate::frame_stats::two_pass(specs.len());
+                let Some((pw, ph)) = self.shell.physical_size() else {
+                    return false;
+                };
+                // Glass composites on the GPU from the target as it is;
+                // only the other filters still read their region back.
+                let tg = Instant::now();
+                let (panes, specs) = crate::multi_pass::glass_panes(&specs, frame, scale, (pw, ph));
+                let mut injected = if panes.is_empty() {
+                    std::collections::HashMap::new()
+                } else {
+                    let Some(glass) = self.shell.raster_glass(&panes) else {
                         return false;
                     };
+                    glass
+                };
+                crate::frame_stats::record(crate::frame_stats::Phase::Filters, tg.elapsed());
+                let baked: std::collections::HashSet<_> = injected.keys().copied().collect();
+                if specs.is_empty() {
+                    (injected, baked)
+                } else {
                     let region = crate::multi_pass::backdrop_region(&specs, scale, pw, ph)
                         .unwrap_or((0, 0, 1.min(pw), 1.min(ph)));
                     let tr = Instant::now();
@@ -2460,7 +2499,7 @@ impl<A: App> AppRunner<A> {
                                 .and_then(|f| f(key, w, h).map(|d| d.image))
                         };
                     let tf = Instant::now();
-                    let injected = crate::multi_pass::process_specs_in(
+                    let filtered = crate::multi_pass::process_specs_in(
                         &backdrop,
                         (region.0, region.1),
                         (pw, ph),
@@ -2471,12 +2510,14 @@ impl<A: App> AppRunner<A> {
                         &mut self.shell.glass_cache,
                     );
                     crate::frame_stats::record(crate::frame_stats::Phase::Filters, tf.elapsed());
-                    injected
-                };
+                    injected.extend(filtered);
+                    (injected, baked)
+                }
+            };
             let (fonts, state) = (&mut self.fonts, &mut self.state);
             let Some(((), r)) = self.shell.raster_render(|f| {
                 f.push_transform(transform);
-                frame.paint_final_into(f, fonts, state, &injected);
+                frame.paint_final_baked_into(f, fonts, state, &injected, &baked);
                 f.pop_transform();
             }) else {
                 return false;
