@@ -469,27 +469,389 @@ impl Theme {
         self.apply_surface(role, Style::default())
     }
 
+    /// A label colour for text on `role` at `level`: Liquid Glass's vibrant
+    /// labels on its glass roles (the backdrop's colour carries into them),
+    /// the theme's text colours everywhere else — other styles, content
+    /// roles, and any style with [`Theme::reduce_transparency`].
+    #[must_use]
+    pub fn label_on(&self, role: Surface, level: crate::Vibrancy) -> crate::Color {
+        let vibrant = self.material_style == MaterialStyle::LiquidGlass
+            && self.surface_style(role).backdrop_blur.is_some();
+        match (vibrant, level) {
+            (true, level) => self.vibrant_label(level),
+            (false, crate::Vibrancy::Primary) => self.text,
+            (false, crate::Vibrancy::Secondary) => self.text_muted,
+            (false, crate::Vibrancy::Tertiary) => self.text_subtle,
+        }
+    }
+
     /// Overlays `role`'s material in this theme's [`MaterialStyle`] onto
     /// `base` (its layout and text untouched) — the one place every surface
     /// resolves, for [`Theme::surface_style`] and
     /// [`Element::surface`](crate::Element::surface) alike.
     #[must_use]
     pub fn apply_surface(&self, role: Surface, base: Style) -> Style {
-        let mut style = role
+        let stock = role
             .bundle()
             .apply(self, base)
             .rounded(role.radius_px(&self.radius));
+        let mut style = match self.material_style {
+            MaterialStyle::Solid => stock,
+            MaterialStyle::LiquidGlass => self.liquid_glass(role, stock),
+            MaterialStyle::Acrylic => self.acrylic(role, stock),
+            MaterialStyle::Tonal => self.tonal(role, stock),
+        };
         // Flat elevation: resting cards lean on their border + tone-step rather
         // than a shadow; floating roles always keep theirs.
         if self.elevation == Elevation::Flat && matches!(role, Surface::Card | Surface::Raised) {
             style.shadow_token = None;
         }
+        if self.reduce_transparency {
+            style = self.opaque(role, style);
+        }
         style
     }
+
+    /// Liquid Glass: thin, vivid glass with a bright rim and an adaptive
+    /// tint on what floats over content; content roles stay solid.
+    fn liquid_glass(&self, role: Surface, stock: Style) -> Style {
+        // (fill alpha, blur, shadow, radius)
+        let (alpha, blur, shadow, radius) = match role {
+            Surface::Bar => (0.46, 22.0, None, 0.0),
+            Surface::Dock => (0.54, 20.0, Some(ShadowToken::Lg), R_FULL),
+            Surface::Popover | Surface::Menu => (0.64, 20.0, Some(ShadowToken::Lg), self.radius.xl),
+            Surface::Glass => (0.5, 16.0, Some(ShadowToken::Lg), self.radius.xl),
+            Surface::Modal => (0.72, 20.0, Some(ShadowToken::Xl), self.radius.xl),
+            _ => return stock,
+        };
+        let mut s = glass(
+            stock,
+            role.bundle().fill.color(self),
+            Material::new(alpha, blur, LIQUID_SATURATION),
+        );
+        s.specular_edge = Some(SpecularEdge {
+            intensity: 0.5,
+            shade: 0.14,
+            ..SpecularEdge::glass()
+        });
+        s.adaptive_tint = Some(AdaptiveTint::glass());
+        // A raking sheen suits a floating card, not a bar or a menu.
+        s.sheen = (role == Surface::Glass).then(Sheen::glass);
+        s.highlight_top = None;
+        if matches!(role, Surface::Bar | Surface::Dock) {
+            s.border = None;
+        }
+        s.shadow_token = shadow;
+        s.rounded(radius)
+    }
+
+    /// Acrylic over Mica: thick, slightly desaturated, grained glass on bars
+    /// and transient surfaces; modals opaque; the window an accent-tinted,
+    /// grained Mica.
+    fn acrylic(&self, role: Surface, stock: Style) -> Style {
+        match role {
+            Surface::Bar | Surface::Dock | Surface::Popover | Surface::Menu | Surface::Glass => {
+                let mut s = glass(
+                    stock,
+                    role.bundle().fill.color(self),
+                    Material::new(0.78, 30.0, ACRYLIC_SATURATION),
+                );
+                s.glass_noise = 0.02;
+                s.specular_edge = None;
+                s.sheen = None;
+                s.adaptive_tint = None;
+                s.highlight_top = None;
+                if role == Surface::Bar {
+                    s.border = None;
+                    s.shadow_token = None;
+                    s
+                } else {
+                    s.border = Some(Border {
+                        width: 1.0,
+                        color: self.border_subtle,
+                    });
+                    s.shadow_token = Some(ShadowToken::Sm);
+                    s.rounded(self.radius.sm)
+                }
+            }
+            Surface::Window => {
+                let mut s = stock;
+                s.fill = Some(Paint::Solid(mix(self.bg, self.accent, 0.05)));
+                s.surface_noise = 0.02;
+                s
+            }
+            _ => stock,
+        }
+    }
+
+    /// Tonal (Material 3): no glass — the accent mixed into the surface by
+    /// elevation, no borders, shadows only on what floats.
+    fn tonal(&self, role: Surface, stock: Style) -> Style {
+        // (accent share, shadow, radius)
+        let (share, shadow, radius) = match role {
+            Surface::Card => (0.05, Some(ShadowToken::Sm), self.radius.lg),
+            Surface::Raised => (0.05, None, self.radius.lg),
+            Surface::Bar => (0.08, None, 0.0),
+            Surface::Dock => (0.11, None, R_FULL),
+            Surface::Popover | Surface::Menu => (0.12, Some(ShadowToken::Md), self.radius.lg),
+            Surface::Glass => (0.14, Some(ShadowToken::Md), self.radius.xl),
+            Surface::Modal => (0.14, Some(ShadowToken::Xl), self.radius.xl),
+            Surface::Window | Surface::Thumb | Surface::Tooltip => return stock,
+        };
+        let mut s = clear_glass(stock);
+        s.fill = Some(Paint::Solid(mix(self.surface, self.accent, share)));
+        s.border = None;
+        s.shadow_token = shadow;
+        s.highlight_top = None;
+        s.rounded(radius)
+    }
+
+    /// `style` with any glass resolved opaque: the role's own fill colour,
+    /// no blur, vibrancy, grain or optics — radius, border and shadow kept.
+    fn opaque(&self, role: Surface, style: Style) -> Style {
+        let translucent = match style.fill {
+            Some(Paint::Solid(c)) => c.components[3] < 1.0,
+            _ => false,
+        };
+        if style.backdrop_blur.is_none() && !translucent {
+            return style;
+        }
+        let mut s = clear_glass(style);
+        s.fill = Some(Paint::Solid(role.bundle().fill.color(self)));
+        s
+    }
+}
+
+/// Liquid Glass lifts the colour a blur washes out.
+const LIQUID_SATURATION: f32 = 1.7;
+
+/// Acrylic's luminosity layer keeps the backdrop's colour in check.
+const ACRYLIC_SATURATION: f32 = 0.95;
+
+/// `style` frosted with `material` over the content behind it, its fill the
+/// material's tint of `color`.
+fn glass(mut style: Style, color: crate::Color, material: Material) -> Style {
+    style.fill = Some(Paint::Solid(material.tint(color)));
+    style.backdrop_blur = Some(material.blur_radius);
+    style.backdrop_saturate = material.saturation;
+    style
+}
+
+/// `style` with every glass property cleared.
+fn clear_glass(mut style: Style) -> Style {
+    style.backdrop_blur = None;
+    style.backdrop_saturate = 1.0;
+    style.glass_noise = 0.0;
+    style.specular_edge = None;
+    style.sheen = None;
+    style.adaptive_tint = None;
+    style
+}
+
+/// `a` moved `amount` of the way to `b` in sRGB (alpha from `a`).
+fn mix(a: crate::Color, b: crate::Color, amount: f32) -> crate::Color {
+    let (x, y) = (a.components, b.components);
+    crate::Color::new([
+        x[0] + (y[0] - x[0]) * amount,
+        x[1] + (y[1] - x[1]) * amount,
+        x[2] + (y[2] - x[2]) * amount,
+        x[3],
+    ])
 }
 
 #[cfg(test)]
 mod tests {
+
+    fn styled(base: Theme, style: crate::MaterialStyle) -> Theme {
+        base.with_material_style(style)
+    }
+
+    const GLASS_ROLES: [Surface; 6] = [
+        Surface::Bar,
+        Surface::Dock,
+        Surface::Popover,
+        Surface::Menu,
+        Surface::Glass,
+        Surface::Modal,
+    ];
+
+    fn fill(s: &Style) -> crate::Color {
+        match s.fill {
+            Some(Paint::Solid(c)) => c,
+            ref other => panic!("a solid fill, got {other:?}"),
+        }
+    }
+
+    fn rgb_distance(a: crate::Color, b: crate::Color) -> f32 {
+        let (x, y) = (a.components, b.components);
+        ((x[0] - y[0]).powi(2) + (x[1] - y[1]).powi(2) + (x[2] - y[2]).powi(2)).sqrt()
+    }
+
+    fn lerp(a: crate::Color, b: crate::Color, t: f32) -> crate::Color {
+        let (x, y) = (a.components, b.components);
+        crate::Color::new([
+            x[0] + (y[0] - x[0]) * t,
+            x[1] + (y[1] - x[1]) * t,
+            x[2] + (y[2] - x[2]) * t,
+            x[3],
+        ])
+    }
+
+    #[test]
+    fn liquid_glass_frosts_only_what_floats() {
+        let t = styled(Theme::dark(), crate::MaterialStyle::LiquidGlass);
+        for role in GLASS_ROLES {
+            let s = t.surface_style(role);
+            assert!(s.backdrop_blur.is_some(), "{role:?} frosted");
+            assert!(s.adaptive_tint.is_some(), "{role:?} adaptive");
+            assert!(s.specular_edge.is_some(), "{role:?} rim");
+        }
+        for role in [Surface::Card, Surface::Raised, Surface::Window] {
+            assert!(
+                t.surface_style(role).backdrop_blur.is_none(),
+                "{role:?} solid"
+            );
+        }
+        assert!(t.surface_style(Surface::Bar).shadow_token.is_none());
+        assert!(t.surface_style(Surface::Dock).shadow_token.is_some());
+    }
+
+    #[test]
+    fn acrylic_is_grained_thick_glass_over_mica() {
+        let t = styled(Theme::dark(), crate::MaterialStyle::Acrylic);
+        let pop = t.surface_style(Surface::Popover);
+        assert_eq!(pop.backdrop_blur, Some(30.0));
+        assert!((pop.glass_noise - 0.02).abs() < 1e-6);
+        assert_eq!(
+            pop.border,
+            Some(Border {
+                width: 1.0,
+                color: t.border_subtle
+            })
+        );
+        assert!(t.surface_style(Surface::Bar).border.is_none());
+        assert!(
+            t.surface_style(Surface::Modal).backdrop_blur.is_none(),
+            "an opaque modal"
+        );
+        let w = t.surface_style(Surface::Window);
+        assert_eq!(fill(&w), lerp(t.bg, t.accent, 0.05));
+        assert!((w.surface_noise - 0.02).abs() < 1e-6);
+    }
+
+    #[test]
+    fn tonal_has_no_glass_and_rises_toward_the_accent() {
+        let t = styled(Theme::dark(), crate::MaterialStyle::Tonal);
+        for role in LEGACY_ROLES
+            .into_iter()
+            .chain([Surface::Bar, Surface::Dock, Surface::Window])
+        {
+            assert!(t.surface_style(role).backdrop_blur.is_none(), "{role:?}");
+        }
+        let lift = |role| rgb_distance(fill(&t.surface_style(role)), t.surface);
+        let order = [
+            Surface::Card,
+            Surface::Bar,
+            Surface::Dock,
+            Surface::Popover,
+            Surface::Modal,
+        ];
+        for pair in order.windows(2) {
+            assert!(
+                lift(pair[0]) < lift(pair[1]),
+                "{:?} < {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        assert!(t.surface_style(Surface::Popover).shadow_token.is_some());
+        assert!(t.surface_style(Surface::Bar).shadow_token.is_none());
+    }
+
+    #[test]
+    fn recipes_follow_the_radius_scale() {
+        let mut t = styled(Theme::dark(), crate::MaterialStyle::LiquidGlass);
+        let stock = t.surface_style(Surface::Popover).corner_radius;
+        assert_eq!(stock, CornerRadius::all(t.radius.xl));
+        t.radius = RadiusScale::sharp();
+        let sharp = t.surface_style(Surface::Popover).corner_radius;
+        assert_eq!(sharp, CornerRadius::all(RadiusScale::sharp().xl));
+        assert!(sharp.tl < stock.tl);
+    }
+
+    #[test]
+    fn flat_elevation_holds_in_every_style() {
+        for style in crate::MaterialStyle::ALL {
+            let t = styled(Theme::dark(), style).with_elevation(Elevation::Flat);
+            assert!(
+                t.surface_style(Surface::Card).shadow_token.is_none(),
+                "{style:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reduced_transparency_drops_vibrant_labels() {
+        use crate::Vibrancy::Primary;
+        for style in crate::MaterialStyle::ALL {
+            let t = styled(Theme::dark(), style).with_reduce_transparency(true);
+            for role in GLASS_ROLES.into_iter().chain(LEGACY_ROLES) {
+                let s = t.surface_style(role);
+                assert!(s.backdrop_blur.is_none(), "{style:?} {role:?}");
+                if role != Surface::Tooltip {
+                    assert!(
+                        (fill(&s).components[3] - 1.0).abs() < 1e-6,
+                        "{style:?} {role:?} opaque"
+                    );
+                }
+            }
+            assert_eq!(t.label_on(Surface::Bar, Primary), t.text, "{style:?}");
+        }
+        let t = styled(Theme::dark(), crate::MaterialStyle::LiquidGlass);
+        assert_eq!(t.label_on(Surface::Bar, Primary), t.vibrant_label(Primary));
+        assert_eq!(t.label_on(Surface::Card, Primary), t.text);
+        assert_eq!(
+            t.label_on(Surface::Bar, crate::Vibrancy::Secondary),
+            t.vibrant_label(crate::Vibrancy::Secondary)
+        );
+        for style in [
+            crate::MaterialStyle::Solid,
+            crate::MaterialStyle::Acrylic,
+            crate::MaterialStyle::Tonal,
+        ] {
+            let t = styled(Theme::dark(), style);
+            assert_eq!(t.label_on(Surface::Bar, Primary), t.text, "{style:?}");
+            assert_eq!(
+                t.label_on(Surface::Bar, crate::Vibrancy::Secondary),
+                t.text_muted,
+                "{style:?}"
+            );
+            assert_eq!(
+                t.label_on(Surface::Bar, crate::Vibrancy::Tertiary),
+                t.text_subtle,
+                "{style:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn recipes_resolve_in_light_and_dark() {
+        use crate::Vibrancy::Primary;
+        let light = styled(Theme::light(), crate::MaterialStyle::LiquidGlass);
+        assert_eq!(
+            light.label_on(Surface::Bar, Primary).components[0],
+            0.0,
+            "black ink"
+        );
+        let mica = |base: Theme| {
+            fill(&styled(base, crate::MaterialStyle::Acrylic).surface_style(Surface::Window))
+        };
+        let (l, d) = (mica(Theme::light()), mica(Theme::dark()));
+        assert!(
+            l.components[0] + l.components[1] + l.components[2]
+                > d.components[0] + d.components[1] + d.components[2]
+        );
+    }
 
     /// Today's resolution path (before material styles), kept as the
     /// reference the Solid style must match bit for bit.
