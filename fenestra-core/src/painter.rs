@@ -838,43 +838,59 @@ pub(crate) fn draw_image<T: DrawTarget>(
 /// The side of the grain tile, device px.
 const GRAIN_TILE: u32 = 256;
 
-/// The grain tile [`surface_grain`] repeats: [`crate::glass::glass_grain`]
-/// as straight-alpha RGBA — white where the grain brightens, black where it
-/// darkens, the alpha its strength — so drawn "over" at a layer alpha of the
-/// noise amount it moves each pixel by about that much either way. Built
-/// once; the same blob every time, so backends keep one texture.
-fn grain_tile() -> &'static peniko::ImageData {
-    static TILE: std::sync::OnceLock<peniko::ImageData> = std::sync::OnceLock::new();
-    TILE.get_or_init(|| {
-        let mut px = Vec::with_capacity((GRAIN_TILE * GRAIN_TILE * 4) as usize);
-        for y in 0..GRAIN_TILE {
-            for x in 0..GRAIN_TILE {
-                let n = crate::glass::glass_grain(x, y);
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "|n| < 1, scaled to 0..=255"
-                )]
-                let a = (n.abs() * 255.0).round() as u8;
-                let ink = if n >= 0.0 { 255 } else { 0 };
-                px.extend([ink, ink, ink, a]);
-            }
+/// The grain tile [`surface_grain`] repeats for `amount`:
+/// [`crate::glass::glass_grain`] as straight-alpha RGBA — white where the
+/// grain brightens, black where it darkens, its alpha the grain's strength
+/// times `amount` — so drawn "over" it moves each pixel by about `amount`
+/// either way. The amount is baked in (not a faded layer, which the raster
+/// backend draws as an offscreen group); one tile per amount, to a
+/// thousandth, kept for good — the same blob every time, so backends keep
+/// one texture.
+fn grain_tile(amount: f32) -> peniko::ImageData {
+    static TILES: std::sync::Mutex<Vec<(u16, peniko::ImageData)>> =
+        std::sync::Mutex::new(Vec::new());
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "amount is 0..=1, in thousandths"
+    )]
+    let key = (amount.clamp(0.0, 1.0) * 1000.0).round() as u16;
+    let mut tiles = TILES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, tile)) = tiles.iter().find(|(k, _)| *k == key) {
+        return tile.clone();
+    }
+    let strength = f32::from(key) / 1000.0 * 255.0;
+    let mut px = Vec::with_capacity((GRAIN_TILE * GRAIN_TILE * 4) as usize);
+    for y in 0..GRAIN_TILE {
+        for x in 0..GRAIN_TILE {
+            let n = crate::glass::glass_grain(x, y);
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "|n| < 1 times at most 255"
+            )]
+            let a = (n.abs() * strength).round() as u8;
+            let ink = if n >= 0.0 { 255 } else { 0 };
+            px.extend([ink, ink, ink, a]);
         }
-        peniko::ImageData {
-            data: peniko::Blob::new(std::sync::Arc::new(px)),
-            format: peniko::ImageFormat::Rgba8,
-            alpha_type: peniko::ImageAlphaType::Alpha,
-            width: GRAIN_TILE,
-            height: GRAIN_TILE,
-        }
-    })
+    }
+    let tile = peniko::ImageData {
+        data: peniko::Blob::new(std::sync::Arc::new(px)),
+        format: peniko::ImageFormat::Rgba8,
+        alpha_type: peniko::ImageAlphaType::Alpha,
+        width: GRAIN_TILE,
+        height: GRAIN_TILE,
+    };
+    tiles.push((key, tile.clone()));
+    tile
 }
 
 /// Lays grain of `amount` over a surface (`rect`, its corners): the grain
-/// tile, one texel per device pixel (`scale` device px a logical px),
-/// repeated on a grid anchored at the origin — so adjacent surfaces share one
-/// continuous grain — inside a layer clipped to the surface at `amount`
-/// alpha.
+/// tile for the amount, one texel per device pixel (`scale` device px a
+/// logical px), repeated on a grid anchored at the origin — so adjacent
+/// surfaces share one continuous grain — inside a clip to the surface.
 pub(crate) fn surface_grain<T: DrawTarget>(
     target: &mut T,
     rect: Rect,
@@ -886,11 +902,10 @@ pub(crate) fn surface_grain<T: DrawTarget>(
     if amount <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 || scale <= 0.0 {
         return;
     }
-    let tile = grain_tile();
+    let tile = grain_tile(amount);
     let side = f64::from(GRAIN_TILE) / scale;
-    target.push_layer(
+    target.push_clip_layer(
         Fill::NonZero,
-        amount,
         Affine::IDENTITY,
         &corner_path(rect, corners, smoothing),
     );
@@ -898,7 +913,10 @@ pub(crate) fn surface_grain<T: DrawTarget>(
     while y < rect.y1 {
         let mut x = (rect.x0 / side).floor() * side;
         while x < rect.x1 {
-            target.draw_image(tile, Affine::translate((x, y)) * Affine::scale(1.0 / scale));
+            target.draw_image(
+                &tile,
+                Affine::translate((x, y)) * Affine::scale(1.0 / scale),
+            );
             x += side;
         }
         y += side;

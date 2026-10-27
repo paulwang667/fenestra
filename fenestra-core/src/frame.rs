@@ -3961,58 +3961,70 @@ mod tests {
         assert_eq!(frame.glass_body(plain), None);
     }
 
-    /// Surface noise lays the grain over an element's surface: one layer at
-    /// the noise's alpha, clipped to the element, tiled with one grain image
-    /// at device-pixel scale until it is covered; nothing on a plain surface.
+    /// Surface noise lays the grain over an element's surface: a clip to the
+    /// element (no faded layer — on the raster backend that would be an
+    /// offscreen group), tiled with the grain image for the amount, at
+    /// device-pixel scale until it is covered; nothing on a plain surface.
     #[test]
     fn surface_noise_lays_grain_tiles_over_the_surface() {
         use crate::draw::recorder::{Op, Recorder};
         let theme = Theme::dark();
-        let root: crate::Element<()> = crate::stack().w_full().h_full().children([
-            crate::div()
+        let surface = |left: f32, noise: Option<f32>| {
+            let el = crate::div()
                 .absolute()
-                .left(0.0)
-                .top(0.0)
-                .w(100.0)
-                .h(80.0)
-                .bg(theme.surface),
-            crate::div()
-                .absolute()
-                .left(120.0)
+                .left(left)
                 .top(0.0)
                 .w(600.0)
                 .h(300.0)
-                .bg(theme.surface)
-                .surface_noise(0.03),
+                .bg(theme.surface);
+            match noise {
+                Some(n) => el.surface_noise(n),
+                None => el,
+            }
+        };
+        let root: crate::Element<()> = crate::stack().w_full().h_full().children([
+            surface(0.0, None),
+            surface(0.0, Some(0.03)),
+            surface(0.0, Some(0.05)),
         ]);
         let mut fonts = Fonts::embedded();
         let mut state = FrameState::new();
         let frame = build_frame(&root, &theme, &mut fonts, &mut state, (800.0, 400.0), 2.0);
         let mut r = Recorder::default();
         frame.paint_into(&mut r, &mut fonts, &mut state);
-        let start = r
-            .ops
-            .iter()
-            .position(|o| matches!(o, Op::PushLayer { alpha, .. } if (*alpha - 0.03).abs() < 1e-6))
-            .expect("a layer at the noise's alpha");
-        let tiles: Vec<u64> = r.ops[start + 1..]
-            .iter()
-            .take_while(|o| !matches!(o, Op::PopLayer))
-            .filter_map(|o| match o {
-                Op::Image { id, .. } => Some(*id),
-                _ => None,
-            })
-            .collect();
-        // 600×300 logical at 2x is 1200×600 device px: at least 5×3 tiles of
-        // 256 device px.
-        assert!(tiles.len() >= 15, "{} tiles", tiles.len());
-        assert!(tiles.iter().all(|id| *id == tiles[0]), "one grain image");
-        let layers = r
-            .ops
-            .iter()
-            .filter(|o| matches!(o, Op::PushLayer { alpha, .. } if (*alpha - 0.03).abs() < 1e-6))
-            .count();
-        assert_eq!(layers, 1, "only the noisy surface");
+        assert!(
+            !r.ops
+                .iter()
+                .any(|o| matches!(o, Op::PushLayer { alpha, .. } if *alpha < 1.0)),
+            "no faded layer"
+        );
+        // Runs of images inside a clip: one per noisy surface.
+        let mut runs: Vec<Vec<u64>> = Vec::new();
+        let mut current: Option<Vec<u64>> = None;
+        for op in &r.ops {
+            match op {
+                Op::PushClip { .. } => current = Some(Vec::new()),
+                Op::Image { id, .. } => {
+                    if let Some(run) = current.as_mut() {
+                        run.push(*id);
+                    }
+                }
+                Op::PopLayer => {
+                    if let Some(run) = current.take().filter(|r| !r.is_empty()) {
+                        runs.push(run);
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(runs.len(), 2, "only the noisy surfaces");
+        for run in &runs {
+            // 600×300 logical at 2x is 1200×600 device px: at least 5×3
+            // tiles of 256 device px, all one image.
+            assert!(run.len() >= 15, "{} tiles", run.len());
+            assert!(run.iter().all(|id| *id == run[0]), "one grain image");
+        }
+        assert_ne!(runs[0][0], runs[1][0], "each amount its own grain");
     }
 
     /// A pane in `baked` draws its injected image as it is; through
