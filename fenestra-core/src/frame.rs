@@ -2812,6 +2812,20 @@ impl Frame {
             }
             PaintKind::Box => {}
         }
+        // Grain over the element's own surface (its fill or image), under
+        // its children.
+        if node.style.surface_noise > 0.0
+            && (node.style.fill.is_some() || matches!(node.kind, PaintKind::Image(_)))
+        {
+            painter::surface_grain(
+                target,
+                node.rect,
+                node.style.corner_radius,
+                node.style.corner_smoothing.unwrap_or(0.0),
+                node.style.surface_noise,
+                self.scale,
+            );
+        }
         // Non-sticky children first, then sticky children on top.
         for child in node.children.iter().filter(|c| !c.is_sticky) {
             self.paint_node(target, fonts, state, child, mode);
@@ -3945,6 +3959,60 @@ mod tests {
             })
         );
         assert_eq!(frame.glass_body(plain), None);
+    }
+
+    /// Surface noise lays the grain over an element's surface: one layer at
+    /// the noise's alpha, clipped to the element, tiled with one grain image
+    /// at device-pixel scale until it is covered; nothing on a plain surface.
+    #[test]
+    fn surface_noise_lays_grain_tiles_over_the_surface() {
+        use crate::draw::recorder::{Op, Recorder};
+        let theme = Theme::dark();
+        let root: crate::Element<()> = crate::stack().w_full().h_full().children([
+            crate::div()
+                .absolute()
+                .left(0.0)
+                .top(0.0)
+                .w(100.0)
+                .h(80.0)
+                .bg(theme.surface),
+            crate::div()
+                .absolute()
+                .left(120.0)
+                .top(0.0)
+                .w(600.0)
+                .h(300.0)
+                .bg(theme.surface)
+                .surface_noise(0.03),
+        ]);
+        let mut fonts = Fonts::embedded();
+        let mut state = FrameState::new();
+        let frame = build_frame(&root, &theme, &mut fonts, &mut state, (800.0, 400.0), 2.0);
+        let mut r = Recorder::default();
+        frame.paint_into(&mut r, &mut fonts, &mut state);
+        let start = r
+            .ops
+            .iter()
+            .position(|o| matches!(o, Op::PushLayer { alpha, .. } if (*alpha - 0.03).abs() < 1e-6))
+            .expect("a layer at the noise's alpha");
+        let tiles: Vec<u64> = r.ops[start + 1..]
+            .iter()
+            .take_while(|o| !matches!(o, Op::PopLayer))
+            .filter_map(|o| match o {
+                Op::Image { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        // 600×300 logical at 2x is 1200×600 device px: at least 5×3 tiles of
+        // 256 device px.
+        assert!(tiles.len() >= 15, "{} tiles", tiles.len());
+        assert!(tiles.iter().all(|id| *id == tiles[0]), "one grain image");
+        let layers = r
+            .ops
+            .iter()
+            .filter(|o| matches!(o, Op::PushLayer { alpha, .. } if (*alpha - 0.03).abs() < 1e-6))
+            .count();
+        assert_eq!(layers, 1, "only the noisy surface");
     }
 
     /// A pane in `baked` draws its injected image as it is; through

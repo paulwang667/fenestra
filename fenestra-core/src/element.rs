@@ -2258,6 +2258,13 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Fine monochrome grain over this element's own surface (fill or image).
+    /// See [`Style::surface_noise`](crate::Style::surface_noise).
+    pub fn surface_noise(mut self, amount: f32) -> Self {
+        self.style = self.style.surface_noise(amount);
+        self
+    }
+
     /// Backdrop-adaptive vibrancy — shift the glass tint's lightness by the mean
     /// luminance of the frosted backdrop behind it (headless-only). See
     /// [`AdaptiveTint`](crate::AdaptiveTint) (and [`AdaptiveTint::glass`]).

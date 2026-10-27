@@ -835,6 +835,77 @@ pub(crate) fn draw_image<T: DrawTarget>(
     target.pop_layer();
 }
 
+/// The side of the grain tile, device px.
+const GRAIN_TILE: u32 = 256;
+
+/// The grain tile [`surface_grain`] repeats: [`crate::glass::glass_grain`]
+/// as straight-alpha RGBA — white where the grain brightens, black where it
+/// darkens, the alpha its strength — so drawn "over" at a layer alpha of the
+/// noise amount it moves each pixel by about that much either way. Built
+/// once; the same blob every time, so backends keep one texture.
+fn grain_tile() -> &'static peniko::ImageData {
+    static TILE: std::sync::OnceLock<peniko::ImageData> = std::sync::OnceLock::new();
+    TILE.get_or_init(|| {
+        let mut px = Vec::with_capacity((GRAIN_TILE * GRAIN_TILE * 4) as usize);
+        for y in 0..GRAIN_TILE {
+            for x in 0..GRAIN_TILE {
+                let n = crate::glass::glass_grain(x, y);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "|n| < 1, scaled to 0..=255"
+                )]
+                let a = (n.abs() * 255.0).round() as u8;
+                let ink = if n >= 0.0 { 255 } else { 0 };
+                px.extend([ink, ink, ink, a]);
+            }
+        }
+        peniko::ImageData {
+            data: peniko::Blob::new(std::sync::Arc::new(px)),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: GRAIN_TILE,
+            height: GRAIN_TILE,
+        }
+    })
+}
+
+/// Lays grain of `amount` over a surface (`rect`, its corners): the grain
+/// tile, one texel per device pixel (`scale` device px a logical px),
+/// repeated on a grid anchored at the origin — so adjacent surfaces share one
+/// continuous grain — inside a layer clipped to the surface at `amount`
+/// alpha.
+pub(crate) fn surface_grain<T: DrawTarget>(
+    target: &mut T,
+    rect: Rect,
+    corners: CornerRadius,
+    smoothing: f32,
+    amount: f32,
+    scale: f64,
+) {
+    if amount <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 || scale <= 0.0 {
+        return;
+    }
+    let tile = grain_tile();
+    let side = f64::from(GRAIN_TILE) / scale;
+    target.push_layer(
+        Fill::NonZero,
+        amount,
+        Affine::IDENTITY,
+        &corner_path(rect, corners, smoothing),
+    );
+    let mut y = (rect.y0 / side).floor() * side;
+    while y < rect.y1 {
+        let mut x = (rect.x0 / side).floor() * side;
+        while x < rect.x1 {
+            target.draw_image(tile, Affine::translate((x, y)) * Affine::scale(1.0 / scale));
+            x += side;
+        }
+        y += side;
+    }
+    target.pop_layer();
+}
+
 /// Paints the keyboard focus halo: a soft [`FOCUS_RING`]-width stroke
 /// (3px) at the ring color, sitting flush just outside the element edge so it
 /// reads as a glow around the (ring-colored) border. The border swap itself

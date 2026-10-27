@@ -1019,6 +1019,9 @@ pub struct Style {
     /// default, none; Fluent acrylic's texture is `0.02`). See
     /// [`Style::glass_noise`].
     pub glass_noise: f32,
+    /// Grain over a solid, gradient or image surface, `0.0..=1.0` of full
+    /// scale (`0.0`, the default, none). See [`Style::surface_noise`].
+    pub surface_noise: f32,
     /// Opacity 0.0..=1.0 applied to the whole subtree.
     pub opacity: f32,
     /// Uniform scale applied at paint time about the element's center
@@ -1131,6 +1134,7 @@ impl Default for Style {
             specular_edge: None,
             sheen: None,
             glass_noise: 0.0,
+            surface_noise: 0.0,
             adaptive_tint: None,
             opacity: 1.0,
             scale: 1.0,
@@ -1909,6 +1913,17 @@ impl Style {
     /// a frosted surface, not as noise. Only glass (`backdrop_blur`) uses it.
     pub fn glass_noise(mut self, amount: f32) -> Self {
         self.glass_noise = amount.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Fine monochrome grain over this element's own surface — its fill
+    /// (solid or gradient) or its image — `amount` of full scale (`0.02`–`0.04`
+    /// reads as a frosted, tactile finish; on a large gradient it also breaks
+    /// up banding). Fixed to the device pixel grid, so neighbouring surfaces
+    /// share one grain and it never shimmers. Children paint over it clean.
+    /// For glass panes see [`Style::glass_noise`].
+    pub fn surface_noise(mut self, amount: f32) -> Self {
+        self.surface_noise = amount.clamp(0.0, 1.0);
         self
     }
 
