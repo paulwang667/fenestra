@@ -60,6 +60,19 @@ impl ImageCache {
         k
     }
 
+    /// Makes `placeholder` stand for `view`: drawing it hits this entry, so
+    /// its pixels are never read or uploaded. Kept like any cached image.
+    pub fn register(&mut self, placeholder: &ImageData, view: wgpu::TextureView) {
+        self.pending.retain(|(k, _)| *k != key(placeholder));
+        self.entries.insert(
+            key(placeholder),
+            Entry {
+                view,
+                last_used: self.frame,
+            },
+        );
+    }
+
     /// Uploads the images first drawn this frame; returns how many.
     pub fn upload(
         &mut self,

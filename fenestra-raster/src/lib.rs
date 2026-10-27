@@ -28,6 +28,19 @@ use geometry::{Mesh, PaintParams, QuadMesh, ShadowMesh};
 use gpu::{Attachments, GLOBALS_STRIDE, Globals, Pipelines};
 use layers::{LayerPool, LayerTarget};
 
+/// A placeholder image to register a GPU texture under
+/// ([`RasterRenderer::register_texture`]): a unique one-byte blob that only
+/// carries the size.
+pub fn texture_placeholder(width: u32, height: u32) -> ImageData {
+    ImageData {
+        data: peniko::Blob::from(vec![0u8]),
+        format: peniko::ImageFormat::Rgba8,
+        alpha_type: peniko::ImageAlphaType::AlphaPremultiplied,
+        width,
+        height,
+    }
+}
+
 /// What one frame cost.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderStats {
@@ -125,6 +138,14 @@ impl RasterRenderer {
             active: vec![0],
             pushed: Vec::new(),
         }
+    }
+
+    /// Makes drawing `placeholder` draw `view` instead: a premultiplied
+    /// `Rgba8Unorm` texture of the placeholder's width × height (see
+    /// [`texture_placeholder`]). The placeholder's pixels are never read or
+    /// uploaded; the entry is dropped like a cached image once it goes undrawn.
+    pub fn register_texture(&mut self, placeholder: &ImageData, view: wgpu::TextureView) {
+        self.images.register(placeholder, view);
     }
 
     /// What the renderer currently keeps between frames.

@@ -176,3 +176,52 @@ fn image_cache_reuses_and_evicts() {
     }
     assert_eq!(r.cache_sizes().images, 0);
 }
+
+/// A texture registered under a placeholder image draws wherever the
+/// placeholder is drawn, and nothing is uploaded for it.
+#[test]
+fn a_registered_texture_draws_in_place_of_its_placeholder() {
+    let g = gpu();
+    let texture = g.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("registered"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    g.queue.write_texture(
+        texture.as_image_copy(),
+        &[200u8, 40, 60, 255].repeat(16),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(16),
+            rows_per_image: None,
+        },
+        texture.size(),
+    );
+    let mut r = renderer();
+    let placeholder = fenestra_raster::texture_placeholder(4, 4);
+    r.register_texture(&placeholder, texture.create_view(&Default::default()));
+    struct Draw(ImageData);
+    impl Paint for Draw {
+        fn paint<T: DrawTarget>(&self, t: &mut T) {
+            t.draw_image(
+                &self.0,
+                Affine::translate((10.0, 10.0)) * Affine::scale(10.0),
+            );
+        }
+    }
+    let (image, stats) = render_raster(&mut r, &Draw(placeholder), (64, 64));
+    let p = image.pixel(30, 30);
+    for (c, want) in p.iter().zip([200u8, 40, 60, 255]) {
+        assert!(c.abs_diff(want) <= 2, "{p:?}");
+    }
+    assert_eq!(stats.images_uploaded, 0);
+}
