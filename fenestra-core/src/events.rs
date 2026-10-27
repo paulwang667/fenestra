@@ -528,10 +528,41 @@ fn has_hover_overlay<Msg>(el: &Element<Msg>) -> bool {
     })
 }
 
-/// Whether a touch landing at `point` (logical px) belongs to the element
-/// under it rather than to scrolling: the hit chain holds an enabled element
-/// with its own drag (`on_drag` / `on_drag_event`) or a text input, where a
-/// drag selects text.
+/// The element a press on `chain` (a hit chain, outermost first) goes to:
+/// the deepest interactive one — except that one which drags only from a
+/// handle takes the press only on a handle inside it.
+fn press_target<Msg>(
+    handlers: &Handlers<'_, Msg>,
+    frame: &Frame,
+    chain: &[WidgetId],
+) -> Option<WidgetId> {
+    chain
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(at, id)| {
+            handlers.get(**id).is_some_and(|el| {
+                // `takes_press` is the shared definition; the overlay
+                // anchor is the one part that needs the frame.
+                let takes =
+                    el.takes_press() || (!el.disabled && frame.toggle_overlay_of(**id).is_some());
+                // **A drag from a handle only**: the press has to be on a
+                // handle inside this element, or it is a press on empty
+                // space and not this element's to take.
+                let from_handle = !el.drag_from_handle
+                    || chain[at + 1..]
+                        .iter()
+                        .any(|below| handlers.get(*below).is_some_and(|h| h.drag_handle));
+                takes && from_handle
+            })
+        })
+        .map(|(_, id)| *id)
+}
+
+/// Whether a touch landing at `point` (logical px) belongs to the element a
+/// press there would take rather than to scrolling: one with its own drag
+/// (`on_drag` / `on_drag_event`), a swipe, a drag source, or a text input,
+/// where a drag selects text.
 pub fn owns_touch_drag<Msg>(
     root: &Element<Msg>,
     frame: &Frame,
@@ -539,14 +570,15 @@ pub fn owns_touch_drag<Msg>(
     point: Point,
 ) -> bool {
     let handlers = Handlers::collect(root, state, frame.canvas_height());
-    frame.hit_chain(point).iter().any(|id| {
-        handlers.get(*id).is_some_and(|el| {
-            !el.disabled
-                && (el.on_drag.is_some()
-                    || el.on_drag_event.is_some()
-                    || matches!(el.kind, Kind::Input(_)))
+    press_target(&handlers, frame, &frame.hit_chain(point))
+        .and_then(|id| handlers.get(id))
+        .is_some_and(|el| {
+            el.on_drag.is_some()
+                || el.on_drag_event.is_some()
+                || el.on_swipe.is_some()
+                || el.drag_source.is_some()
+                || matches!(el.kind, Kind::Input(_))
         })
-    })
 }
 
 /// Recomputes the hover set against a freshly-built frame without emitting
@@ -849,27 +881,7 @@ fn dispatch_inner<Msg: Clone>(
             if state.static_sel.take().is_some() {
                 out.redraw = true;
             }
-            let target = chain
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(at, id)| {
-                    handlers.get(**id).is_some_and(|el| {
-                        // `takes_press` is the shared definition; the overlay
-                        // anchor is the one part that needs the frame.
-                        let takes = el.takes_press()
-                            || (!el.disabled && frame.toggle_overlay_of(**id).is_some());
-                        // **A drag from a handle only**: the press has to be on a
-                        // handle inside this element, or it is a press on empty
-                        // space and not this element's to take.
-                        let from_handle = !el.drag_from_handle
-                            || chain[at + 1..]
-                                .iter()
-                                .any(|below| handlers.get(*below).is_some_and(|h| h.drag_handle));
-                        takes && from_handle
-                    })
-                })
-                .map(|(_, id)| *id);
+            let target = press_target(&handlers, frame, &chain);
             if let Some(id) = target {
                 state.active = Some(id);
                 // Remember where/when the press began, for swipe recognition.
@@ -1603,6 +1615,54 @@ fn input_local<Msg>(
 mod blur_tests {
     use super::*;
     use crate::{Element, Frame, Theme, WidgetId, build_frame, by, col, raw_input, raw_text_area};
+
+    /// Ownership follows the element a press would take: a split pane's
+    /// container drags only from its handle, so a touch on the content of a
+    /// pane may scroll, while one on the handle drags. A swiper keeps its
+    /// swipe.
+    #[test]
+    fn a_touch_belongs_to_the_element_a_press_would_take() {
+        let root = crate::row().children([
+            crate::row()
+                .id("split")
+                .w(200.0)
+                .h(40.0)
+                .drag_from_handle()
+                .on_drag(|_, _| Some("resize"))
+                .children([
+                    col().id("pane").w(180.0).h(40.0),
+                    col().id("handle").w(20.0).h(40.0).drag_handle(),
+                ]),
+            col()
+                .id("swiper")
+                .w(100.0)
+                .h(40.0)
+                .on_swipe(|_| Some("swipe")),
+        ]);
+        let mut state = FrameState::new();
+        let mut fonts = Fonts::embedded();
+        let frame = build_frame(
+            &root,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (300.0, 40.0),
+            1.0,
+        );
+        let at = |id: &str| frame.get(&by::id(id)).rect.center();
+        assert!(
+            !owns_touch_drag(&root, &frame, &state, at("pane")),
+            "pane content scrolls"
+        );
+        assert!(
+            owns_touch_drag(&root, &frame, &state, at("handle")),
+            "the handle drags"
+        );
+        assert!(
+            owns_touch_drag(&root, &frame, &state, at("swiper")),
+            "a swiper swipes"
+        );
+    }
 
     /// A touch that lands on a draggable or a text field is theirs to drag;
     /// anywhere else (a button, plain content) it may scroll.
