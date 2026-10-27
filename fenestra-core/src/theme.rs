@@ -1163,7 +1163,7 @@ pub struct ThemeSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derive: Option<DeriveSpec>,
     /// The named material style (defaults to solid).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "crate::MaterialStyle::is_solid")]
     pub material_style: crate::MaterialStyle,
 }
 

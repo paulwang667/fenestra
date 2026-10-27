@@ -64,6 +64,7 @@ pub enum Surface {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
 )]
+#[serde(rename_all = "snake_case")]
 pub enum MaterialStyle {
     /// Solid surfaces: the stock look (glass only on [`Surface::Glass`]).
     #[default]
@@ -80,6 +81,12 @@ pub enum MaterialStyle {
 }
 
 impl MaterialStyle {
+    /// Whether this is the default, [`MaterialStyle::Solid`] (a spec leaves
+    /// the default out when it is written).
+    pub fn is_solid(&self) -> bool {
+        *self == Self::Solid
+    }
+
     /// The four styles.
     pub const ALL: [Self; 4] = [Self::Solid, Self::LiquidGlass, Self::Acrylic, Self::Tonal];
 
@@ -925,6 +932,36 @@ mod tests {
         assert_eq!(w.corner_radius, CornerRadius::all(0.0));
     }
 
+    /// A spec in the default (solid) style is written as before material
+    /// styles, so older fenestra (whose spec denies unknown fields) still
+    /// reads it; a named style is written in `snake_case`, like `Mode`.
+    #[test]
+    fn a_spec_writes_its_style_only_when_named() {
+        use crate::{MaterialStyle, Mode, ThemeSpec};
+        let spec = |material_style| ThemeSpec {
+            mode: Mode::Dark,
+            accent_hue: Some(150.0),
+            duotone: None,
+            derive: None,
+            material_style,
+        };
+        let solid = serde_json::to_string(&spec(MaterialStyle::Solid)).expect("json");
+        assert_eq!(solid, r#"{"mode":"dark","accent_hue":150.0}"#);
+        for (style, name) in [
+            (MaterialStyle::LiquidGlass, "liquid_glass"),
+            (MaterialStyle::Acrylic, "acrylic"),
+            (MaterialStyle::Tonal, "tonal"),
+        ] {
+            let json = serde_json::to_string(&spec(style)).expect("json");
+            assert!(
+                json.contains(&format!(r#""material_style":"{name}""#)),
+                "{json}"
+            );
+            let back: ThemeSpec = serde_json::from_str(&json).expect("a spec");
+            assert_eq!(back.material_style, style);
+        }
+    }
+
     #[test]
     fn material_style_round_trips_through_the_theme_and_spec() {
         use crate::{DeriveSpec, MaterialStyle, Mode, ThemeSpec};
@@ -940,7 +977,7 @@ mod tests {
         let spec: ThemeSpec = serde_json::from_str(r#"{"mode":"dark"}"#).expect("a spec");
         assert_eq!(spec.material_style, MaterialStyle::Solid);
         let spec: ThemeSpec =
-            serde_json::from_str(r#"{"mode":"dark","material_style":"LiquidGlass"}"#)
+            serde_json::from_str(r#"{"mode":"dark","material_style":"liquid_glass"}"#)
                 .expect("a spec");
         assert_eq!(spec.theme().material_style, MaterialStyle::LiquidGlass);
         let high = ThemeSpec {

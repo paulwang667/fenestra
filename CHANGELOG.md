@@ -7,7 +7,9 @@
 - **Named material styles.** `Theme` carries a `material_style`
   (`MaterialStyle::{Solid, LiquidGlass, Acrylic, Tonal}`, default `Solid`)
   and `reduce_transparency` (on for `Contrast::High`); `ThemeSpec` takes an
-  optional `material_style`. `Theme::apply_surface(role, style)` is the one
+  optional `material_style`, written in `snake_case` like `mode`
+  (`"liquid_glass"`) and left out when it is `Solid`, so a solid spec reads
+  on older fenestra too. `Theme::apply_surface(role, style)` is the one
   resolver every `.surface(role)` goes through: Liquid Glass frosts only
   what floats (bars, a floating dock, popovers, menus, glass, modals) with
   saturation and a specular edge; Acrylic is grained thick glass with a
@@ -27,6 +29,16 @@
   their own look.
 - **looks:** `Look::with_material_style(style)` names a look's default style.
   Goldens `material_style_{solid,liquid_glass,acrylic,tonal}.png`.
+
+### Breaking
+
+- **`Theme` and `ThemeSpec` gained public fields** (`material_style`,
+  `reduce_transparency` on `Theme`; `material_style` on `ThemeSpec`). Code
+  that builds either with a struct literal no longer compiles: add the
+  fields, or start from a constructor (`Theme::dark()`, `Theme::derive(..)`)
+  and `..` the rest. A spec that names a style (`"material_style":
+  "acrylic"`) does not load on older fenestra, whose `ThemeSpec` denies
+  unknown fields.
 
 An adversarial pass over the A2UI renderer. One crash, one unbounded
 expansion, and two checks that were narrower than the thing they guarded.
