@@ -373,6 +373,23 @@ pub(crate) fn glass_panes(
     (panes, rest)
 }
 
+/// The final pass as a vello scene (logical coordinates), drawing the panes
+/// in `baked` from their injected images as they are (the GPU composited
+/// their bodies).
+pub(crate) fn paint_final_baked(
+    frame: &fenestra_core::Frame,
+    fonts: &mut fenestra_core::Fonts,
+    state: &mut fenestra_core::FrameState,
+    injected: &HashMap<WidgetId, peniko::ImageData>,
+    baked: &std::collections::HashSet<WidgetId>,
+) -> vello::Scene {
+    let mut scene = vello::Scene::new();
+    let mut target = fenestra_core::draw::SceneTarget::new(&mut scene);
+    frame.paint_final_baked_into(&mut target, fonts, state, injected, baked);
+    target.finish();
+    scene
+}
+
 /// A logical rect scaled to an integer pixel rect clamped to the image, or
 /// `None` when it has no area inside the image.
 fn physical_rect(rect: Rect, scale: f64, iw: u32, ih: u32) -> Option<(u32, u32, u32, u32)> {

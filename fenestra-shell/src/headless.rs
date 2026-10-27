@@ -392,10 +392,7 @@ impl Headless {
                 &mut crate::multi_pass::GlassCache::default(),
             ));
         }
-        let mut scene = Scene::new();
-        let mut target = fenestra_core::draw::SceneTarget::new(&mut scene);
-        frame.paint_final_baked_into(&mut target, fonts, state, &injected, &baked);
-        target.finish();
+        let scene = crate::multi_pass::paint_final_baked(frame, fonts, state, &injected, &baked);
         let final_scene = Self::at_scale(scene, scale);
         self.render(&final_scene, width, height, base_color)
     }

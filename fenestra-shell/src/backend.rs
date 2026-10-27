@@ -74,9 +74,34 @@ pub(crate) fn warn_raster_fallback(adapter: wgpu::Backend) {
     }
 }
 
+/// Whether glass composites on the GPU (where the adapter allows): on unless
+/// `FENESTRA_GPU_GLASS` is `0`, which forces the CPU path on both backends.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn gpu_glass_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| gpu_glass_from(std::env::var("FENESTRA_GPU_GLASS").ok().as_deref()))
+}
+
+/// [`gpu_glass_enabled`] for the variable's value.
+#[cfg_attr(target_arch = "wasm32", expect(dead_code, reason = "native only"))]
+fn gpu_glass_from(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_glass_switch_reads_the_environment() {
+        assert!(gpu_glass_from(None), "on unless switched off");
+        assert!(gpu_glass_from(Some("1")));
+        assert!(gpu_glass_from(Some("")));
+        assert!(
+            !gpu_glass_from(Some("0")),
+            "FENESTRA_GPU_GLASS=0 forces the CPU glass"
+        );
+    }
 
     #[test]
     fn the_env_picks_a_backend_or_the_default() {

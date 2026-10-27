@@ -388,6 +388,9 @@ struct WindowShell {
     /// This window's glass panes' last blurs ([`crate::multi_pass::GlassCache`]).
     #[cfg(not(target_arch = "wasm32"))]
     glass_cache: crate::multi_pass::GlassCache,
+    /// This window's GPU glass on the vello backend.
+    #[cfg(not(target_arch = "wasm32"))]
+    vello_glass: crate::vello_glass::VelloGlass,
     /// Completed async surface setup, parked until the next [`Self::pump`]
     /// (web only; the web is single-threaded so `Rc<RefCell>` suffices).
     #[cfg(target_arch = "wasm32")]
@@ -490,6 +493,8 @@ impl WindowShell {
             raster: None,
             #[cfg(not(target_arch = "wasm32"))]
             glass_cache: crate::multi_pass::GlassCache::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            vello_glass: crate::vello_glass::VelloGlass::default(),
             #[cfg(target_arch = "wasm32")]
             ready: WasmReady::default(),
         }
@@ -943,20 +948,19 @@ impl WindowShell {
         Ok(())
     }
 
-    /// Renders `scene` at the given pixel size to an off-screen texture and
-    /// reads it back as an [`RgbaImage`]. Used by the two-pass render path:
-    /// paint the backdrop scene (every glass subtree skipped), read it back,
-    /// then [`crate::multi_pass::process_specs`] each region on the CPU before
-    /// the final pass composites the result. Returns `None` when no surface is
+    /// Renders `scene` at the given pixel size to the off-screen backdrop
+    /// texture — the two-pass path's first pass (every glass subtree
+    /// skipped). The GPU glass reads it in place; [`Self::read_region`]
+    /// reads it back for the CPU filters. Returns `None` when no surface is
     /// active (window not yet resumed or already suspended).
     #[cfg(not(target_arch = "wasm32"))]
-    fn render_to_image(
+    fn render_region(
         &mut self,
         scene: &Scene,
         width: u32,
         height: u32,
         base_color: Color,
-    ) -> Option<Result<RgbaImage, ShellError>> {
+    ) -> Option<Result<(), ShellError>> {
         if let Err(e) = self.ensure_vello(self.surface_device()?) {
             return Some(Err(e));
         }
@@ -967,27 +971,13 @@ impl WindowShell {
         let renderer = self.renderers[surface.dev_id].as_mut()?;
         let (device, queue) = (&handle.device, &handle.queue);
 
-        let size = Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        };
         let dev_id = surface.dev_id;
         let reusable = self
             .readback
             .as_ref()
             .is_some_and(|r| (r.dev_id, r.width, r.height) == (dev_id, width, height));
         if !reusable {
-            let texture = device.create_texture(&TextureDescriptor {
-                label: Some("fenestra windowed readback target"),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: TextureFormat::Rgba8Unorm,
-                usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
+            let texture = crate::vello_glass::render_target(device, (width, height));
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             // wgpu requires copy rows padded to 256 bytes.
             let padded_byte_width = (width * 4).next_multiple_of(256);
@@ -1007,14 +997,7 @@ impl WindowShell {
                 padded_byte_width,
             });
         }
-        let Readback {
-            view,
-            texture: target,
-            buffer,
-            padded_byte_width,
-            ..
-        } = self.readback.as_ref()?;
-        let padded_byte_width = *padded_byte_width;
+        let Readback { view, .. } = self.readback.as_ref()?;
         if let Err(e) = renderer.render_to_texture(
             device,
             queue,
@@ -1029,7 +1012,32 @@ impl WindowShell {
         ) {
             return Some(Err(ShellError::Vello(e)));
         }
+        Some(Ok(()))
+    }
 
+    /// Reads the backdrop texture [`Self::render_region`] rendered back as an
+    /// [`RgbaImage`], for the CPU filters.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_region(&self) -> Option<Result<RgbaImage, ShellError>> {
+        let RenderState::Active { surface, .. } = &self.state else {
+            return None;
+        };
+        let handle = &self.context.devices[surface.dev_id];
+        let (device, queue) = (&handle.device, &handle.queue);
+        let Readback {
+            texture: target,
+            buffer,
+            padded_byte_width,
+            width,
+            height,
+            ..
+        } = self.readback.as_ref()?;
+        let (padded_byte_width, width, height) = (*padded_byte_width, *width, *height);
+        let size = Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("fenestra windowed readback copy"),
         });
@@ -1073,6 +1081,141 @@ impl WindowShell {
 
         Some(Ok(RgbaImage::from_raw(width, height, pixels)
             .expect("readback buffer matches image dimensions")))
+    }
+
+    /// The surface's adapter backend.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn surface_backend(&self) -> Option<wgpu::Backend> {
+        let RenderState::Active { surface, .. } = &self.state else {
+            return None;
+        };
+        Some(
+            self.context.devices[surface.dev_id]
+                .adapter()
+                .get_info()
+                .backend,
+        )
+    }
+
+    /// Composites glass `panes` on the GPU from the backdrop texture
+    /// [`Self::render_region`] rendered (its top-left at `origin` in the
+    /// frame), handing each result to vello; returns their placeholders.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn vello_glass(
+        &mut self,
+        origin: (u32, u32),
+        panes: &[fenestra_raster::GlassPane],
+    ) -> Option<std::collections::HashMap<fenestra_core::WidgetId, vello::peniko::ImageData>> {
+        let RenderState::Active { surface, .. } = &self.state else {
+            return None;
+        };
+        let handle = &self.context.devices[surface.dev_id];
+        let renderer = self.renderers[surface.dev_id].as_mut()?;
+        let source = &self.readback.as_ref()?.texture;
+        Some(self.vello_glass.composite(
+            &handle.device,
+            &handle.queue,
+            renderer,
+            source,
+            origin,
+            panes,
+        ))
+    }
+
+    /// Withdraws this window's GPU glass from vello (a frame that draws none).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn release_vello_glass(&mut self) {
+        if self.vello_glass.registered() == 0 {
+            return;
+        }
+        if let Some(dev_id) = self.surface_device()
+            && let Some(renderer) = self.renderers[dev_id].as_mut()
+        {
+            self.vello_glass.release(renderer);
+        }
+    }
+
+    /// The final scene of a two-pass vello frame (physical coordinates): the
+    /// backdrop region rendered, glass composited on the GPU where the
+    /// adapter and `FENESTRA_GPU_GLASS` allow (only the other filters read
+    /// back), else every region read back and filtered on the CPU.
+    /// `record` notes the phases in the frame stats. `None` with no surface.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the frame and the window's caches"
+    )]
+    fn two_pass_scene(
+        &mut self,
+        frame: &fenestra_core::Frame,
+        specs: &[fenestra_core::MultiPassSpec],
+        backdrop: &Scene,
+        (fonts, state): (&mut Fonts, &mut FrameState),
+        base_color: Color,
+        custom: (
+            &crate::multi_pass::CustomRender,
+            &mut std::collections::HashMap<(u64, u64), vello::peniko::ImageData>,
+        ),
+        record: bool,
+    ) -> Option<Result<Scene, ShellError>> {
+        let scale = frame.scale();
+        let (pw, ph) = self.physical_size()?;
+        let note = |phase, d| {
+            if record {
+                crate::frame_stats::record(phase, d);
+            }
+        };
+        let (region, origin_scene) =
+            crate::multi_pass::region_scene(backdrop, specs, scale, (pw, ph));
+        let gpu = crate::backend::gpu_glass_enabled()
+            && self
+                .surface_backend()
+                .is_some_and(crate::backend::raster_supported);
+        let (panes, rest) = if gpu {
+            crate::multi_pass::glass_panes(specs, frame, scale, (pw, ph))
+        } else {
+            (Vec::new(), specs.to_vec())
+        };
+        if panes.is_empty() {
+            self.release_vello_glass();
+        }
+        let tr = Instant::now();
+        if let Err(e) = self.render_region(&origin_scene, region.2, region.3, base_color)? {
+            return Some(Err(e));
+        }
+        let tg = Instant::now();
+        let mut injected = if panes.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            self.vello_glass((region.0, region.1), &panes)?
+        };
+        let baked: std::collections::HashSet<_> = injected.keys().copied().collect();
+        if !panes.is_empty() {
+            note(crate::frame_stats::Phase::Filters, tg.elapsed());
+        }
+        if !rest.is_empty() {
+            let backdrop = match self.read_region()? {
+                Ok(image) => image,
+                Err(e) => return Some(Err(e)),
+            };
+            note(crate::frame_stats::Phase::Readback, tr.elapsed());
+            let tf = Instant::now();
+            injected.extend(crate::multi_pass::process_specs_in(
+                &backdrop,
+                (region.0, region.1),
+                (pw, ph),
+                &rest,
+                scale,
+                custom.0,
+                custom.1,
+                &mut self.glass_cache,
+            ));
+            note(crate::frame_stats::Phase::Filters, tf.elapsed());
+        }
+        Some(Ok(Self::at_scale(
+            crate::multi_pass::paint_final_baked(frame, fonts, state, &injected, &baked),
+            scale,
+        )))
     }
 
     /// Presents a scene already in physical-pixel coordinates (no logical→physical
@@ -2294,6 +2437,8 @@ impl<A: App> AppRunner<A> {
             let (backdrop_scene, specs) = frame.paint_backdrop(&mut self.fonts, &mut self.state);
             let scene = if specs.is_empty() {
                 // Fast path: backdrop scene is the final image, just scale and present.
+                #[cfg(not(target_arch = "wasm32"))]
+                self.shell.release_vello_glass();
                 WindowShell::at_scale(backdrop_scene, scale)
             } else {
                 // The web has no synchronous read-back and no CPU filter pass:
@@ -2319,47 +2464,17 @@ impl<A: App> AppRunner<A> {
                                 .and_then(|f| f(key, w, h).map(|d| d.image))
                         };
                     crate::frame_stats::two_pass(specs.len());
-                    // Two-pass: render backdrop to off-screen, readback, process, final.
                     let physical_backdrop = WindowShell::at_scale(backdrop_scene, scale);
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        clippy::cast_sign_loss,
-                        reason = "physical window size fits in u32"
-                    )]
-                    let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
-                    let (region, origin_scene) = crate::multi_pass::region_scene(
-                        &physical_backdrop,
+                    match self.shell.two_pass_scene(
+                        &frame,
                         &specs,
-                        scale,
-                        (pw, ph),
-                    );
-                    let tr = Instant::now();
-                    let readback =
-                        self.shell
-                            .render_to_image(&origin_scene, region.2, region.3, theme.bg);
-                    crate::frame_stats::record(crate::frame_stats::Phase::Readback, tr.elapsed());
-                    match readback {
-                        Some(Ok(backdrop_pixels)) => {
-                            let tf = Instant::now();
-                            let injected = crate::multi_pass::process_specs_in(
-                                &backdrop_pixels,
-                                (region.0, region.1),
-                                (pw, ph),
-                                &specs,
-                                scale,
-                                &custom_fn,
-                                &mut self.custom_cache,
-                                &mut self.shell.glass_cache,
-                            );
-                            crate::frame_stats::record(
-                                crate::frame_stats::Phase::Filters,
-                                tf.elapsed(),
-                            );
-                            WindowShell::at_scale(
-                                frame.paint_final(&mut self.fonts, &mut self.state, &injected),
-                                scale,
-                            )
-                        }
+                        &physical_backdrop,
+                        (&mut self.fonts, &mut self.state),
+                        theme.bg,
+                        (&custom_fn, &mut self.custom_cache),
+                        true,
+                    ) {
+                        Some(Ok(scene)) => scene,
                         Some(Err(e)) => {
                             self.shell.fail(event_loop, e);
                             return;
@@ -2466,7 +2581,11 @@ impl<A: App> AppRunner<A> {
                 // Glass composites on the GPU from the target as it is;
                 // only the other filters still read their region back.
                 let tg = Instant::now();
-                let (panes, specs) = crate::multi_pass::glass_panes(&specs, frame, scale, (pw, ph));
+                let (panes, specs) = if crate::backend::gpu_glass_enabled() {
+                    crate::multi_pass::glass_panes(&specs, frame, scale, (pw, ph))
+                } else {
+                    (Vec::new(), specs)
+                };
                 let mut injected = if panes.is_empty() {
                     std::collections::HashMap::new()
                 } else {
@@ -2821,6 +2940,7 @@ impl<A: App> AppRunner<A> {
         // regions (byte-identical to the old `frame.paint()` + `present()`).
         let (backdrop_scene, specs) = frame.paint_backdrop(&mut self.fonts, &mut bundle.state);
         let scene = if specs.is_empty() {
+            bundle.shell.release_vello_glass();
             WindowShell::at_scale(backdrop_scene, scale)
         } else {
             // Same custom-render closure as the main window (see redraw).
@@ -2831,35 +2951,16 @@ impl<A: App> AppRunner<A> {
                     .and_then(|f| f(key, w, h).map(|d| d.image))
             };
             let physical_backdrop = WindowShell::at_scale(backdrop_scene, scale);
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "physical window size fits in u32"
-            )]
-            let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
-            let (region, origin_scene) =
-                crate::multi_pass::region_scene(&physical_backdrop, &specs, scale, (pw, ph));
-            match bundle
-                .shell
-                .render_to_image(&origin_scene, region.2, region.3, theme.bg)
-            {
-                Some(Ok(backdrop_pixels)) => WindowShell::at_scale(
-                    frame.paint_final(
-                        &mut self.fonts,
-                        &mut bundle.state,
-                        &crate::multi_pass::process_specs_in(
-                            &backdrop_pixels,
-                            (region.0, region.1),
-                            (pw, ph),
-                            &specs,
-                            scale,
-                            &custom_fn,
-                            &mut self.custom_cache,
-                            &mut bundle.shell.glass_cache,
-                        ),
-                    ),
-                    scale,
-                ),
+            match bundle.shell.two_pass_scene(
+                &frame,
+                &specs,
+                &physical_backdrop,
+                (&mut self.fonts, &mut bundle.state),
+                theme.bg,
+                (&custom_fn, &mut self.custom_cache),
+                false,
+            ) {
+                Some(Ok(scene)) => scene,
                 Some(Err(e)) => {
                     self.shell.fail(event_loop, e);
                     return;
