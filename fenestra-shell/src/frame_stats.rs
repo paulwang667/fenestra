@@ -6,7 +6,11 @@
 //! so `gpu` is the render's execution time rather than zero.
 
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 /// Frames per logged summary.
 const WINDOW: usize = 20;
@@ -94,6 +98,10 @@ pub(crate) fn record(phase: Phase, d: Duration) {
 }
 
 /// Notes a two-pass frame with `specs` filtered regions.
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(dead_code, reason = "two-pass renders are native-only")
+)]
 pub(crate) fn two_pass(specs: usize) {
     if enabled() {
         stats().lock().unwrap().two_pass(specs);
@@ -116,6 +124,10 @@ impl Stats {
         self.current_specs = None;
     }
 
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "two-pass renders are native-only")
+    )]
     fn two_pass(&mut self, specs: usize) {
         *self.current_specs.get_or_insert(0) += specs;
     }

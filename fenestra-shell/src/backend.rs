@@ -45,6 +45,7 @@ pub(crate) fn parse_backend(v: Option<&OsStr>, platform_default: Backend) -> Bac
 
 /// Raster needs Vulkan, Metal, or DX12: on GL drivers it drew black on
 /// Adreno, so the shell keeps vello there.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn raster_supported(backend: wgpu::Backend) -> bool {
     matches!(
         backend,
@@ -54,6 +55,7 @@ pub(crate) fn raster_supported(backend: wgpu::Backend) -> bool {
 
 /// The backend to draw with: `requested`, unless that is raster on an
 /// adapter raster cannot use ([`raster_supported`]).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn effective_backend(requested: Backend, adapter: wgpu::Backend) -> Backend {
     match requested {
         Backend::Raster if !raster_supported(adapter) => Backend::Vello,
@@ -62,6 +64,7 @@ pub(crate) fn effective_backend(requested: Backend, adapter: wgpu::Backend) -> B
 }
 
 /// Prints once that raster was asked for on an adapter it cannot use.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn warn_raster_fallback(adapter: wgpu::Backend) {
     static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
