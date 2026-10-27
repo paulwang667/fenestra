@@ -803,6 +803,9 @@ impl GpuGlass {
         // in linear light, decoded before they are averaged.
         let source_view = source.create_view(&wgpu::TextureViewDescriptor {
             format: Some(source.format().add_srgb_suffix()),
+            // Only sampled: the source may also be a storage target (vello
+            // renders into one), which an sRGB view cannot be.
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
             ..Default::default()
         });
         let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());

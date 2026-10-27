@@ -56,6 +56,8 @@ pub struct Headless {
     gpu_glass: bool,
     /// Backdrop regions read back for the CPU filters so far.
     backdrop_reads: u32,
+    /// The vello backend's GPU glass (with [`Self::set_gpu_glass`]).
+    vello_glass: crate::vello_glass::VelloGlass,
 }
 
 impl Headless {
@@ -89,8 +91,11 @@ impl Headless {
             raster,
             backend,
             max_dim,
-            gpu_glass: true,
+            // The vello goldens keep the CPU glass, bit-identical across
+            // platforms; the raster backend has no CPU glass to keep.
+            gpu_glass: backend == Backend::Raster,
             backdrop_reads: 0,
+            vello_glass: crate::vello_glass::VelloGlass::default(),
         };
         if backend == Backend::Vello {
             headless.vello()?;
@@ -112,9 +117,10 @@ impl Headless {
         Some((&handle.device, &handle.queue, self.raster.as_mut()?))
     }
 
-    /// Composite raster glass on the GPU (`true`, the default) or through the
-    /// old read-back-and-CPU path — the reference the GPU path is tested
-    /// against.
+    /// Composite glass on the GPU or through the read-back-and-CPU path —
+    /// the reference the GPU path is tested against. On by default with the
+    /// raster backend, off with vello (whose goldens keep the CPU glass);
+    /// vello's GPU glass needs an adapter the raster backend could use.
     #[doc(hidden)]
     pub fn set_gpu_glass(&mut self, on: bool) {
         self.gpu_glass = on;
@@ -125,6 +131,13 @@ impl Headless {
     #[doc(hidden)]
     pub fn backdrop_reads(&self) -> u32 {
         self.backdrop_reads
+    }
+
+    /// Glass results the vello backend has handed to vello as image
+    /// overrides and not yet withdrawn.
+    #[doc(hidden)]
+    pub fn vello_glass_registered(&self) -> usize {
+        self.vello_glass.registered()
     }
 
     /// The backend frames render through.
@@ -267,6 +280,20 @@ impl Headless {
         let scale = frame.scale();
         let (backdrop_scene, specs) = frame.paint_backdrop(fonts, state);
         let backdrop_scene = Self::at_scale(backdrop_scene, scale);
+        let adapter = self.context.devices[self.dev_id]
+            .adapter()
+            .get_info()
+            .backend;
+        let gpu_glass = self.gpu_glass && crate::backend::raster_supported(adapter);
+        let has_glass = specs
+            .iter()
+            .any(|s| matches!(s.kind, fenestra_core::PassKind::BackdropBlur { .. }));
+        if !(gpu_glass && has_glass)
+            && self.vello_glass.registered() > 0
+            && let Some(renderer) = self.renderer.as_mut()
+        {
+            self.vello_glass.release(renderer);
+        }
         if specs.is_empty() {
             // Fast path: one pass, identical to `render`.
             return self.render(&backdrop_scene, width, height, base_color);
@@ -276,7 +303,19 @@ impl Headless {
         let (width, height) = self.clamp_size(width, height);
         let (region, shifted) =
             crate::multi_pass::region_scene(&backdrop_scene, &specs, scale, (width, height));
+        if gpu_glass && has_glass {
+            return self.render_plan_vello_gpu(
+                frame,
+                fonts,
+                state,
+                (width, height),
+                base_color,
+                &specs,
+                (region, &shifted),
+            );
+        }
         let backdrop = self.render(&shifted, region.2, region.3, base_color)?;
+        self.backdrop_reads += 1;
         let injected = crate::multi_pass::process_specs_in(
             &backdrop,
             (region.0, region.1),
@@ -288,6 +327,76 @@ impl Headless {
             &mut crate::multi_pass::GlassCache::default(),
         );
         let final_scene = Self::at_scale(frame.paint_final(fonts, state, &injected), scale);
+        self.render(&final_scene, width, height, base_color)
+    }
+
+    /// [`render_plan`](Self::render_plan) through vello with the GPU glass:
+    /// the backdrop region renders into a texture the glass reads in place;
+    /// only other filters (if any) read it back.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the frame, its plan and its region"
+    )]
+    fn render_plan_vello_gpu(
+        &mut self,
+        frame: &Frame,
+        fonts: &mut Fonts,
+        state: &mut FrameState,
+        (width, height): (u32, u32),
+        base_color: Color,
+        specs: &[fenestra_core::MultiPassSpec],
+        (region, shifted): ((u32, u32, u32, u32), &Scene),
+    ) -> Result<RgbaImage, ShellError> {
+        let scale = frame.scale();
+        self.vello()?;
+        let handle = &self.context.devices[self.dev_id];
+        let (device, queue) = (&handle.device, &handle.queue);
+        let source = crate::vello_glass::render_target(device, (region.2, region.3));
+        let view = source.create_view(&wgpu::TextureViewDescriptor::default());
+        let renderer = self.renderer.as_mut().expect("built above");
+        renderer
+            .render_to_texture(
+                device,
+                queue,
+                shifted,
+                &view,
+                &RenderParams {
+                    base_color,
+                    width: region.2,
+                    height: region.3,
+                    antialiasing_method: AaConfig::Area,
+                },
+            )
+            .map_err(ShellError::Vello)?;
+        let (panes, rest) = crate::multi_pass::glass_panes(specs, frame, scale, (width, height));
+        let mut injected = self.vello_glass.composite(
+            device,
+            queue,
+            renderer,
+            &source,
+            (region.0, region.1),
+            &panes,
+        );
+        let baked: std::collections::HashSet<_> = injected.keys().copied().collect();
+        if !rest.is_empty() {
+            let backdrop = read_texture(device, queue, &source, (0, 0, region.2, region.3))?;
+            self.backdrop_reads += 1;
+            injected.extend(crate::multi_pass::process_specs_in(
+                &backdrop,
+                (region.0, region.1),
+                (width, height),
+                &rest,
+                scale,
+                &|_, _, _| None, // no custom renderers registered in the headless path
+                &mut std::collections::HashMap::new(),
+                &mut crate::multi_pass::GlassCache::default(),
+            ));
+        }
+        let mut scene = Scene::new();
+        let mut target = fenestra_core::draw::SceneTarget::new(&mut scene);
+        frame.paint_final_baked_into(&mut target, fonts, state, &injected, &baked);
+        target.finish();
+        let final_scene = Self::at_scale(scene, scale);
         self.render(&final_scene, width, height, base_color)
     }
 

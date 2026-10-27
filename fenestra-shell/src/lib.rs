@@ -38,6 +38,8 @@ mod synthetic;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod testing;
 mod touch;
+#[cfg(not(target_arch = "wasm32"))]
+mod vello_glass;
 #[cfg(target_arch = "wasm32")]
 mod web_clipboard;
 mod window;
