@@ -35,6 +35,7 @@ mod scenario;
 mod synthetic;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod testing;
+mod touch;
 #[cfg(target_arch = "wasm32")]
 mod web_clipboard;
 mod window;

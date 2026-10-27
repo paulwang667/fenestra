@@ -59,52 +59,6 @@ pub(crate) fn gesture_phase(phase: TouchPhase) -> GesturePhase {
     }
 }
 
-/// A touch as the pointer, for screens with no mouse.
-///
-/// **One finger drives it**: the first to land, until it lifts. Others are
-/// ignored (`None`) — the single-pointer model has no multi-touch event yet.
-/// A finger has no hover, so a lift also leaves; and a cancel (the OS took
-/// the gesture, as a system swipe does) leaves *before* releasing, so the
-/// release lands on nothing and clicks nothing. Returns the logical position
-/// and the events to dispatch, in order. `finger` is the runner's memory of
-/// which touch is driving.
-pub(crate) fn touch_pointer(
-    finger: &mut Option<u64>,
-    id: u64,
-    phase: TouchPhase,
-    x: f64,
-    y: f64,
-    scale: f64,
-) -> Option<(Point, Vec<InputEvent>)> {
-    let at = Point::new(x / scale, y / scale);
-    #[expect(clippy::cast_possible_truncation, reason = "positions fit in f32")]
-    let moved = InputEvent::PointerMove {
-        x: at.x as f32,
-        y: at.y as f32,
-    };
-    let events = match phase {
-        TouchPhase::Started if finger.is_none() => {
-            *finger = Some(id);
-            vec![moved, InputEvent::PointerDown]
-        }
-        _ if *finger != Some(id) => return None,
-        TouchPhase::Started | TouchPhase::Moved => vec![moved],
-        TouchPhase::Ended => {
-            *finger = None;
-            vec![moved, InputEvent::PointerUp, InputEvent::PointerLeave]
-        }
-        TouchPhase::Cancelled => {
-            *finger = None;
-            vec![InputEvent::PointerLeave, InputEvent::PointerUp]
-        }
-    };
-    Some((at, events))
-}
-
-/// How far a finger may travel (logical px) and still count as a tap.
-#[cfg(any(target_os = "android", test))]
-const TAP_SLOP: f64 = 10.0;
-
 /// Whether a finger that went down at `down` and lifted at `up` tapped the
 /// focused field — the one gesture that brings back a soft keyboard the user
 /// dismissed. A scroll, or a tap anywhere else, leaves it down.
@@ -115,7 +69,9 @@ pub(crate) fn tap_on_focus(
     down: Point,
     up: Point,
 ) -> bool {
-    focus.is_some_and(|f| down.distance(up) <= TAP_SLOP && frame.hit_chain(up).contains(&f))
+    focus.is_some_and(|f| {
+        down.distance(up) <= crate::touch::TAP_SLOP && frame.hit_chain(up).contains(&f)
+    })
 }
 
 /// A winit magnification delta as a finite `f32`, or `None`. winit documents
@@ -1723,7 +1679,7 @@ where
         fonts,
         state,
         cursor: Point::ORIGIN,
-        finger: None,
+        touch: crate::touch::Touch::new(false),
         #[cfg(target_os = "android")]
         keyboard_shown: false,
         #[cfg(target_os = "android")]
@@ -1801,8 +1757,8 @@ struct AppRunner<A: App> {
     #[cfg(target_os = "macos")]
     menu: Option<MenuHandle<A::Msg>>,
     cursor: Point,
-    /// The touch driving the pointer, while a finger is down.
-    finger: Option<u64>,
+    /// The touch driving the pointer.
+    touch: crate::touch::Touch,
     /// Whether the soft keyboard was last asked to show (Android).
     #[cfg(target_os = "android")]
     keyboard_shown: bool,
@@ -1867,7 +1823,7 @@ struct SecondaryWindow<A: App> {
     shell: WindowShell,
     state: FrameState,
     cursor: Point,
-    finger: Option<u64>,
+    touch: crate::touch::Touch,
     last: Option<(Element<A::Msg>, fenestra_core::Frame)>,
     on_close: A::Msg,
     title: String,
@@ -2665,7 +2621,7 @@ impl<A: App> AppRunner<A> {
                             shell,
                             state,
                             cursor: Point::ORIGIN,
-                            finger: None,
+                            touch: crate::touch::Touch::new(false),
                             last: None,
                             on_close: desc.on_close,
                             title: desc.title,
@@ -2848,9 +2804,9 @@ impl<A: App> AppRunner<A> {
                 };
                 let scale = bundle.shell.window().map_or(1.0, |w| w.scale_factor());
                 let (x, y) = (touch.location.x, touch.location.y);
-                let Some((at, events)) =
-                    touch_pointer(&mut bundle.finger, touch.id, touch.phase, x, y, scale)
-                else {
+                let at = Point::new(x / scale, y / scale);
+                let now = self.started.elapsed().as_secs_f64();
+                let Some(events) = bundle.touch.event(touch.id, touch.phase, at, now, false) else {
                     return;
                 };
                 bundle.cursor = at;
@@ -3334,9 +3290,9 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
             WindowEvent::Touch(touch) => {
                 let scale = self.shell.window().map_or(1.0, |w| w.scale_factor());
                 let (x, y) = (touch.location.x, touch.location.y);
-                if let Some((at, events)) =
-                    touch_pointer(&mut self.finger, touch.id, touch.phase, x, y, scale)
-                {
+                let at = Point::new(x / scale, y / scale);
+                let now = self.started.elapsed().as_secs_f64();
+                if let Some(events) = self.touch.event(touch.id, touch.phase, at, now, false) {
                     self.cursor = at;
                     for event in events {
                         self.input_main(event_loop, event);
@@ -3706,73 +3662,9 @@ mod keyboard_tap_tests {
 
 #[cfg(test)]
 mod input_mapping_tests {
-    use super::{map_logical_key, touch_pointer};
+    use super::map_logical_key;
     use fenestra_core::{InputEvent, Key, KeyInput};
-    use kurbo::Point;
-    use winit::event::TouchPhase;
     use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
-
-    /// A tap is a press and a release where the finger landed, and then the
-    /// pointer leaves: a finger has no hover to leave behind.
-    #[test]
-    fn a_tap_is_a_click_where_the_finger_landed() {
-        let mut finger = None;
-        let (at, down) = touch_pointer(&mut finger, 0, TouchPhase::Started, 336.0, 508.0, 2.0)
-            .expect("the first finger drives the pointer");
-        assert_eq!(
-            at,
-            Point::new(168.0, 254.0),
-            "physical pixels over the scale"
-        );
-        assert_eq!(
-            down,
-            vec![
-                InputEvent::PointerMove { x: 168.0, y: 254.0 },
-                InputEvent::PointerDown
-            ]
-        );
-        let (_, up) = touch_pointer(&mut finger, 0, TouchPhase::Ended, 336.0, 508.0, 2.0).unwrap();
-        assert_eq!(
-            up,
-            vec![
-                InputEvent::PointerMove { x: 168.0, y: 254.0 },
-                InputEvent::PointerUp,
-                InputEvent::PointerLeave
-            ]
-        );
-        assert_eq!(
-            finger, None,
-            "the lift frees the pointer for the next finger"
-        );
-    }
-
-    /// A drag moves the pointer with the finger; a second finger is ignored
-    /// until the first lifts.
-    #[test]
-    fn one_finger_drives_the_pointer_and_others_are_ignored() {
-        let mut finger = None;
-        touch_pointer(&mut finger, 3, TouchPhase::Started, 10.0, 10.0, 1.0).unwrap();
-        assert!(touch_pointer(&mut finger, 4, TouchPhase::Started, 90.0, 90.0, 1.0).is_none());
-        let (_, moved) = touch_pointer(&mut finger, 3, TouchPhase::Moved, 40.0, 10.0, 1.0).unwrap();
-        assert_eq!(moved, vec![InputEvent::PointerMove { x: 40.0, y: 10.0 }]);
-        assert!(touch_pointer(&mut finger, 4, TouchPhase::Ended, 90.0, 90.0, 1.0).is_none());
-        assert_eq!(finger, Some(3));
-    }
-
-    /// The OS taking the gesture (a system swipe) must not click: the pointer
-    /// leaves first, so the release lands on nothing.
-    #[test]
-    fn a_cancelled_touch_releases_without_clicking() {
-        let mut finger = None;
-        touch_pointer(&mut finger, 0, TouchPhase::Started, 10.0, 10.0, 1.0).unwrap();
-        let (_, cancel) =
-            touch_pointer(&mut finger, 0, TouchPhase::Cancelled, 10.0, 10.0, 1.0).unwrap();
-        assert_eq!(
-            cancel,
-            vec![InputEvent::PointerLeave, InputEvent::PointerUp]
-        );
-        assert_eq!(finger, None);
-    }
 
     /// Android reports Tab and Enter as characters (`"\t"`, `"\n"`), not as
     /// named keys; they are the same keys.

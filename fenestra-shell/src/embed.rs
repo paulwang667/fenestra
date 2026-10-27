@@ -63,8 +63,9 @@ pub struct Embedded<A: App> {
     /// Running subscription timers, reconciled after every applied batch.
     subs: std::collections::HashMap<String, crate::window::SubHandle>,
     cursor: Point,
-    /// The touch driving the pointer, while a finger is down.
-    finger: Option<u64>,
+    /// The touch driving the pointer. Gestures stay off: the host owns the
+    /// event loop, so there is no wake-up for a long press.
+    touch: crate::touch::Touch,
     /// Cursor icon requested by the last dispatch, applied by
     /// [`Self::handle_window_event`].
     cursor_icon: Option<fenestra_core::Cursor>,
@@ -126,7 +127,7 @@ where
             proxy,
             subs: std::collections::HashMap::new(),
             cursor: Point::ORIGIN,
-            finger: None,
+            touch: crate::touch::Touch::new(false),
             cursor_icon: None,
             modifiers: winit::keyboard::ModifiersState::default(),
             started: Instant::now(),
@@ -273,14 +274,9 @@ where
             WindowEvent::Touch(touch) => {
                 let (x, y) = (touch.location.x, touch.location.y);
                 let mut response = EventResponse::default();
-                if let Some((_, events)) = crate::window::touch_pointer(
-                    &mut self.finger,
-                    touch.id,
-                    touch.phase,
-                    x,
-                    y,
-                    scale,
-                ) {
+                let at = kurbo::Point::new(x / scale, y / scale);
+                let now = self.started.elapsed().as_secs_f64();
+                if let Some(events) = self.touch.event(touch.id, touch.phase, at, now, false) {
                     for event in events {
                         let r = self.input(event);
                         response.consumed |= r.consumed;
