@@ -528,6 +528,27 @@ fn has_hover_overlay<Msg>(el: &Element<Msg>) -> bool {
     })
 }
 
+/// Whether a touch landing at `point` (logical px) belongs to the element
+/// under it rather than to scrolling: the hit chain holds an enabled element
+/// with its own drag (`on_drag` / `on_drag_event`) or a text input, where a
+/// drag selects text.
+pub fn owns_touch_drag<Msg>(
+    root: &Element<Msg>,
+    frame: &Frame,
+    state: &FrameState,
+    point: Point,
+) -> bool {
+    let handlers = Handlers::collect(root, state, frame.canvas_height());
+    frame.hit_chain(point).iter().any(|id| {
+        handlers.get(*id).is_some_and(|el| {
+            !el.disabled
+                && (el.on_drag.is_some()
+                    || el.on_drag_event.is_some()
+                    || matches!(el.kind, Kind::Input(_)))
+        })
+    })
+}
+
 /// Recomputes the hover set against a freshly-built frame without emitting
 /// messages — used after scrolling moves content under a stationary
 /// pointer. Returns `true` when the hover set changed.
@@ -1582,6 +1603,35 @@ fn input_local<Msg>(
 mod blur_tests {
     use super::*;
     use crate::{Element, Frame, Theme, WidgetId, build_frame, by, col, raw_input, raw_text_area};
+
+    /// A touch that lands on a draggable or a text field is theirs to drag;
+    /// anywhere else (a button, plain content) it may scroll.
+    #[test]
+    fn a_touch_on_a_draggable_or_a_text_field_owns_its_drag() {
+        let root = crate::row().children([
+            col()
+                .id("slider")
+                .w(100.0)
+                .h(40.0)
+                .on_drag(|_, _| Some("drag")),
+            raw_input("draft", "").id("field").w(100.0).h(40.0),
+            col().id("button").w(100.0).h(40.0).on_click("tap"),
+        ]);
+        let mut state = FrameState::new();
+        let mut fonts = Fonts::embedded();
+        let frame = build_frame(
+            &root,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (300.0, 40.0),
+            1.0,
+        );
+        let at = |id: &str| frame.get(&by::id(id)).rect.center();
+        assert!(owns_touch_drag(&root, &frame, &state, at("slider")));
+        assert!(owns_touch_drag(&root, &frame, &state, at("field")));
+        assert!(!owns_touch_drag(&root, &frame, &state, at("button")));
+    }
 
     #[test]
     fn pointer_blur_follows_the_cancel_click_and_tab_blurs_immediately() {

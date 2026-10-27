@@ -57,7 +57,7 @@ pub use element::{
 };
 pub use events::{
     Dispatch, DragEvent, GesturePhase, ImeTextState, InputEvent, Key, KeyInput, Mods, PinchEvent,
-    WheelEvent, WindowControl, click_msg_of, dispatch, refresh_hover,
+    WheelEvent, WindowControl, click_msg_of, dispatch, owns_touch_drag, refresh_hover,
 };
 pub use frame::{AccessNode, Frame, TextLegibility, build_frame, build_scene, frame_epoch};
 pub use frame_state::FrameState;
