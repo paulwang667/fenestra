@@ -400,6 +400,8 @@ struct BuiltNode {
     spin: Option<f32>,
     /// Scroll containers: pin to the bottom while content grows.
     stick_bottom: bool,
+    /// Scroll containers: no scrollbar is drawn.
+    hide_scrollbar: bool,
     access: Access,
     /// Live region (polite announcements).
     live: bool,
@@ -1019,6 +1021,7 @@ fn build<Msg>(
         busy: el.busy,
         roving: el.roving,
         stick_bottom: el.stick_bottom,
+        hide_scrollbar: el.hide_scrollbar,
         spin: el.spin,
         access: Access {
             semantics,
@@ -1257,12 +1260,14 @@ impl Realize<'_> {
                     .clamp_scroll_2d(node.id, max_y, max_x, node.stick_bottom);
             let can_scroll_y = max_y >= MIN_SCROLL_RANGE;
             let can_scroll_x = max_x >= MIN_SCROLL_RANGE;
-            let alpha = if can_scroll_y || can_scroll_x {
+            let shows_bar = (can_scroll_y || can_scroll_x) && !node.hide_scrollbar;
+            let alpha = if shows_bar {
                 self.state.scrollbar_alpha(node.id)
             } else {
                 0.0
             };
-            self.animating |= self.state.scrollbar_animating(node.id);
+            // A hidden scrollbar has no fade to keep frames coming for.
+            self.animating |= shows_bar && self.state.scrollbar_animating(node.id);
             let thumb_v = (alpha > 0.0 && can_scroll_y).then(|| {
                 let track_h = rect.height() - 2.0 * SCROLLBAR_INSET;
                 let content_h = f64::from(l.content_size.height);
@@ -3797,6 +3802,35 @@ mod tests {
         s.focus = Some(id);
         s.focus_visible = false; // focused by pointer, not keyboard
         assert_eq!(state_layer_opacity(&s, id, false), None);
+    }
+
+    /// A scrolled list shows its thumb (until it fades); one with
+    /// `hide_scrollbar()` scrolls the same and never draws one.
+    #[test]
+    fn hide_scrollbar_scrolls_without_a_thumb() {
+        use crate::element::col;
+        for hidden in [false, true] {
+            let rows: Vec<crate::element::Element<()>> =
+                (0..10).map(|_| col().h(40.0).shrink0()).collect();
+            let mut list = col().id("list").w(200.0).h(100.0).scroll_y().children(rows);
+            if hidden {
+                list = list.hide_scrollbar();
+            }
+            let root = col().child(list);
+            let theme = Theme::light();
+            let mut fonts = Fonts::embedded();
+            let mut state = FrameState::new();
+            let frame = build_frame(&root, &theme, &mut fonts, &mut state, (200.0, 100.0), 1.0);
+            let id = frame.get(&crate::query::by::id("list")).id;
+            state.scroll_by(id, 50.0);
+            let frame = build_frame(&root, &theme, &mut fonts, &mut state, (200.0, 100.0), 1.0);
+            let scroll = frame.root.children[0]
+                .scroll
+                .as_ref()
+                .expect("the list scrolls");
+            assert_eq!(scroll.offset_y, 50.0, "hidden={hidden}");
+            assert_eq!(scroll.thumb_v.is_some(), !hidden, "hidden={hidden}");
+        }
     }
 
     fn test_frame(root: &crate::element::Element<()>, size: (f32, f32)) -> Frame {

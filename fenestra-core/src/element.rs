@@ -728,6 +728,8 @@ pub struct Element<Msg> {
     /// Scroll containers only: keep pinned to the bottom while content
     /// grows (chat/log pattern).
     pub(crate) stick_bottom: bool,
+    /// Scroll containers only: scroll without drawing a scrollbar.
+    pub(crate) hide_scrollbar: bool,
     pub(crate) cursor: Option<Cursor>,
     pub(crate) disabled: bool,
     /// A press here starts the drag of the nearest ancestor that drags only from its handle.
@@ -854,6 +856,7 @@ impl<Msg> Element<Msg> {
             scroll_request: None,
             focus_request: None,
             stick_bottom: false,
+            hide_scrollbar: false,
             cursor: None,
             disabled: false,
             drag_handle: false,
@@ -2007,6 +2010,14 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Scrolls without drawing a scrollbar (a phone's lists, where the
+    /// finger is the scroll indicator). Wheel, touch and keyboard scrolling
+    /// are unchanged.
+    pub fn hide_scrollbar(mut self) -> Self {
+        self.hide_scrollbar = true;
+        self
+    }
+
     /// Background fill.
     pub fn bg(mut self, paint: impl Into<Paint>) -> Self {
         self.style = self.style.bg(paint);
@@ -2670,6 +2681,7 @@ impl<Msg: 'static> Element<Msg> {
             scroll_request: self.scroll_request,
             focus_request: self.focus_request,
             stick_bottom: self.stick_bottom,
+            hide_scrollbar: self.hide_scrollbar,
             cursor: self.cursor,
             disabled: self.disabled,
             drag_handle: self.drag_handle,
