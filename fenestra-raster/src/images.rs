@@ -22,8 +22,12 @@ fn key(image: &ImageData) -> Key {
 
 struct Entry {
     view: wgpu::TextureView,
+    /// The part of the texture the image is, `[u0, v0, u1, v1]`.
+    uv: [f32; 4],
     last_used: u64,
 }
+
+const WHOLE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 /// Image textures, and the images drawn this frame that are not uploaded yet.
 #[derive(Default)]
@@ -60,17 +64,24 @@ impl ImageCache {
         k
     }
 
-    /// Makes `placeholder` stand for `view`: drawing it hits this entry, so
-    /// its pixels are never read or uploaded. Kept like any cached image.
-    pub fn register(&mut self, placeholder: &ImageData, view: wgpu::TextureView) {
+    /// Makes `placeholder` stand for the `uv` part of `view`: drawing it hits
+    /// this entry, so its pixels are never read or uploaded. Kept like any
+    /// cached image.
+    pub fn register(&mut self, placeholder: &ImageData, view: wgpu::TextureView, uv: [f32; 4]) {
         self.pending.retain(|(k, _)| *k != key(placeholder));
         self.entries.insert(
             key(placeholder),
             Entry {
                 view,
+                uv,
                 last_used: self.frame,
             },
         );
+    }
+
+    /// The part of its texture image `k` is (all of it, unless registered).
+    pub fn uv(&self, k: &Key) -> [f32; 4] {
+        self.entries.get(k).map_or(WHOLE, |e| e.uv)
     }
 
     /// Uploads the images first drawn this frame; returns how many.
@@ -111,6 +122,7 @@ impl ImageCache {
                 k,
                 Entry {
                     view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                    uv: WHOLE,
                     last_used: self.frame,
                 },
             );

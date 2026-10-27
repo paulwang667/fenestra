@@ -1,16 +1,21 @@
 // Frosted glass on the GPU: the shell's CPU path (fenestra-shell blur.rs and
 // fenestra-core glass.rs) in as few render passes as it will go — a mobile
-// tiler pays about a millisecond per pass whatever the pass does. A pane
-// takes three: blur across (reading the backdrop in linear light), blur down
-// (back to sRGB, vibrancy applied), then upsample, refraction and the body
-// at once. A downsampled blur averages its blocks in a pass of their own
-// first; a tinted pane adds the 1×1 adapted tint before the last.
+// tiler pays a fixed cost per pass on top of the work. A frame takes three:
+// blur across (reading the backdrop in linear light), blur down (back to
+// sRGB, vibrancy applied), then upsample, refraction and the body at once.
+// Downsampled blurs average their blocks in a pass of their own first;
+// tinted panes add their 1×1 adapted tints before the last. Every pane of
+// the frame shares these passes: each draws into its own region of the
+// stage's atlas (the viewport), and `o` places it there.
 
 struct Params {
     a: vec4<i32>,
     b: vec4<i32>,
     f: vec4<f32>,
     g: vec4<f32>,
+    // Where this pane sits: its output region's origin (the pane's (0, 0)),
+    // and its low field's origin in the low atlases.
+    o: vec4<i32>,
     // The blur kernel's weights for offsets 0, 1, … (symmetric).
     w: array<vec4<f32>, 64>,
 }
@@ -116,8 +121,40 @@ fn block(bx: i32, by: i32) -> vec4<f32> {
 //    w, h); b.x = f.
 @fragment
 fn fs_downsample(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let l = vec2<i32>(pos.xy);
+    let l = vec2<i32>(pos.xy) - p.o.xy;
     return block(l.x, l.y);
+}
+
+// The kernel along one axis of a texture: `at` is the texel the kernel is
+// centred on, `step` the axis, `lo..=hi` the texels it may read (it clamps
+// there). Two neighbouring taps inside that range are one bilinear sample
+// between them, weighted by their sum — half the reads; a tap past the
+// range reads the edge texel on its own.
+fn convolve(at: vec2<i32>, step: vec2<i32>, lo: i32, hi: i32, along: i32) -> vec4<f32> {
+    let r = p.b.w;
+    let inv = vec2<f32>(1.0) / vec2<f32>(textureDimensions(src));
+    let fstep = vec2<f32>(step);
+    var sum = vec4<f32>(0.0);
+    var t = -r;
+    loop {
+        if t > r {
+            break;
+        }
+        let i = along + t;
+        if t < r && i >= lo && i + 1 <= hi {
+            let w0 = weight(t);
+            let w1 = weight(t + 1);
+            let w = w0 + w1;
+            let c = (vec2<f32>(at + step * t) + vec2<f32>(0.5) + fstep * (w1 / max(w, 1e-30))) * inv;
+            sum += w * textureSampleLevel(src, smp, c, 0.0);
+            t += 2;
+        } else {
+            let e = clamp(i, lo, hi) - along;
+            sum += weight(t) * textureLoad(src, at + step * e, 0);
+            t += 1;
+        }
+    }
+    return sum;
 }
 
 // 1. Across: each low texel is the kernel (the three box passes, convolved)
@@ -126,32 +163,17 @@ fn fs_downsample(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 //    b = (f, low w, low h, kernel radius).
 @fragment
 fn fs_blur_h(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let l = vec2<i32>(pos.xy);
-    let r = p.b.w;
-    var sum = vec4<f32>(0.0);
-    if p.b.x == 1 {
-        for (var t = -r; t <= r; t++) {
-            let x = p.a.x + clamp(l.x + t, 0, p.b.y - 1);
-            sum += weight(t) * textureLoad(src, vec2<i32>(x, p.a.y + l.y), 0);
-        }
-    } else {
-        for (var t = -r; t <= r; t++) {
-            sum += weight(t) * textureLoad(src, vec2<i32>(clamp(l.x + t, 0, p.b.y - 1), l.y), 0);
-        }
-    }
-    return sum;
+    let l = vec2<i32>(pos.xy) - p.o.xy;
+    let base = select(p.o.zw, p.a.xy, p.b.x == 1);
+    return convolve(base + l, vec2<i32>(1, 0), 0, p.b.y - 1, l.x);
 }
 
 // 2. Down, then back to sRGB with vibrancy (both on the small field, as on
-//    the CPU). a = (kernel radius, low h); f.x = saturation.
+//    the CPU). a.y = low h; b.w = kernel radius; f.x = saturation.
 @fragment
 fn fs_blur_v(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let l = vec2<i32>(pos.xy);
-    let r = p.a.x;
-    var sum = vec4<f32>(0.0);
-    for (var t = -r; t <= r; t++) {
-        sum += weight(t) * textureLoad(src, vec2<i32>(l.x, clamp(l.y + t, 0, p.a.y - 1)), 0);
-    }
+    let l = vec2<i32>(pos.xy) - p.o.xy;
+    let sum = convolve(p.o.zw + l, vec2<i32>(0, 1), 0, p.a.y - 1, l.y);
     let v = vibrance(sum.rgb, p.f.x);
     return vec4<f32>(linear_to_srgb(v.r), linear_to_srgb(v.g), linear_to_srgb(v.b), sum.a);
 }
@@ -225,8 +247,9 @@ fn in_gamut(c: vec3<f32>) -> bool {
 //    luma of the frosted field under the pane (on its sRGB values, as
 //    `adapt_fill` reads bytes; sampled from the low field, every step-th
 //    texel) moves the tint's OKLCH lightness by gain·(pivot − luma); a result
-//    outside sRGB bisects its chroma down to the gamut. a = the low texels
-//    under the pane (x0, y0, x1, y1), exclusive; b = (adaptive, step);
+//    outside sRGB bisects its chroma down to the gamut. Each pane writes
+//    its own texel of the row. a = the low texels under the pane (x0, y0,
+//    x1, y1), exclusive; b = (adaptive, step);
 //    f = the tint (sRGB, alpha); g = (pivot, gain).
 @fragment
 fn fs_tint(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
@@ -238,7 +261,7 @@ fn fs_tint(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     var n = 0.0;
     for (var y = p.a.y; y < p.a.w; y += p.b.y) {
         for (var x = p.a.x; x < p.a.z; x += p.b.y) {
-            let c = textureLoad(src, vec2<i32>(x, y), 0);
+            let c = textureLoad(src, p.o.zw + vec2<i32>(x, y), 0);
             sum += dot(c.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
             n += 1.0;
         }
@@ -273,12 +296,10 @@ fn field(q: vec2<f32>) -> vec4<f32> {
     let f = f32(p.b.x);
     let last = vec2<i32>(p.b.y - 1, p.b.z - 1);
     let u = clamp((c + vec2<f32>(0.5)) / f - vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(last));
-    let i0 = vec2<i32>(floor(u));
-    let i1 = min(i0 + vec2<i32>(1), last);
-    let t = u - floor(u);
-    let top = mix(textureLoad(src, i0, 0), textureLoad(src, vec2<i32>(i1.x, i0.y), 0), t.x);
-    let bot = mix(textureLoad(src, vec2<i32>(i0.x, i1.y), 0), textureLoad(src, i1, 0), t.x);
-    return mix(top, bot, t.y);
+    // u stays within the pane's low texels, so the filter never reaches a
+    // neighbour's.
+    let inv = vec2<f32>(1.0) / vec2<f32>(textureDimensions(src));
+    return textureSampleLevel(src, smp, (vec2<f32>(p.o.zw) + u + vec2<f32>(0.5)) * inv, 0.0);
 }
 
 // 4. The pane: the frosted field, its rim refracted (blur.rs
@@ -290,10 +311,12 @@ fn field(q: vec2<f32>) -> vec4<f32> {
 //    body (as the final pass bakes it) and by crop pixel without (as the blur
 //    quantizes). a = (pane w, pane h, origin in crop px); b = (f, low w,
 //    low h, flags: 1 lensed, 2 body, 4 tint, 8 sheen); f = (corner radius,
-//    band, sheen origin, sheen step x); g = (sheen step y, top, bottom).
+//    band, sheen origin, sheen step x); g = (sheen step y, top, bottom, tint
+//    texel). The region is the pane with a one-pixel border of its edge
+//    pixels, so a filtered draw of it never reaches a neighbour.
 @fragment
 fn fs_compose(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let at = vec2<i32>(pos.xy);
+    let at = clamp(vec2<i32>(pos.xy) - p.o.xy, vec2<i32>(0), p.a.xy - vec2<i32>(1));
     let flags = p.b.w;
     var v = field(vec2<f32>(at));
     if (flags & 1) != 0 {
@@ -320,7 +343,7 @@ fn fs_compose(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     if (flags & 2) != 0 {
         key = at;
         if (flags & 4) != 0 {
-            let tc = textureLoad(tint_tex, vec2<i32>(0, 0), 0);
+            let tc = textureLoad(tint_tex, vec2<i32>(i32(p.g.w), 0), 0);
             let ta = clamp(tc.a, 0.0, 1.0);
             rgb = rgb * (1.0 - ta) + tc.rgb * ta;
         }

@@ -374,3 +374,46 @@ fn a_pane_takes_three_to_five_passes() {
         assert_eq!(stats.passes, with_tint, "σ {std_dev}, adapted tint");
     }
 }
+
+/// Panes share their passes (an atlas per stage): a frame of several takes
+/// no more than one pane needs, and each still matches the CPU.
+#[test]
+fn panes_share_their_passes() {
+    let img = backdrop(320, 240);
+    let mut h = headless();
+    let (device, queue, raster) = h.raster_gpu().expect("raster backend");
+    let source = upload(device, queue, &img);
+    let tint = fenestra_core::oklch(0.35, 0.01, 250.0).with_alpha(0.72);
+    let small = GlassPane {
+        id: WidgetId(11),
+        ..pane((10, 10, 90, 70), 4.0, 1.0)
+    };
+    let large = GlassPane {
+        id: WidgetId(12),
+        ..pane((120, 20, 180, 90), 30.0, 1.5)
+    };
+    let tinted = GlassPane {
+        id: WidgetId(13),
+        std_dev: 30.0,
+        ..bodied(
+            (40, 130, 220, 90),
+            tint,
+            None,
+            Some(fenestra_core::AdaptiveTint::glass()),
+        )
+    };
+    let panes = [small, large, tinted];
+    let (out, stats) = raster.glass(device, queue, &source, &panes);
+    assert_eq!(stats.panes, 3);
+    assert_eq!(stats.passes, 5, "downsample, across, down, tint, compose");
+    let read = |p: &GlassPane| {
+        let placeholder = &out[&p.id];
+        let pixels = raster
+            .read_registered(device, queue, placeholder)
+            .expect("registered");
+        RgbaImage::from_raw(placeholder.width, placeholder.height, pixels).expect("size")
+    };
+    assert_close(&read(&small), &cpu_blur(&img, &small), "small");
+    assert_close(&read(&large), &cpu_blur(&img, &large), "large");
+    assert_close(&read(&tinted), &cpu_body(&img, &tinted), "tinted");
+}

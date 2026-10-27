@@ -152,14 +152,17 @@ impl RasterRenderer {
     /// [`texture_placeholder`]). The placeholder's pixels are never read or
     /// uploaded; the entry is dropped like a cached image once it goes undrawn.
     pub fn register_texture(&mut self, placeholder: &ImageData, view: wgpu::TextureView) {
-        self.images.register(placeholder, view);
+        self.images
+            .register(placeholder, view, [0.0, 0.0, 1.0, 1.0]);
     }
 
     /// Composites every glass pane from `source` — the backdrop frame, an
-    /// `Rgba8Unorm` texture with `TEXTURE_BINDING` — on the GPU and submits
-    /// the work. Returns each pane's placeholder image, already registered
-    /// (draw it in the next frame where the pane's frosted body goes), and
-    /// what it cost. Nothing is read back.
+    /// `Rgba8Unorm` texture with `TEXTURE_BINDING` that allows its
+    /// `Rgba8UnormSrgb` view (`view_formats`) — on the GPU and submits the
+    /// work. The panes share one set of passes. Returns each pane's
+    /// placeholder image, already registered (draw it in the next frame
+    /// where the pane's frosted body goes), and what it cost. Nothing is
+    /// read back.
     pub fn glass(
         &mut self,
         device: &wgpu::Device,
@@ -172,8 +175,8 @@ impl RasterRenderer {
     ) {
         let (results, stats) = self.glass.run(device, queue, source, panes);
         let mut out = std::collections::HashMap::new();
-        for (id, placeholder, view) in results {
-            self.images.register(&placeholder, view);
+        for (id, placeholder, view, uv) in results {
+            self.images.register(&placeholder, view, uv);
             out.insert(id, placeholder);
         }
         (out, stats)
@@ -188,8 +191,7 @@ impl RasterRenderer {
         queue: &wgpu::Queue,
         placeholder: &ImageData,
     ) -> Option<Vec<u8>> {
-        let texture = self.glass.result_of(placeholder)?;
-        let (w, h) = (texture.width(), texture.height());
+        let (texture, [x, y, w, h]) = self.glass.result_of(placeholder)?;
         let row = (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -200,7 +202,12 @@ impl RasterRenderer {
         });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         encoder.copy_texture_to_buffer(
-            texture.as_image_copy(),
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
             wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
                 layout: wgpu::TexelCopyBufferLayout {
@@ -209,7 +216,11 @@ impl RasterRenderer {
                     rows_per_image: None,
                 },
             },
-            texture.size(),
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         queue.submit([encoder.finish()]);
         let slice = buffer.slice(..);
@@ -926,9 +937,10 @@ impl DrawTarget for RasterFrame<'_> {
         let key = self.renderer.images.use_image(image);
         let (w, h) = (f64::from(image.width), f64::from(image.height));
         let start = len32(&self.quads.indices);
-        geometry::quad(
+        geometry::quad_uv(
             &mut self.quads,
             [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)].map(|p| t * Point::from(p)),
+            self.renderer.images.uv(&key),
             [1.0; 4],
         );
         let layer = self.layer_index();
