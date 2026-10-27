@@ -25,7 +25,9 @@
 //!
 //! Typefaces are vendored under their OFL licenses (see `assets/`).
 
-use fenestra_core::{BaseField, Contrast, Elevation, FamilyRole, Fonts, Mode, RadiusScale, Theme};
+use fenestra_core::{
+    BaseField, Contrast, Elevation, FamilyRole, Fonts, MaterialStyle, Mode, RadiusScale, Theme,
+};
 
 /// A packaged design language: a resolved theme plus the typefaces
 /// that give it its voice.
@@ -39,6 +41,14 @@ pub struct Look {
 }
 
 impl Look {
+    /// This look with its surfaces in a named material style (its theme's
+    /// [`Theme::with_material_style`]). The stock looks are solid.
+    #[must_use]
+    pub fn with_material_style(mut self, style: MaterialStyle) -> Self {
+        self.theme = self.theme.with_material_style(style);
+        self
+    }
+
     /// Fonts for headless rendering: the embedded base set plus this
     /// look's faces. (Windowed apps: register the same faces via
     /// `WindowOptions::with_font`, or start from `Fonts::with_system`.)

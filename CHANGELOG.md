@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Added
+
+- **Named material styles.** `Theme` carries a `material_style`
+  (`MaterialStyle::{Solid, LiquidGlass, Acrylic, Tonal}`, default `Solid`)
+  and `reduce_transparency` (on for `Contrast::High`); `ThemeSpec` takes an
+  optional `material_style`. `Theme::apply_surface(role, style)` is the one
+  resolver every `.surface(role)` goes through: Liquid Glass frosts only
+  what floats (bars, a floating dock, popovers, menus, glass, modals) with
+  saturation and a specular edge; Acrylic is grained thick glass with a
+  hairline stroke over a Mica window; Tonal has no glass and rises toward
+  the accent. `Solid` resolves exactly as before. `label_on(role, Vibrancy)`
+  gives text a vibrant colour on Liquid Glass and the plain one elsewhere.
+  `MaterialStyle::bars_overlay_content()` / `floating_dock()` say how a
+  layout should place its bars.
+- **Surface roles `Bar`, `Dock`, `Window`** and `SurfaceFill::{Surface,
+  Page}`. Under `Solid` a bar is the surface colour with a subtle border,
+  a window is the page colour.
+- **kit:** `app_bar`, `tab_bar` / `tab_item` and `scaffold` (`.top`,
+  `.bottom`) lay out a page whose bars follow the theme's style — over the
+  content and a floating dock on Liquid Glass, edge to edge on Acrylic, in
+  the flow on Solid and Tonal. `menu`, `popover`, `glass_panel`, `toolbar`
+  and `modal` take the style's recipe; under `Solid` toolbar and modal keep
+  their own look.
+- **looks:** `Look::with_material_style(style)` names a look's default style.
+  Goldens `material_style_{solid,liquid_glass,acrylic,tonal}.png`.
+
 An adversarial pass over the A2UI renderer. One crash, one unbounded
 expansion, and two checks that were narrower than the thing they guarded.
 
