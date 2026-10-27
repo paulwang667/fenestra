@@ -3071,9 +3071,14 @@ impl<A: App> AppRunner<A> {
                     && bundle.last.as_ref().is_some_and(|(view, frame)| {
                         fenestra_core::owns_touch_drag(view, frame, &bundle.state, at)
                     });
-                let Some(events) = bundle
-                    .touch
-                    .event(touch.id, touch.phase, at, now, owns_drag)
+                let moving = touch.phase == TouchPhase::Started
+                    && bundle.last.as_ref().is_some_and(|(_, frame)| {
+                        fenestra_core::scroll_moving_at(frame, &bundle.state, at)
+                    });
+                let Some(events) =
+                    bundle
+                        .touch
+                        .event(touch.id, touch.phase, at, now, owns_drag, moving)
                 else {
                     return;
                 };
@@ -3580,7 +3585,16 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                     && self.last.as_ref().is_some_and(|(view, frame)| {
                         fenestra_core::owns_touch_drag(view, frame, &self.state, at)
                     });
-                if let Some(events) = self.touch.event(touch.id, touch.phase, at, now, owns_drag) {
+                // A finger landing on a gliding or springing scroller
+                // catches it instead of pressing what is under it.
+                let moving = touch.phase == TouchPhase::Started
+                    && self.last.as_ref().is_some_and(|(_, frame)| {
+                        fenestra_core::scroll_moving_at(frame, &self.state, at)
+                    });
+                if let Some(events) =
+                    self.touch
+                        .event(touch.id, touch.phase, at, now, owns_drag, moving)
+                {
                     self.cursor = at;
                     for event in events {
                         self.input_main(event_loop, event);

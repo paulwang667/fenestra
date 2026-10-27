@@ -68,7 +68,14 @@ impl Touchy {
     fn new(view: Element<()>) -> Self {
         let mut fonts = Fonts::embedded();
         let mut state = FrameState::new();
-        let frame = build_frame(&view, &Theme::light(), &mut fonts, &mut state, (400.0, 500.0), 1.0);
+        let frame = build_frame(
+            &view,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (400.0, 500.0),
+            1.0,
+        );
         let mut t = Self {
             view,
             fonts,
@@ -87,7 +94,13 @@ impl Touchy {
     }
 
     fn send(&mut self, event: InputEvent) {
-        let _ = dispatch(&self.view, &self.frame, &mut self.state, &mut self.fonts, event);
+        let _ = dispatch(
+            &self.view,
+            &self.frame,
+            &mut self.state,
+            &mut self.fonts,
+            event,
+        );
         self.build();
     }
 
@@ -214,7 +227,10 @@ fn a_fling_into_the_end_overshoots_then_settles() {
         deepest = deepest.max(t.stretch());
     }
     assert!(deepest > 1.0, "it overshoots: {deepest}");
-    assert!(deepest <= VIEW_H / 4.0 + 0.5, "by at most a quarter: {deepest}");
+    assert!(
+        deepest <= VIEW_H / 4.0 + 0.5,
+        "by at most a quarter: {deepest}"
+    );
     assert_eq!(t.offset(), MAX);
     assert!(t.stretch().abs() < 0.5);
     assert!(!t.frame.animating);
@@ -289,11 +305,20 @@ fn the_wheel_is_unchanged() {
 fn each_axis_flings_its_own_scroller() {
     let mut t = Touchy::new(nested());
     // The pointer sits on the strip (top 100 of the outer list).
-    let strip = t.frame.scrollable_x_at(Point::new(50.0, 50.0)).expect("strip");
-    let outer = t.frame.scrollable_y_at(Point::new(50.0, 50.0)).expect("outer");
+    let strip = t
+        .frame
+        .scrollable_x_at(Point::new(50.0, 50.0))
+        .expect("strip");
+    let outer = t
+        .frame
+        .scrollable_y_at(Point::new(50.0, 50.0))
+        .expect("outer");
     assert_ne!(strip, outer);
     t.send(InputEvent::PointerMove { x: 50.0, y: 50.0 });
-    t.send(InputEvent::Pan { dx: -20.0, dy: -20.0 });
+    t.send(InputEvent::Pan {
+        dx: -20.0,
+        dy: -20.0,
+    });
     t.send(InputEvent::PanEnd {
         vx: -1500.0,
         vy: -1500.0,
@@ -309,14 +334,22 @@ fn scroll_moving_at_sees_only_the_moving_scroller() {
     t.pan(-100.0);
     t.end(-2000.0);
     t.run(0.1);
-    assert!(scroll_moving_at(&t.frame, &t.state, Point::new(50.0, 200.0)));
+    assert!(scroll_moving_at(
+        &t.frame,
+        &t.state,
+        Point::new(50.0, 200.0)
+    ));
     assert!(!scroll_moving_at(
         &t.frame,
         &t.state,
         Point::new(300.0, 200.0)
     ));
     t.run(3.0);
-    assert!(!scroll_moving_at(&t.frame, &t.state, Point::new(50.0, 200.0)));
+    assert!(!scroll_moving_at(
+        &t.frame,
+        &t.state,
+        Point::new(50.0, 200.0)
+    ));
 }
 
 /// A sticky log of `rows` rows of 48 in a 400 viewport.
@@ -348,7 +381,10 @@ fn the_stretch_moves_what_is_painted_and_hit() {
     );
     let row0 = t.frame.get(&by::id("row0")).id;
     let inside = kurbo::Point::new(50.0, pulled.y0 + 2.0);
-    assert!(t.frame.hit_chain(inside).contains(&row0), "hit where it is painted");
+    assert!(
+        t.frame.hit_chain(inside).contains(&row0),
+        "hit where it is painted"
+    );
 }
 
 #[test]
@@ -357,7 +393,10 @@ fn a_sticky_feed_stays_pinned_after_a_bounce() {
     let feed_id = t.list();
     assert_eq!(t.state.scroll_offset(feed_id), MAX, "starts at the bottom");
     t.pan(-80.0);
-    assert!(t.state.scroll_stretch(feed_id).1 > 10.0, "pulled past the bottom");
+    assert!(
+        t.state.scroll_stretch(feed_id).1 > 10.0,
+        "pulled past the bottom"
+    );
     t.end(0.0);
     t.run(1.0);
     assert_eq!(t.state.scroll_stretch(feed_id).1, 0.0);

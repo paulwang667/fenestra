@@ -276,7 +276,10 @@ where
                 let mut response = EventResponse::default();
                 let at = kurbo::Point::new(x / scale, y / scale);
                 let now = self.started.elapsed().as_secs_f64();
-                if let Some(events) = self.touch.event(touch.id, touch.phase, at, now, false) {
+                if let Some(events) = self
+                    .touch
+                    .event(touch.id, touch.phase, at, now, false, false)
+                {
                     for event in events {
                         let r = self.input(event);
                         response.consumed |= r.consumed;
