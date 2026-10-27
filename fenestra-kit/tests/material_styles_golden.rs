@@ -37,7 +37,10 @@ fn page(t: &Theme) -> Element<()> {
         scaffold(list)
             .top(app_bar("Material styles"), 48.0)
             .bottom(
-                tab_bar(["Chats", "Contacts", "Discover", "Me"].map(|n| tab_item(n, text("•"), n == "Chats", ()))),
+                tab_bar(
+                    ["Chats", "Contacts", "Discover", "Me"]
+                        .map(|n| tab_item(n, text("•"), n == "Chats", ())),
+                ),
                 56.0,
             )
             .into(),
