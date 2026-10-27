@@ -77,3 +77,53 @@ fn reduced_transparency_frosts_no_kit_surface() {
         }
     }
 }
+
+/// A select, or (modal, so alone) a command palette.
+struct Pickers {
+    palette: bool,
+}
+
+impl fenestra_core::App for Pickers {
+    type Msg = ();
+    fn update(&mut self, _msg: ()) {}
+    fn view(&self) -> Element<()> {
+        if self.palette {
+            fenestra_kit::command_palette("", true, [("Open", ()), ("Close", ())])
+                .on_close(())
+                .into()
+        } else {
+            fenestra_kit::select(0, ["Rust", "Go", "Zig"])
+                .on_change(|_| ())
+                .into()
+        }
+    }
+}
+
+/// The select's listbox and the command palette are menus: they frost
+/// exactly when the style's menu does.
+#[test]
+fn select_and_palette_follow_the_material_style() {
+    for style in MaterialStyle::ALL {
+        let theme = Theme::dark().with_material_style(style);
+        let frosted = theme
+            .apply_surface(Surface::Menu, Style::default())
+            .backdrop_blur
+            .is_some();
+        let mut h =
+            fenestra_shell::Harness::new(Pickers { palette: false }, theme.clone(), (800, 600));
+        h.click(&by::role(Semantics::ComboBox));
+        let listbox = h.get(&by::id("listbox")).id;
+        assert_eq!(
+            h.frame().glass_body(listbox).is_some(),
+            frosted,
+            "{style:?} select"
+        );
+        let h = fenestra_shell::Harness::new(Pickers { palette: true }, theme, (800, 600));
+        let panel = h.get(&by::role(Semantics::Dialog)).id;
+        assert_eq!(
+            h.frame().glass_body(panel).is_some(),
+            frosted,
+            "{style:?} palette"
+        );
+    }
+}

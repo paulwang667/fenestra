@@ -397,7 +397,9 @@ impl Surface {
     /// Whether this role floats above the page
     /// (`Popover`/`Menu`/`Modal`/`Glass`). `Card` and `Raised` rest in flow;
     /// `Thumb` and `Tooltip` are exempt control/chip materials (both report
-    /// `false`).
+    /// `false`). `Bar`, `Dock` and `Window` are layout: a dock floats only in
+    /// a style whose [`MaterialStyle::floating_dock`] says so, which a layout
+    /// asks of the theme.
     pub const fn is_floating(self) -> bool {
         matches!(
             self,
@@ -496,6 +498,12 @@ impl Theme {
     /// `base` (its layout and text untouched) — the one place every surface
     /// resolves, for [`Theme::surface_style`] and
     /// [`Element::surface`](crate::Element::surface) alike.
+    ///
+    /// A role sets the fill, border, shadow, radius and blur; glass
+    /// properties `base` already has (a specular edge, an adaptive tint,
+    /// saturation, grain — the element's own, or an earlier role's) stay
+    /// on a role that has no glass of its own, as they did before material
+    /// styles.
     #[must_use]
     pub fn apply_surface(&self, role: Surface, base: Style) -> Style {
         let stock = role
