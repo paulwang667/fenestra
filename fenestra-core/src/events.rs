@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use kurbo::Point;
 
 use crate::element::{Cursor, Element, Kind, SwipeDir};
+use crate::frame_state::Axis;
 use crate::frame::Frame;
 use crate::frame_state::FrameState;
 use crate::id::WidgetId;
@@ -220,6 +221,29 @@ pub enum InputEvent {
         /// Vertical delta in logical px.
         dy: f32,
     },
+    /// A finger dragging the content (touch platforms), in the same sense
+    /// as [`Self::Wheel`]: positive `dy` moves the content down. Offered to
+    /// `on_wheel` first like a wheel; otherwise it scrolls, and past an
+    /// edge stretches the content (springing back on [`Self::PanEnd`]).
+    Pan {
+        /// Horizontal travel in logical px.
+        dx: f32,
+        /// Vertical travel in logical px.
+        dy: f32,
+    },
+    /// The dragging finger lifted, moving at `(vx, vy)` logical px per
+    /// second (the same sense as [`Self::Pan`]; 0 when it stopped before
+    /// lifting): the scroller it drove glides on, and a stretch springs
+    /// back.
+    PanEnd {
+        /// Horizontal velocity, px/s.
+        vx: f32,
+        /// Vertical velocity, px/s.
+        vy: f32,
+    },
+    /// A finger landed on a gliding or springing scroller (at the pointer):
+    /// it stops there and holds until [`Self::PanEnd`].
+    PanStop,
     /// Trackpad magnification (macOS/iOS only; other platforms never send
     /// it). Distinct from [`Self::Wheel`]: a pinch carries a *scale* delta,
     /// not a scroll distance, and no amount of modifier convention makes the
@@ -557,6 +581,16 @@ fn press_target<Msg>(
             })
         })
         .map(|(_, id)| *id)
+}
+
+/// Whether a scroller under `point` (logical px), on either axis, is
+/// gliding or springing back — a finger landing there catches it rather
+/// than pressing what is under it.
+pub fn scroll_moving_at(frame: &Frame, state: &FrameState, point: Point) -> bool {
+    [frame.scrollable_y_at(point), frame.scrollable_x_at(point)]
+        .into_iter()
+        .flatten()
+        .any(|id| state.scroll_moving(id))
 }
 
 /// Whether a touch landing at `point` (logical px) belongs to the element a
@@ -1149,7 +1183,8 @@ fn dispatch_inner<Msg: Clone>(
                 }
             }
         }
-        InputEvent::Wheel { dx, dy } => {
+        InputEvent::Wheel { dx, dy } | InputEvent::Pan { dx, dy } => {
+            let touch = matches!(event, InputEvent::Pan { .. });
             if let Some((x, y)) = state.pointer {
                 let p = Point::new(f64::from(x), f64::from(y));
                 // An `on_wheel` element gets first refusal, deepest-first, so a
@@ -1178,16 +1213,49 @@ fn dispatch_inner<Msg: Clone>(
                 if dy.abs() > 1e-3
                     && let Some(id) = frame.scrollable_y_at(p)
                 {
-                    state.scroll_by(id, -dy);
+                    if touch {
+                        state.pan_scroll(id, Axis::Y, -dy);
+                    } else {
+                        state.scroll_by(id, -dy);
+                    }
                     out.redraw = true;
                 }
                 if dx.abs() > 1e-3
                     && let Some(id) = frame.scrollable_x_at(p)
                 {
-                    state.scroll_by_x(id, -dx);
+                    if touch {
+                        state.pan_scroll(id, Axis::X, -dx);
+                    } else {
+                        state.scroll_by_x(id, -dx);
+                    }
                     out.redraw = true;
                 }
             }
+        }
+        InputEvent::PanEnd { vx, vy } => {
+            if let Some((x, y)) = state.pointer {
+                let p = Point::new(f64::from(x), f64::from(y));
+                if let Some(id) = frame.scrollable_y_at(p) {
+                    state.release_scroll(id, Axis::Y, -vy);
+                }
+                if let Some(id) = frame.scrollable_x_at(p) {
+                    state.release_scroll(id, Axis::X, -vx);
+                }
+            }
+            state.let_go_scrolls();
+            out.redraw = true;
+        }
+        InputEvent::PanStop => {
+            if let Some((x, y)) = state.pointer {
+                let p = Point::new(f64::from(x), f64::from(y));
+                for id in [frame.scrollable_y_at(p), frame.scrollable_x_at(p)]
+                    .into_iter()
+                    .flatten()
+                {
+                    state.catch_scroll(id);
+                }
+            }
+            out.redraw = true;
         }
         InputEvent::Tab | InputEvent::ShiftTab => {
             // Candidate paging belongs to the input method, not focus traversal.

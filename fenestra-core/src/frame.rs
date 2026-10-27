@@ -1255,9 +1255,15 @@ impl Realize<'_> {
             } else {
                 0.0
             };
-            let (offset_y, offset_x) =
-                self.state
-                    .clamp_scroll_2d(node.id, max_y, max_x, node.stick_bottom);
+            // A touch's glide and spring advance to this frame's clock first.
+            self.animating |= self.state.advance_scroll(node.id);
+            let (offset_y, offset_x) = self.state.clamp_scroll_2d(
+                node.id,
+                max_y,
+                max_x,
+                (l.size.width, l.size.height),
+                node.stick_bottom,
+            );
             let can_scroll_y = max_y >= MIN_SCROLL_RANGE;
             let can_scroll_x = max_x >= MIN_SCROLL_RANGE;
             let shows_bar = (can_scroll_y || can_scroll_x) && !node.hide_scrollbar;

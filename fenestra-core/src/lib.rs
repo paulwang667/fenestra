@@ -29,6 +29,7 @@ mod id;
 mod input;
 mod layout;
 mod menu;
+mod momentum;
 mod nav;
 pub mod optical;
 mod paint_plan;
@@ -58,6 +59,7 @@ pub use element::{
 pub use events::{
     Dispatch, DragEvent, GesturePhase, ImeTextState, InputEvent, Key, KeyInput, Mods, PinchEvent,
     WheelEvent, WindowControl, click_msg_of, dispatch, owns_touch_drag, refresh_hover,
+    scroll_moving_at,
 };
 #[doc(hidden)]
 pub use frame::adapted_glass_tint;

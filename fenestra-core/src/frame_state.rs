@@ -43,6 +43,135 @@ struct Scroll {
     /// Sat at the bottom edge after the last clamp (stick-to-bottom).
     at_bottom: bool,
     request: Option<u64>,
+    /// Touch motion on each axis: the glide and the edge's stretch.
+    motion_y: Motion,
+    motion_x: Motion,
+    /// The content range and viewport from the last clamp.
+    max_y: f32,
+    max_x: f32,
+    view_h: f32,
+    view_w: f32,
+    /// A finger drives this scroller (panning it, or holding a catch).
+    held: bool,
+    /// When the motion last advanced (clock seconds).
+    last_step: Option<f64>,
+}
+
+/// One axis of a touch-driven scroll: the glide's velocity and the stretch
+/// past an edge. The offset itself stays in range; the stretch only moves
+/// what is painted (and hit).
+#[derive(Debug, Clone, Copy, Default)]
+struct Motion {
+    /// The glide (px/s, in the offset's direction).
+    velocity: f32,
+    /// Shown past the edge (px): below 0 past the start, above 0 past the
+    /// end.
+    stretch: f32,
+    /// The stretch's spring velocity (px/s).
+    stretch_v: f32,
+    /// The drag past the edge behind the stretch, while a finger pulls it.
+    raw: f32,
+}
+
+impl Motion {
+    fn moving(&self) -> bool {
+        self.velocity != 0.0 || self.stretch != 0.0 || self.stretch_v != 0.0
+    }
+
+    /// A finger moves the content by `delta` (offset direction) on an
+    /// `offset` in `0..=max` of a `view` px viewport; returns the new
+    /// offset. Past an edge the drag stretches instead (not at all with
+    /// `rigid`).
+    fn pan(&mut self, offset: f32, delta: f32, max: f32, view: f32, rigid: bool) -> f32 {
+        self.velocity = 0.0;
+        self.stretch_v = 0.0;
+        let mut offset = offset;
+        let mut delta = delta;
+        if self.raw != 0.0 {
+            // Back toward the edge first: the stretch gives way before the
+            // offset moves.
+            let raw = self.raw + delta;
+            if raw.signum() == self.raw.signum() {
+                self.raw = raw;
+                delta = 0.0;
+            } else {
+                self.raw = 0.0;
+                delta = raw;
+            }
+        }
+        let next = offset + delta;
+        if next < 0.0 {
+            self.raw += next;
+            offset = 0.0;
+        } else if next > max {
+            self.raw += next - max;
+            offset = max;
+        } else {
+            offset = next;
+        }
+        if rigid {
+            self.raw = 0.0;
+        }
+        self.stretch = crate::momentum::band(self.raw, view);
+        offset
+    }
+
+    /// The finger lifts at `v` (offset direction, px/s): a stretch springs
+    /// back carrying it, otherwise a quick enough release glides.
+    fn release(&mut self, v: f32, view: f32) {
+        use crate::momentum::{MAX_FLING, MIN_FLING, impact};
+        self.raw = 0.0;
+        if self.stretch != 0.0 {
+            self.stretch_v = impact(v, view);
+        } else if v.abs() >= MIN_FLING {
+            self.velocity = v.clamp(-MAX_FLING, MAX_FLING);
+        }
+    }
+
+    /// A finger catches it: the glide stops, the stretch holds where it is
+    /// (and a drag goes on from there).
+    fn catch(&mut self, view: f32) {
+        self.velocity = 0.0;
+        self.stretch_v = 0.0;
+        self.raw = crate::momentum::unband(self.stretch, view);
+    }
+
+    /// Advances `dt` seconds from `offset` in `0..=max`; returns the new
+    /// offset. A glide that meets an edge hands its speed to the spring
+    /// (or stops there, `rigid`).
+    fn advance(&mut self, offset: f32, dt: f32, max: f32, view: f32, rigid: bool) -> f32 {
+        use crate::momentum::{STOP_SPEED, glide, impact, spring};
+        let mut offset = offset;
+        if self.velocity != 0.0 {
+            let (dist, v) = glide(self.velocity, dt);
+            let next = offset + dist;
+            if next < 0.0 || next > max {
+                offset = next.clamp(0.0, max);
+                self.velocity = 0.0;
+                if !rigid {
+                    self.stretch_v = impact(v, view);
+                }
+            } else {
+                offset = next;
+                self.velocity = if v.abs() < STOP_SPEED { 0.0 } else { v };
+            }
+        }
+        if self.stretch != 0.0 || self.stretch_v != 0.0 {
+            (self.stretch, self.stretch_v) = if rigid {
+                (0.0, 0.0)
+            } else {
+                spring(self.stretch, self.stretch_v, dt)
+            };
+        }
+        offset
+    }
+}
+
+/// Which way a touch moves a scroller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Axis {
+    X,
+    Y,
 }
 
 /// Retained state for one UI surface (window or headless session).
@@ -276,6 +405,98 @@ impl FrameState {
         entry.at_bottom = false;
     }
 
+    /// A finger moves a scroller's content by `delta` px on `axis` (offset
+    /// direction): in range it scrolls, past an edge it stretches (with
+    /// `reduced_motion`, it stops at the edge).
+    pub(crate) fn pan_scroll(&mut self, id: WidgetId, axis: Axis, delta: f32) {
+        let rigid = self.reduced_motion;
+        let now = self.now;
+        let s = self.scroll.entry(id).or_default();
+        s.held = true;
+        s.last_change = now;
+        s.at_bottom = false;
+        match axis {
+            Axis::Y => s.offset_y = s.motion_y.pan(s.offset_y, delta, s.max_y, s.view_h, rigid),
+            Axis::X => s.offset_x = s.motion_x.pan(s.offset_x, delta, s.max_x, s.view_w, rigid),
+        }
+    }
+
+    /// The finger driving a scroller lifts at `v` px/s on `axis` (offset
+    /// direction). A scroller the gesture was not driving is left alone.
+    pub(crate) fn release_scroll(&mut self, id: WidgetId, axis: Axis, v: f32) {
+        let now = self.now;
+        let Some(s) = self.scroll.get_mut(&id) else {
+            return;
+        };
+        if !s.held {
+            return;
+        }
+        s.last_step = Some(now);
+        match axis {
+            Axis::Y => s.motion_y.release(v, s.view_h),
+            Axis::X => s.motion_x.release(v, s.view_w),
+        }
+    }
+
+    /// The finger is gone: no scroller is held any more (a stretch left
+    /// behind springs back on the next frames).
+    pub(crate) fn let_go_scrolls(&mut self) {
+        for s in self.scroll.values_mut() {
+            s.held = false;
+        }
+    }
+
+    /// A finger lands on a scroller: a glide stops and a stretch holds
+    /// where it is.
+    pub(crate) fn catch_scroll(&mut self, id: WidgetId) {
+        if let Some(s) = self.scroll.get_mut(&id) {
+            s.held = true;
+            s.motion_y.catch(s.view_h);
+            s.motion_x.catch(s.view_w);
+        }
+    }
+
+    /// Whether a scroller is gliding or springing back.
+    pub(crate) fn scroll_moving(&self, id: WidgetId) -> bool {
+        self.scroll
+            .get(&id)
+            .is_some_and(|s| s.motion_y.moving() || s.motion_x.moving())
+    }
+
+    /// How far a scroller is pulled past its edges, `(x, y)` px: below 0
+    /// past the start, above 0 past the end; `(0, 0)` at rest. The offset
+    /// ([`Self::scroll_offset`]) stays in range; the stretch only moves what
+    /// is painted.
+    pub fn scroll_stretch(&self, id: WidgetId) -> (f32, f32) {
+        self.scroll
+            .get(&id)
+            .map_or((0.0, 0.0), |s| (s.motion_x.stretch, s.motion_y.stretch))
+    }
+
+    /// Advances a scroller's glide and spring to the clock; returns whether
+    /// it is still moving (so the frame keeps animating). A held scroller
+    /// waits for the finger.
+    pub(crate) fn advance_scroll(&mut self, id: WidgetId) -> bool {
+        let rigid = self.reduced_motion;
+        let now = self.now;
+        let Some(s) = self.scroll.get_mut(&id) else {
+            return false;
+        };
+        #[expect(clippy::cast_possible_truncation, reason = "a frame's dt fits in f32")]
+        let dt = s.last_step.map_or(0.0, |t| (now - t).clamp(0.0, 0.1) as f32);
+        s.last_step = Some(now);
+        if s.held {
+            return false;
+        }
+        let moving = s.motion_y.moving() || s.motion_x.moving();
+        if moving {
+            s.offset_y = s.motion_y.advance(s.offset_y, dt, s.max_y, s.view_h, rigid);
+            s.offset_x = s.motion_x.advance(s.offset_x, dt, s.max_x, s.view_w, rigid);
+            s.last_change = now;
+        }
+        s.motion_y.moving() || s.motion_x.moving()
+    }
+
     /// The persisted scroll offset for an id (0 when never scrolled).
     pub fn scroll_offset(&self, id: WidgetId) -> f32 {
         self.scroll.get(&id).map_or(0.0, |s| s.offset_y)
@@ -361,6 +582,7 @@ impl FrameState {
         id: WidgetId,
         max_y: f32,
         max_x: f32,
+        view: (f32, f32),
         stick_bottom: bool,
     ) -> (f32, f32) {
         let frame_no = self.frame_no;
@@ -368,6 +590,9 @@ impl FrameState {
         let max_x = max_x.max(0.0);
         match self.scroll.get_mut(&id) {
             Some(s) => {
+                s.max_y = max_y;
+                s.max_x = max_x;
+                (s.view_w, s.view_h) = view;
                 if stick_bottom && s.at_bottom {
                     s.offset_y = max_y;
                 }
@@ -388,11 +613,32 @@ impl FrameState {
                         seen: frame_no,
                         at_bottom: true,
                         request: None,
+                        max_y,
+                        max_x,
+                        view_w: view.0,
+                        view_h: view.1,
+                        ..Scroll::default()
                     },
                 );
                 (max_y, 0.0)
             }
-            None => (0.0, 0.0),
+            None => {
+                // Kept from the first frame, so a finger's first drag knows
+                // the range and viewport (its scrollbar starts quiet).
+                self.scroll.insert(
+                    id,
+                    Scroll {
+                        last_change: -10.0,
+                        seen: frame_no,
+                        max_y,
+                        max_x,
+                        view_w: view.0,
+                        view_h: view.1,
+                        ..Scroll::default()
+                    },
+                );
+                (0.0, 0.0)
+            }
         }
     }
 
