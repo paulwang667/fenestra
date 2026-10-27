@@ -126,6 +126,25 @@ fn a_small_blur_matches_the_cpu_at_full_resolution() {
     assert_close(&gpu, &cpu_blur(&img, &p), "σ 3");
 }
 
+/// The GPU downsamples a large blur up to 8× (the CPU stops at 4×): at a
+/// low radius of 4 or more the two cannot be told apart, and an eighth of
+/// the texels is a quarter of the blur's cost on a phone.
+#[test]
+fn a_very_large_blur_downsamples_by_eight_and_still_matches_the_cpu() {
+    use fenestra_raster::glass::{downsample_factor, gpu_downsample_factor};
+    let r = box_radius_for_std_dev(40.0);
+    assert_eq!(downsample_factor(r), 4, "the CPU keeps its rule");
+    assert_eq!(gpu_downsample_factor(r), 8);
+    assert_eq!(gpu_downsample_factor(box_radius_for_std_dev(30.0)), 4);
+    let img = backdrop(480, 360);
+    let mut h = headless();
+    for (std_dev, saturation) in [(40.0, 1.0), (64.0, 1.5)] {
+        let p = pane((120, 90, 240, 180), std_dev, saturation);
+        let gpu = gpu(&mut h, &img, &[p]).expect("a result");
+        assert_close(&gpu, &cpu_blur(&img, &p), &format!("σ {std_dev}"));
+    }
+}
+
 #[test]
 fn a_large_blur_matches_the_cpu_downsampled() {
     let img = backdrop(400, 300);

@@ -23,6 +23,12 @@ pub const MIN_LOW_RADIUS: u32 = 4;
 /// its logical resolution, which a σ ≥ 16 blur cannot tell from full.
 pub const MAX_DOWNSAMPLE: u32 = 4;
 
+/// The largest downsample factor the GPU glass uses. A blur that leaves a
+/// low radius of [`MIN_LOW_RADIUS`] at 8× looks the same at 8× as at 4×
+/// (the CPU path's cap), and runs on a quarter of the texels with half the
+/// taps — on a phone, about two milliseconds of a full-screen pane.
+pub const GPU_MAX_DOWNSAMPLE: u32 = 8;
+
 /// Frames a pane's textures outlive its last use.
 const KEEP_FRAMES: u64 = 60;
 
@@ -60,6 +66,17 @@ pub fn blur_reach(std_dev: f32) -> u32 {
 pub fn downsample_factor(radius: u32) -> u32 {
     let mut f = 1;
     while f < MAX_DOWNSAMPLE && radius / (f * 2) >= MIN_LOW_RADIUS {
+        f *= 2;
+    }
+    f
+}
+
+/// [`downsample_factor`] for the GPU glass: the same rule, up to
+/// [`GPU_MAX_DOWNSAMPLE`].
+#[must_use]
+pub fn gpu_downsample_factor(radius: u32) -> u32 {
+    let mut f = 1;
+    while f < GPU_MAX_DOWNSAMPLE && radius / (f * 2) >= MIN_LOW_RADIUS {
         f *= 2;
     }
     f
@@ -497,7 +514,7 @@ impl Glass {
             #[expect(clippy::cast_sign_loss, reason = "positive by the check above")]
             let (cw, ch) = ((cx1 - cx0) as u32, (cy1 - cy0) as u32);
             let r = box_radius_for_std_dev(pane.std_dev).min(cw.max(ch));
-            let f = downsample_factor(r);
+            let f = gpu_downsample_factor(r);
             let low = (cw.div_ceil(f), ch.div_ceil(f));
             if low.0 > atlas_width || low.1 > max {
                 continue;
