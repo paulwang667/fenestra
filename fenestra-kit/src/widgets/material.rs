@@ -5,14 +5,16 @@ use fenestra_core::{MaterialStyle, Style, Surface, Theme};
 
 /// `s` dressed as `role` in the theme's material style — or, under
 /// [`MaterialStyle::Solid`], by `solid`: the widget's own look from before
-/// material styles, so the stock kit renders exactly as it did.
+/// material styles, so the stock kit renders exactly as it did. With reduced
+/// transparency the role's opaque surface wins, whatever the widget's own
+/// look (a glass sheet would stay translucent).
 pub(crate) fn role_or_own(
     t: &Theme,
     role: Surface,
     s: Style,
     solid: impl FnOnce(Style) -> Style,
 ) -> Style {
-    if t.material_style == MaterialStyle::Solid {
+    if t.material_style == MaterialStyle::Solid && !t.reduce_transparency {
         solid(s)
     } else {
         t.apply_surface(role, s)

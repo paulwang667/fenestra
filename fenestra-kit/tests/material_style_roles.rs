@@ -59,3 +59,21 @@ fn kit_surfaces_follow_the_material_style() {
         }
     }
 }
+
+/// Reduced transparency is opaque everywhere: no kit surface frosts, the
+/// solid style's glass sheet included.
+#[test]
+fn reduced_transparency_frosts_no_kit_surface() {
+    for style in MaterialStyle::ALL {
+        let theme = Theme::dark()
+            .with_material_style(style)
+            .with_reduce_transparency(true);
+        let mut fonts = Fonts::embedded();
+        let mut state = FrameState::new();
+        let frame = build_frame(&view(), &theme, &mut fonts, &mut state, (800.0, 600.0), 1.0);
+        for id in ["menu", "popover", "glass", "toolbar", "modal"] {
+            let node = frame.get(&by::id(id)).id;
+            assert!(frame.glass_body(node).is_none(), "{style:?} {id} frosts");
+        }
+    }
+}

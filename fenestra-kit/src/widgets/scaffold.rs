@@ -147,6 +147,10 @@ pub struct Scaffold<Msg> {
 
 /// A page: `content` (usually a scroll container) with an optional top bar
 /// and bottom bar, laid out by the theme's material style (see the module).
+///
+/// The bars come after the content in the tree, so they paint over it in
+/// every style — and so Tab and a screen reader reach the content first,
+/// then the bottom bar, then the top bar.
 pub fn scaffold<Msg>(content: impl Into<Element<Msg>>) -> Scaffold<Msg> {
     Scaffold {
         content: content.into(),
@@ -175,9 +179,9 @@ impl<Msg: 'static> From<Scaffold<Msg>> for Element<Msg> {
     fn from(page: Scaffold<Msg>) -> Self {
         let top_h = page.top.as_ref().map_or(0.0, |(_, h)| *h);
         let bottom_h = page.bottom.as_ref().map_or(0.0, |(_, h)| *h);
-        // Over the bars: the content runs on under them, its own padding
-        // keeping its first and last rows clear; beside them: the body
-        // makes room.
+        // Over the bars: the content runs on under them, the bars' room
+        // added to its own padding to keep its first and last rows clear;
+        // beside them: the body makes room.
         let content = page.content.themed(move |t: &Theme, s| {
             if t.material_style.bars_overlay_content() {
                 let dock_gap = if t.material_style.floating_dock() {
@@ -185,7 +189,8 @@ impl<Msg: 'static> From<Scaffold<Msg>> for Element<Msg> {
                 } else {
                     0.0
                 };
-                s.pt(top_h).pb(bottom_h + dock_gap)
+                let (top, bottom) = (s.padding.top, s.padding.bottom);
+                s.pt(top + top_h).pb(bottom + bottom_h + dock_gap)
             } else {
                 s
             }

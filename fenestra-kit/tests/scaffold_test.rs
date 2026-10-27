@@ -45,17 +45,94 @@ fn page(tab: usize) -> Element<Msg> {
 }
 
 fn frame_for(style: MaterialStyle) -> fenestra_core::Frame {
+    frame_in(style, &mut FrameState::new(), &page(0))
+}
+
+fn frame_in(
+    style: MaterialStyle,
+    state: &mut FrameState,
+    view: &Element<Msg>,
+) -> fenestra_core::Frame {
     let theme = Theme::dark().with_material_style(style);
     let mut fonts = Fonts::embedded();
-    let mut state = FrameState::new();
-    build_frame(
-        &page(0),
-        &theme,
-        &mut fonts,
-        &mut state,
-        (411.0, 800.0),
-        1.0,
-    )
+    build_frame(view, &theme, &mut fonts, state, (411.0, 800.0), 1.0)
+}
+
+/// The content's own padding stays: the scaffold adds the bars' room to it
+/// in every style, so the first row sits the same distance below the bar.
+#[test]
+fn the_content_keeps_its_own_padding() {
+    let view = Element::from(
+        scaffold(
+            col()
+                .id("list")
+                .semantics(Semantics::Label)
+                .w_full()
+                .p(16.0)
+                .scroll_y()
+                .child(text("First").id("first").semantics(Semantics::Label)),
+        )
+        .top(
+            Element::from(app_bar("Title"))
+                .id("top")
+                .semantics(Semantics::Label),
+            48.0,
+        ),
+    );
+    for style in MaterialStyle::ALL {
+        let f = frame_in(style, &mut FrameState::new(), &view);
+        let gap = f.get(&by::id("first")).rect.y0 - f.get(&by::id("top")).rect.y1;
+        assert!(
+            (gap - 16.0).abs() < 0.5,
+            "{style:?}: first row {gap} below the bar"
+        );
+    }
+}
+
+/// A field focused and a list scrolled in one style are still focused and
+/// scrolled after a switch to another, the same frame state carried over.
+#[test]
+fn switching_style_keeps_focus_and_scroll() {
+    let view = Element::from(
+        scaffold(
+            col()
+                .id("list")
+                .semantics(Semantics::Label)
+                .w_full()
+                .h_full()
+                .scroll_y()
+                .child(Element::from(fenestra_kit::text_input("")).id("field"))
+                .children((0..30).map(|i| text(format!("Row {i}")).h(48.0).shrink0())),
+        )
+        .top(
+            Element::from(app_bar("Title"))
+                .id("top")
+                .semantics(Semantics::Label),
+            48.0,
+        ),
+    );
+    for (from, to) in [
+        (MaterialStyle::Solid, MaterialStyle::LiquidGlass),
+        (MaterialStyle::LiquidGlass, MaterialStyle::Solid),
+        (MaterialStyle::Acrylic, MaterialStyle::Tonal),
+    ] {
+        let mut state = FrameState::new();
+        let f = frame_in(from, &mut state, &view);
+        let (field, list) = (f.get(&by::id("field")).id, f.get(&by::id("list")).id);
+        state.set_focus(Some(field));
+        state.scroll_to(list, 200.0);
+        let f = frame_in(from, &mut state, &view);
+        let before = f.scroll_offset(list);
+        let f = frame_in(to, &mut state, &view);
+        assert_eq!(state.focused(), Some(field), "{from:?} → {to:?} focus");
+        assert_eq!(f.get(&by::id("field")).id, field, "{from:?} → {to:?} id");
+        assert!(before > 0.0, "{from:?} scrolled");
+        assert!(
+            (f.scroll_offset(list) - before).abs() < 0.5,
+            "{from:?} → {to:?} scroll {} vs {before}",
+            f.scroll_offset(list)
+        );
+    }
 }
 
 #[test]
