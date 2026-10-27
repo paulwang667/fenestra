@@ -9,6 +9,7 @@
 //! [`RasterFrame::render`].
 
 mod geometry;
+pub mod glass;
 mod glyphs;
 mod gpu;
 mod images;
@@ -23,6 +24,8 @@ use kurbo::{Affine, Point, Rect, Shape, Stroke};
 use lyon_tessellation::{FillTessellator, StrokeTessellator};
 use peniko::{BrushRef, Color, Fill, ImageData};
 use wgpu::util::DeviceExt;
+
+pub use glass::{GlassPane, GlassStats};
 
 use geometry::{Mesh, PaintParams, QuadMesh, ShadowMesh};
 use gpu::{Attachments, GLOBALS_STRIDE, Globals, Pipelines};
@@ -73,6 +76,8 @@ pub struct CacheSizes {
     pub ramp_rows: usize,
     /// Glyph atlas pages.
     pub atlas_pages: usize,
+    /// Glass panes holding GPU textures.
+    pub glass_panes: usize,
 }
 
 /// Draws fenestra frames into `wgpu` textures of one format.
@@ -87,6 +92,7 @@ pub struct RasterRenderer {
     pool: LayerPool,
     images: images::ImageCache,
     atlas: glyphs::Atlas,
+    glass: glass::Glass,
     /// The device's largest texture side; bigger images are downscaled.
     max_texture_dimension: u32,
 }
@@ -116,6 +122,7 @@ impl RasterRenderer {
             pool: LayerPool::default(),
             images: images::ImageCache::default(),
             atlas: glyphs::Atlas::default(),
+            glass: glass::Glass::default(),
             max_texture_dimension,
         }
     }
@@ -148,6 +155,75 @@ impl RasterRenderer {
         self.images.register(placeholder, view);
     }
 
+    /// Composites every glass pane from `source` — the backdrop frame, an
+    /// `Rgba8Unorm` texture with `TEXTURE_BINDING` — on the GPU and submits
+    /// the work. Returns each pane's placeholder image, already registered
+    /// (draw it in the next frame where the pane's frosted body goes), and
+    /// what it cost. Nothing is read back.
+    pub fn glass(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: &wgpu::Texture,
+        panes: &[GlassPane],
+    ) -> (
+        std::collections::HashMap<fenestra_core::WidgetId, ImageData>,
+        GlassStats,
+    ) {
+        let (results, stats) = self.glass.run(device, queue, source, panes);
+        let mut out = std::collections::HashMap::new();
+        for (id, placeholder, view) in results {
+            self.images.register(&placeholder, view);
+            out.insert(id, placeholder);
+        }
+        (out, stats)
+    }
+
+    /// Test support: reads the texture a glass placeholder stands for back
+    /// (premultiplied RGBA8, rows packed). Waits for the GPU.
+    #[doc(hidden)]
+    pub fn read_registered(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        placeholder: &ImageData,
+    ) -> Option<Vec<u8>> {
+        let texture = self.glass.result_of(placeholder)?;
+        let (w, h) = (texture.width(), texture.height());
+        let row = (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fenestra-raster glass readback"),
+            size: u64::from(row * h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: None,
+                },
+            },
+            texture.size(),
+        );
+        queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        let data = slice.get_mapped_range();
+        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            let start = (y * row) as usize;
+            out.extend_from_slice(&data[start..start + (w * 4) as usize]);
+        }
+        Some(out)
+    }
+
     /// What the renderer currently keeps between frames.
     pub fn cache_sizes(&self) -> CacheSizes {
         CacheSizes {
@@ -155,6 +231,7 @@ impl RasterRenderer {
             images: self.images.len(),
             atlas_pages: self.atlas.pages(),
             ramp_rows: self.ramps.len(),
+            glass_panes: self.glass.len(),
         }
     }
 }

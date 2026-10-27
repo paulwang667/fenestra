@@ -11,6 +11,10 @@
 //! correctly-rounded and platform-stable (Rust never fuses to FMA implicitly).
 
 use fenestra_core::ElementFilter;
+// The blur's sizing rules are shared with the raster backend's GPU glass.
+pub(crate) use fenestra_raster::glass::{
+    box_radius_for_std_dev, downsample_factor, three_box_radii,
+};
 use image::RgbaImage;
 
 /// A deterministic Gaussian-approximating blur: three passes of an integer box
@@ -101,28 +105,6 @@ fn blur_linear_vibrant(img: &RgbaImage, radius: u32, saturation: f32) -> RgbaIma
             dither_to_u8(p[3], 0.0),
         ])
     })
-}
-
-/// The smallest box radius a downsampled blur may run at. Below this the
-/// three-box kernel is too coarse a stand-in for a Gaussian at the low
-/// resolution, and the bilinear upsample starts to show its grid.
-const MIN_LOW_RADIUS: u32 = 4;
-
-/// The largest downsample factor. At 4 a 2x-scale backdrop is blurred at half
-/// its logical resolution, which a σ ≥ 16 blur cannot tell from full.
-const MAX_DOWNSAMPLE: u32 = 4;
-
-/// The power-of-two factor [`blur_linear_crop`] downsamples by for a box
-/// `radius`: the largest one (up to [`MAX_DOWNSAMPLE`]) that still leaves a
-/// low-resolution radius of at least [`MIN_LOW_RADIUS`]. Small blurs get `1`
-/// and take the exact full-resolution path.
-#[must_use]
-pub(crate) fn downsample_factor(radius: u32) -> u32 {
-    let mut f = 1;
-    while f < MAX_DOWNSAMPLE && radius / (f * 2) >= MIN_LOW_RADIUS {
-        f *= 2;
-    }
-    f
 }
 
 /// [`blur_linear`] of `img`, returning only the `w`×`h` window at `(x, y)` —
@@ -238,30 +220,6 @@ pub fn blur_linear_crop(
         }
     }
     out
-}
-
-/// Radii for three box passes whose combined variance best matches `var`
-/// (px²). A box of radius `k` contributes `k(k+1)/3`, so a single integer
-/// radius for all three only hits `var` to within `2(k+1)/3` — at the small
-/// radii a downsampled blur runs at, a tenth of the spread. Mixing `k` and
-/// `k + 1` across the passes cuts that step to a third.
-fn three_box_radii(var: f32) -> [u32; 3] {
-    let k = box_radius_for_std_dev(var.sqrt());
-    // `box_radius_for_std_dev` rounds; step back to the radius at or below.
-    let k = if fl(k) * fl(k + 1) > var {
-        k.saturating_sub(1)
-    } else {
-        k
-    };
-    let step = 2.0 * fl(k + 1) / 3.0;
-    let base = fl(k) * fl(k + 1);
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "rounded and clamped to 0..=3"
-    )]
-    let up = ((var - base) / step).round().clamp(0.0, 3.0) as usize;
-    std::array::from_fn(|i| if i < up { k + 1 } else { k })
 }
 
 /// One box pass over a `w`×`h` float image, horizontal or vertical, clamping
@@ -491,25 +449,6 @@ pub fn apply_element_filter(img: &RgbaImage, filter: ElementFilter) -> RgbaImage
     }
 }
 
-/// The integer box radius whose three-pass blur best matches a Gaussian of
-/// standard deviation `sigma` (physical px): the variance of three box passes of
-/// radius `r` is `r(r+1)`, so solve `r(r+1) = sigma²` for the nearest
-/// non-negative integer. `sigma <= ~0.4` rounds to `0` (no blur).
-#[must_use]
-pub(crate) fn box_radius_for_std_dev(sigma: f32) -> u32 {
-    if sigma.is_nan() || sigma <= 0.0 {
-        return 0;
-    }
-    let r = (((1.0 + 4.0 * sigma * sigma).sqrt() - 1.0) / 2.0).round();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "box radius is a small, finite, non-negative integer"
-    )]
-    let radius = r as u32;
-    radius
-}
-
 /// One horizontal box-blur pass (`src` → `dst`), clamping at the edges.
 fn box_blur_h(src: &RgbaImage, dst: &mut RgbaImage, radius: u32) {
     let (w, h) = (src.width(), src.height());
@@ -602,6 +541,8 @@ fn f32_to_u8(v: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use fenestra_raster::glass::{MAX_DOWNSAMPLE, MIN_LOW_RADIUS};
+
     /// The plain full-resolution linear blur: the reference the cropped,
     /// downsampled path is held to.
     fn blur_linear(img: &RgbaImage, radius: u32) -> RgbaImage {

@@ -11,6 +11,7 @@ use kurbo::Rect;
 use vello::peniko;
 
 use crate::blur::{apply_element_filter, blur_linear_crop, box_radius_for_std_dev, refract_edges};
+use fenestra_raster::glass::blur_reach;
 
 /// Filters each spec's region of the read-back `backdrop`, returning the image
 /// the final pass draws for that element (keyed by [`WidgetId`]). `scale` maps a
@@ -125,12 +126,6 @@ struct GlassKey {
     corner: u32,
     scale: u64,
     lensed: bool,
-}
-
-/// How far past a glass pane its backdrop blur reads, in physical px: the
-/// three-box kernel reaches `3r`.
-fn blur_reach(std_dev: f32) -> u32 {
-    3 * box_radius_for_std_dev(std_dev) + 1
 }
 
 /// The physical-pixel box `(x, y, w, h)` of an `iw`×`ih` frame that `specs`

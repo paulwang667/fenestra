@@ -91,6 +91,20 @@ impl Headless {
         Ok(headless)
     }
 
+    /// The device, queue and raster renderer, with [`Backend::Raster`]
+    /// (crate tests drive the GPU glass through them).
+    #[cfg(test)]
+    pub(crate) fn raster_gpu(
+        &mut self,
+    ) -> Option<(
+        &wgpu::Device,
+        &wgpu::Queue,
+        &mut fenestra_raster::RasterRenderer,
+    )> {
+        let handle = &self.context.devices[self.dev_id];
+        Some((&handle.device, &handle.queue, self.raster.as_mut()?))
+    }
+
     /// The backend frames render through.
     pub fn backend(&self) -> Backend {
         self.backend
