@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Touch scrolling glides, catches and bounces** (Android, iOS). A
+  finger lifted mid-drag glides on and slows to a stop (about `v·0.325 s`,
+  at most 8000 px/s); a finger landing on the gliding scroller stops it
+  without pressing what is under it (touches elsewhere press as before);
+  dragging past an edge stretches the content by a rubber band, and it
+  springs back on release — a glide that meets an edge overshoots by at
+  most a quarter of the viewport. The offset (`scroll_offset`, the
+  scrollbar, stick-to-bottom) stays in range; `FrameState::scroll_stretch`
+  reports the stretch, `scroll_moving_at` whether a scroller there is
+  moving. With `reduced_motion` the glide stays and the stretch goes. The
+  wheel, trackpads and desktop touch screens are unchanged.
 - **Named material styles.** `Theme` carries a `material_style`
   (`MaterialStyle::{Solid, LiquidGlass, Acrylic, Tonal}`, default `Solid`)
   and `reduce_transparency` (on for `Contrast::High`); `ThemeSpec` takes an
@@ -32,6 +43,10 @@
 
 ### Breaking
 
+- **`InputEvent` gained `Pan`, `PanEnd` and `PanStop`**, which touch
+  platforms now send for a dragging finger instead of `Wheel`. An
+  exhaustive `match` on `InputEvent` must handle them; an `on_wheel`
+  handler still receives a touch drag (as a `WheelEvent`).
 - **`Theme` and `ThemeSpec` gained public fields** (`material_style`,
   `reduce_transparency` on `Theme`; `material_style` on `ThemeSpec`). Code
   that builds either with a struct literal no longer compiles: add the
