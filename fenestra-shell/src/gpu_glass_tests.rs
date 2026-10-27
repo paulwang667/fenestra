@@ -198,7 +198,11 @@ fn band(img: &RgbaImage) -> RgbaImage {
     let (w, h) = img.dimensions();
     RgbaImage::from_fn(w, h, |x, y| {
         let edge = x.min(y).min(w - 1 - x).min(h - 1 - y);
-        if edge < 14 { *img.get_pixel(x, y) } else { image::Rgba([0, 0, 0, 0]) }
+        if edge < 14 {
+            *img.get_pixel(x, y)
+        } else {
+            image::Rgba([0, 0, 0, 0])
+        }
     })
 }
 
@@ -223,5 +227,114 @@ fn an_unlensed_pane_is_not_refracted() {
     let gpu = gpu(&mut headless(), &img, &[p]).expect("a result");
     assert_close(&gpu, &plain, "unlensed pane");
     let refracted = crate::blur::refract_edges(&plain, 24.0, 14.0);
-    assert_ne!(band(&plain), band(&refracted), "the fixture's band does refract");
+    assert_ne!(
+        band(&plain),
+        band(&refracted),
+        "the fixture's band does refract"
+    );
+}
+
+fn image_data(img: &RgbaImage) -> vello::peniko::ImageData {
+    vello::peniko::ImageData {
+        data: img.as_raw().clone().into(),
+        format: vello::peniko::ImageFormat::Rgba8,
+        alpha_type: vello::peniko::ImageAlphaType::Alpha,
+        width: img.width(),
+        height: img.height(),
+    }
+}
+
+fn rgba(data: &vello::peniko::ImageData) -> RgbaImage {
+    RgbaImage::from_raw(data.width, data.height, data.data.as_ref().to_vec()).expect("RGBA8")
+}
+
+fn flat(w: u32, h: u32, v: [u8; 3]) -> RgbaImage {
+    RgbaImage::from_pixel(w, h, image::Rgba([v[0], v[1], v[2], 255]))
+}
+
+/// A pane with a body (logical rect at scale 1 = its device rect).
+fn bodied(
+    rect: (i32, i32, u32, u32),
+    tint: vello::peniko::Color,
+    sheen: Option<fenestra_core::Sheen>,
+    adaptive: Option<fenestra_core::AdaptiveTint>,
+) -> GlassPane {
+    let (x, y, w, h) = rect;
+    GlassPane {
+        body: Some(fenestra_core::GlassBody {
+            rect: vello::kurbo::Rect::new(
+                f64::from(x),
+                f64::from(y),
+                f64::from(x) + f64::from(w),
+                f64::from(y) + f64::from(h),
+            ),
+            tint: Some(tint),
+            sheen,
+            adaptive,
+        }),
+        ..pane(rect, 8.0, 1.0)
+    }
+}
+
+/// The CPU final pass for a pane: adapt the tint to the frosted backdrop,
+/// then bake the body over it.
+fn cpu_body(img: &RgbaImage, p: &GlassPane) -> RgbaImage {
+    let frosted = image_data(&cpu_blur(img, p));
+    let body = p.body.expect("a body");
+    let tint = match (body.tint, body.adaptive) {
+        (Some(t), Some(a)) => fenestra_core::adapted_glass_tint(t, a, &frosted),
+        (t, _) => t,
+    };
+    rgba(&fenestra_core::glass::bake_glass_body(
+        &frosted,
+        body.rect,
+        tint,
+        body.sheen.as_ref(),
+    ))
+}
+
+#[test]
+fn the_body_matches_the_cpu_bake() {
+    let img = backdrop(320, 240);
+    let tint = fenestra_core::oklch(0.35, 0.01, 250.0).with_alpha(0.72);
+    let sheen = fenestra_core::Sheen {
+        light_deg: 180.0,
+        top: 0.12,
+        bottom: 0.06,
+    };
+    let p = bodied((60, 40, 200, 160), tint, Some(sheen), None);
+    let gpu = gpu(&mut headless(), &img, &[p]).expect("a result");
+    assert_close(&gpu, &cpu_body(&img, &p), "tint and sheen");
+}
+
+#[test]
+fn adaptive_tint_matches_the_cpu_over_dark_and_light() {
+    let tint = fenestra_core::oklch(0.6, 0.03, 250.0).with_alpha(0.6);
+    let adaptive = Some(fenestra_core::AdaptiveTint::glass());
+    let p = bodied((20, 20, 120, 80), tint, None, adaptive);
+    let mut h = headless();
+    let mut means = Vec::new();
+    for (name, v) in [("dark", [10, 10, 12]), ("light", [245, 245, 240])] {
+        let img = flat(160, 120, v);
+        let gpu = gpu(&mut h, &img, &[p]).expect("a result");
+        assert_close(&gpu, &cpu_body(&img, &p), name);
+        let unadapted = bodied((20, 20, 120, 80), tint, None, None);
+        let plain = cpu_body(&img, &unadapted);
+        let luma = |i: &RgbaImage| i.pixels().map(|p| f64::from(p.0[1])).sum::<f64>();
+        means.push(luma(&gpu) - luma(&plain));
+    }
+    assert!(
+        means[0] > 0.0 && means[1] < 0.0,
+        "over dark the pane lightens, over light it darkens: {means:?}"
+    );
+}
+
+#[test]
+fn a_tint_out_of_gamut_after_the_shift_is_mapped_like_the_cpu() {
+    let tint = fenestra_core::oklch(0.6, 0.25, 30.0).with_alpha(0.8);
+    let adaptive = Some(fenestra_core::AdaptiveTint::glass());
+    let p = bodied((20, 20, 120, 80), tint, None, adaptive);
+    let img = flat(160, 120, [8, 8, 8]);
+    let gpu = gpu(&mut headless(), &img, &[p]).expect("a result");
+    assert_close(&gpu, &cpu_body(&img, &p), "saturated tint over black");
 }

@@ -59,6 +59,8 @@ pub use events::{
     Dispatch, DragEvent, GesturePhase, ImeTextState, InputEvent, Key, KeyInput, Mods, PinchEvent,
     WheelEvent, WindowControl, click_msg_of, dispatch, owns_touch_drag, refresh_hover,
 };
+#[doc(hidden)]
+pub use frame::adapted_glass_tint;
 pub use frame::{AccessNode, Frame, TextLegibility, build_frame, build_scene, frame_epoch};
 pub use frame_state::FrameState;
 pub use i18n::{Catalog, DateOrder, Locale, PluralCategory};

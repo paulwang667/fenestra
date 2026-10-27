@@ -164,6 +164,31 @@ pub(crate) fn bake_body(
     }
 }
 
+/// [`bake_body`] without vibrancy (the shell applies it while blurring), as
+/// the final pass calls it. (Public, hidden, as the reference the raster
+/// backend's GPU glass is tested against.)
+#[doc(hidden)]
+#[must_use]
+pub fn bake_glass_body(
+    backdrop: &peniko::ImageData,
+    rect: Rect,
+    tint: Option<Color>,
+    sheen: Option<&Sheen>,
+) -> peniko::ImageData {
+    bake_body(backdrop, rect, tint, sheen, 1.0)
+}
+
+/// The sheen's gradient for a `w`×`h` image of the pane `rect`: `t` at pixel
+/// `(x, y)` is `origin + x·step.0 + y·step.1`, white `top` at `t = 0`
+/// fading to clear at 0.55, then clear to black `bottom` at 1. (Public,
+/// hidden, for the raster backend's GPU glass, which lays the same line.)
+#[doc(hidden)]
+#[must_use]
+pub fn sheen_line(sheen: &Sheen, rect: Rect, w: u32, h: u32) -> (f64, (f64, f64), f32, f32) {
+    let l = SheenLine::new(sheen, rect, w, h);
+    (l.origin, l.step, l.top, l.bottom)
+}
+
 /// The sheen's gradient line in the image's pixel space — the same geometry
 /// as the painter's CSS-angle linear gradient — and its three stops.
 struct SheenLine {

@@ -7,10 +7,13 @@ struct Params {
     a: vec4<i32>,
     b: vec4<i32>,
     f: vec4<f32>,
+    g: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var src: texture_2d<f32>;
+// The bake's second input: the 1×1 adapted tint.
+@group(0) @binding(2) var tint_tex: texture_2d<f32>;
 
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -201,4 +204,145 @@ fn fs_refract(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let gp = bilinear(px - n * disp, size);
     let bp = bilinear(px - n * disp * 1.06, size);
     return vec4<f32>(rp.r, gp.g, bp.b, gp.a);
+}
+
+// 6. Mean luma, first level: each texel of a ≤16×16 grid sums Rec. 709 luma
+//    (on the sRGB values, as `adapt_fill` reads bytes) over every fourth
+//    pixel of its block of the pane. a = (pane w, pane h, grid w, grid h).
+//    Writes (sum, count).
+@fragment
+fn fs_luma(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let g = vec2<i32>(pos.xy);
+    let size = p.a.xy;
+    let grid = p.a.zw;
+    let lo = g * size / grid;
+    let hi = (g + vec2<i32>(1)) * size / grid;
+    var sum = 0.0;
+    var n = 0.0;
+    for (var y = lo.y + ((4 - lo.y % 4) % 4); y < hi.y; y += 4) {
+        for (var x = lo.x + ((4 - lo.x % 4) % 4); x < hi.x; x += 4) {
+            let c = textureLoad(src, vec2<i32>(x, y), 0);
+            sum += dot(c.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+            n += 1.0;
+        }
+    }
+    return vec4<f32>(sum, n, 0.0, 0.0);
+}
+
+fn cbrt(x: f32) -> f32 {
+    return sign(x) * pow(abs(x), 1.0 / 3.0);
+}
+
+// Linear sRGB ↔ OKLab (Björn Ottosson's matrices).
+fn linear_to_oklab(c: vec3<f32>) -> vec3<f32> {
+    let l = cbrt(0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b);
+    let m = cbrt(0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b);
+    let s = cbrt(0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b);
+    return vec3<f32>(
+        0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+        1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+    );
+}
+
+fn oklab_to_linear(lab: vec3<f32>) -> vec3<f32> {
+    let l0 = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
+    let m0 = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;
+    let s0 = lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z;
+    let l = l0 * l0 * l0;
+    let m = m0 * m0 * m0;
+    let s = s0 * s0 * s0;
+    return vec3<f32>(
+        4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+    );
+}
+
+// sRGB's transfer, extended past [0, 1] by symmetry (as `color` converts).
+fn srgb_ext(x: f32) -> f32 {
+    let a = abs(x);
+    let v = select(1.055 * pow(a, 1.0 / 2.4) - 0.055, a * 12.92, a <= 0.0031308);
+    return sign(x) * v;
+}
+
+fn oklch_to_srgb(l: f32, c: f32, h: f32) -> vec3<f32> {
+    let lin = oklab_to_linear(vec3<f32>(l, c * cos(h), c * sin(h)));
+    return vec3<f32>(srgb_ext(lin.r), srgb_ext(lin.g), srgb_ext(lin.b));
+}
+
+fn in_gamut(c: vec3<f32>) -> bool {
+    return all(c >= vec3<f32>(-1e-4)) && all(c <= vec3<f32>(1.0 + 1e-4));
+}
+
+// 7. The tint, adapted (`adapt_fill` / `theme::oklch`): the mean luma moves
+//    the tint's OKLCH lightness by gain·(pivot − luma); a result outside sRGB
+//    bisects its chroma down to the gamut. a = (grid w, grid h, adaptive, 0);
+//    f = the tint (sRGB, alpha); g = (pivot, gain).
+@fragment
+fn fs_tint(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let tint = p.f;
+    if p.a.z == 0 {
+        return tint;
+    }
+    var sum = 0.0;
+    var n = 0.0;
+    for (var y = 0; y < p.a.y; y++) {
+        for (var x = 0; x < p.a.x; x++) {
+            let v = textureLoad(src, vec2<i32>(x, y), 0);
+            sum += v.x;
+            n += v.y;
+        }
+    }
+    let luma = sum / max(n, 1.0);
+    let lab = linear_to_oklab(vec3<f32>(srgb_to_linear(tint.r), srgb_to_linear(tint.g), srgb_to_linear(tint.b)));
+    let c = length(lab.yz);
+    let h = select(atan2(lab.z, lab.y), 0.0, c < 1e-7);
+    let l = clamp(lab.x + p.g.y * (p.g.x - luma), 0.0, 1.0);
+    var rgb = oklch_to_srgb(l, c, h);
+    if !in_gamut(rgb) {
+        var lo = 0.0;
+        var hi = c;
+        for (var i = 0; i < 24; i++) {
+            let mid = 0.5 * (lo + hi);
+            if in_gamut(oklch_to_srgb(l, mid, h)) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        rgb = oklch_to_srgb(l, lo, h);
+    }
+    return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), tint.a);
+}
+
+// 8. The body (`bake_body`): over the frosted sRGB field, the tint
+//    source-over, then the sheen's white and black washes; quantized once
+//    with dither (keyed by pane pixel), premultiplied. a = (has tint,
+//    has sheen); f = (sheen origin, step x, step y, top); g.x = bottom.
+@fragment
+fn fs_bake(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let at = vec2<i32>(pos.xy);
+    let v = textureLoad(src, at, 0);
+    var rgb = v.rgb;
+    if p.a.x == 1 {
+        let t = textureLoad(tint_tex, vec2<i32>(0, 0), 0);
+        let ta = clamp(t.a, 0.0, 1.0);
+        rgb = rgb * (1.0 - ta) + t.rgb * ta;
+    }
+    if p.a.y == 1 {
+        let t = clamp(p.f.x + f32(at.x) * p.f.y + f32(at.y) * p.f.z, 0.0, 1.0);
+        var white = 0.0;
+        var black = 0.0;
+        if t < 0.55 {
+            white = p.f.w * (1.0 - t / 0.55);
+        } else {
+            black = p.g.x * (t - 0.55) / 0.45;
+        }
+        rgb = rgb * (1.0 - white - black) + vec3<f32>(white);
+    }
+    let n = dither_noise(u32(at.x), u32(at.y));
+    let a = dither_to_unit(v.a, 0.0);
+    let q = vec3<f32>(dither_to_unit(rgb.r, n), dither_to_unit(rgb.g, n), dither_to_unit(rgb.b, n));
+    return vec4<f32>(q * a, a);
 }

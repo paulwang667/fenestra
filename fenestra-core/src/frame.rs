@@ -2192,6 +2192,22 @@ fn adapt_fill(
     // Rec. 709 luma over the image's own pixels, which are RGBA8 premultiplied
     // or not depending on the format — either way the relative weighting is
     // what this needs, not absolute light.
+    let shifted = adapted_glass_tint(fill, tint, image)?;
+    let mut out = style.clone();
+    out.fill = Some(Paint::Solid(shifted));
+    Some(out)
+}
+
+/// The glass tint `fill` shifted for the backdrop `image` by `tint`: the
+/// image's mean Rec. 709 luma (every fourth pixel) moves the fill's OKLCH
+/// lightness by `gain · (pivot − luma)`. `None` for an empty image. (Public,
+/// hidden, as the reference the raster backend's GPU glass is tested against.)
+#[doc(hidden)]
+pub fn adapted_glass_tint(
+    fill: crate::Color,
+    tint: crate::style::AdaptiveTint,
+    image: &peniko::ImageData,
+) -> Option<crate::Color> {
     let bytes = image.data.as_ref();
     if bytes.len() < 4 {
         return None;
@@ -2212,11 +2228,7 @@ fn adapt_fill(
 
     let [l, c, h] = crate::oklch_of(fill);
     let shifted = (l + tint.gain * (tint.pivot - luma)).clamp(0.0, 1.0);
-    let mut out = style.clone();
-    out.fill = Some(Paint::Solid(
-        crate::theme::oklch(shifted, c, h).with_alpha(fill.components[3]),
-    ));
-    Some(out)
+    Some(crate::theme::oklch(shifted, c, h).with_alpha(fill.components[3]))
 }
 
 impl Frame {
