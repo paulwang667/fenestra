@@ -109,27 +109,28 @@ impl Touch {
             TouchPhase::Started | TouchPhase::Moved => match finger.mode {
                 Mode::Pending if finger.down.distance(at) > TAP_SLOP => {
                     finger.mode = Mode::Scrolling;
-                    events.extend([
-                        InputEvent::PointerLeave,
-                        InputEvent::PointerUp,
-                        pointer_at(finger.down),
-                        wheel(finger.last, at),
-                    ]);
+                    events.extend([InputEvent::PointerLeave, InputEvent::PointerUp]);
+                    events.extend(scroll_step(finger.down, finger.last, at));
                 }
-                Mode::Pending | Mode::Pointer => events.push(pointer_at(at)),
-                Mode::Scrolling => events.push(wheel(finger.last, at)),
-                Mode::LongPressed => {}
+                // Undecided, the pointer stays where the finger landed: a
+                // wiggle must not drag a text selection or a hover along.
+                Mode::Pending | Mode::LongPressed => {}
+                Mode::Pointer => events.push(pointer_at(at)),
+                Mode::Scrolling => events.extend(scroll_step(finger.down, finger.last, at)),
             },
             TouchPhase::Ended => {
                 events.extend(match finger.mode {
-                    Mode::Pending | Mode::Pointer => {
+                    // A tap releases where it landed.
+                    Mode::Pending => vec![InputEvent::PointerUp, InputEvent::PointerLeave],
+                    Mode::Pointer => {
                         vec![
                             pointer_at(at),
                             InputEvent::PointerUp,
                             InputEvent::PointerLeave,
                         ]
                     }
-                    Mode::Scrolling => vec![InputEvent::PointerLeave],
+                    // Each scroll step already left.
+                    Mode::Scrolling => Vec::new(),
                     Mode::LongPressed => vec![InputEvent::PointerLeave, InputEvent::PointerUp],
                 });
                 self.finger = None;
@@ -140,7 +141,8 @@ impl Touch {
                     Mode::Pending | Mode::Pointer => {
                         vec![InputEvent::PointerLeave, InputEvent::PointerUp]
                     }
-                    Mode::Scrolling | Mode::LongPressed => vec![InputEvent::PointerLeave],
+                    Mode::Scrolling => Vec::new(),
+                    Mode::LongPressed => vec![InputEvent::PointerLeave],
                 });
                 self.finger = None;
                 return Some(events);
@@ -169,6 +171,13 @@ impl Touch {
             .filter(|f| f.mode == Mode::Pending)
             .map(|f| f.down_at + LONG_PRESS)
     }
+}
+
+/// One scroll step of a finger that landed at `down`: the pointer goes to
+/// the landing point only for the wheel (so the same container scrolls) and
+/// leaves again before any frame paints a hover there.
+fn scroll_step(down: Point, from: Point, to: Point) -> [InputEvent; 3] {
+    [pointer_at(down), wheel(from, to), InputEvent::PointerLeave]
 }
 
 /// The scroll for a finger moving `from` → `to`: its travel, so content
@@ -200,7 +209,9 @@ mod tests {
         }
     }
 
-    /// A finger that moves a little (within the slop) still taps.
+    /// A finger that moves a little (within the slop) still taps, where it
+    /// landed: the wiggle never moves the pointer, so it cannot start a text
+    /// selection either.
     #[test]
     fn a_tap_that_wiggles_within_the_slop_still_clicks() {
         let mut t = Touch::new(true);
@@ -208,24 +219,22 @@ mod tests {
             t.event(0, Started, p(100., 100.), 0.0, false).unwrap(),
             vec![mv(100., 100.), InputEvent::PointerDown]
         );
-        assert_eq!(
-            t.event(0, Moved, p(106., 104.), 0.1, false).unwrap(),
-            vec![mv(106., 104.)]
+        assert!(
+            t.event(0, Moved, p(106., 104.), 0.1, false)
+                .unwrap()
+                .is_empty()
         );
         assert_eq!(
             t.event(0, Ended, p(106., 104.), 0.2, false).unwrap(),
-            vec![
-                mv(106., 104.),
-                InputEvent::PointerUp,
-                InputEvent::PointerLeave
-            ]
+            vec![InputEvent::PointerUp, InputEvent::PointerLeave]
         );
         assert_eq!(t.deadline(), None);
     }
 
     /// Past the slop the touch scrolls: the press is let go without a click
     /// (the pointer leaves first), and the finger's travel becomes wheel
-    /// deltas at the point it landed.
+    /// deltas at the point it landed — the pointer there only for the step,
+    /// so no hover tint follows the content.
     #[test]
     fn a_drag_that_starts_on_a_button_scrolls_without_clicking() {
         let mut t = Touch::new(true);
@@ -236,18 +245,24 @@ mod tests {
                 InputEvent::PointerLeave,
                 InputEvent::PointerUp,
                 mv(100., 300.),
-                InputEvent::Wheel { dx: 0.0, dy: -20.0 }
+                InputEvent::Wheel { dx: 0.0, dy: -20.0 },
+                InputEvent::PointerLeave,
             ]
         );
         assert_eq!(
             t.event(0, Moved, p(100., 250.), 0.1, false).unwrap(),
-            vec![InputEvent::Wheel { dx: 0.0, dy: -30.0 }]
+            vec![
+                mv(100., 300.),
+                InputEvent::Wheel { dx: 0.0, dy: -30.0 },
+                InputEvent::PointerLeave,
+            ]
         );
         // No long press once scrolling, however long the finger stays.
         assert!(t.tick(2.0).is_empty());
-        assert_eq!(
-            t.event(0, Ended, p(100., 250.), 2.1, false).unwrap(),
-            vec![InputEvent::PointerLeave]
+        assert!(
+            t.event(0, Ended, p(100., 250.), 2.1, false)
+                .unwrap()
+                .is_empty()
         );
     }
 
@@ -305,9 +320,10 @@ mod tests {
         t.event(0, Started, p(10., 10.), 0.0, false);
         t.event(0, Moved, p(10., 40.), 0.1, false); // scrolling
         assert_eq!(t.event(1, Started, p(200., 200.), 0.2, false), None);
-        assert_eq!(
-            t.event(0, Cancelled, p(10., 40.), 0.3, false).unwrap(),
-            vec![InputEvent::PointerLeave]
+        assert!(
+            t.event(0, Cancelled, p(10., 40.), 0.3, false)
+                .unwrap()
+                .is_empty()
         );
         // The next touch starts fresh.
         assert_eq!(
