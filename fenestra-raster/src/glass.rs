@@ -281,10 +281,12 @@ struct Placeholder {
     last_used: u64,
 }
 
-/// The GPU glass state the renderer keeps: pipelines (built on first use),
-/// the atlas pages, each pane's placeholder and where its result lies.
+/// The GPU glass: its pipelines (built on first use), the atlas pages, each
+/// pane's placeholder and where its result lies. The raster backend keeps
+/// one and draws the results through its image cache; the vello backend
+/// keeps one per window and hands the results to vello as image overrides.
 #[derive(Default)]
-pub(crate) struct Glass {
+pub struct GpuGlass {
     pipes: Option<Pipes>,
     pages: Vec<Page>,
     placeholders: HashMap<WidgetId, Placeholder>,
@@ -435,9 +437,21 @@ impl Shelves {
     }
 }
 
-/// A composited pane: its id, placeholder, the view its result lies in and
-/// where (`[u0, v0, u1, v1]`).
-pub(crate) type Composited = (WidgetId, ImageData, wgpu::TextureView, [f32; 4]);
+/// A composited pane, as [`GpuGlass::run`] returns it.
+#[derive(Debug, Clone)]
+pub struct GlassResult {
+    pub id: WidgetId,
+    /// The image to draw where the pane's frosted body goes: its pixels are
+    /// never read; it stands for `region` of `texture`.
+    pub placeholder: ImageData,
+    /// The atlas the result lies in (`Rgba8Unorm`, premultiplied,
+    /// `COPY_SRC`).
+    pub texture: wgpu::Texture,
+    /// Where in `texture`: `[x, y, w, h]`, texels.
+    pub region: [u32; 4],
+    /// The same, as `[u0, v0, u1, v1]`.
+    pub uv: [f32; 4],
+}
 
 /// One pane's share of a frame's passes.
 struct Job {
@@ -466,19 +480,20 @@ struct Extents {
     tints: u32,
 }
 
-impl Glass {
-    /// Composites `panes` from `source` and submits the work. Returns each
-    /// pane's placeholder, the texture view its result lies in and where
-    /// (`[u0, v0, u1, v1]`), to register; and the stats. `source` is RGBA8,
-    /// and must allow its sRGB view (`view_formats`).
+impl GpuGlass {
+    /// Composites `panes` from `source` and submits the work: the panes
+    /// share one set of passes. Returns each pane's result (its placeholder,
+    /// and where in which texture it lies) and the stats. `source` is
+    /// `Rgba8Unorm` with `TEXTURE_BINDING`, and must allow its
+    /// `Rgba8UnormSrgb` view (`view_formats`). Nothing is read back.
     #[expect(clippy::too_many_lines, reason = "one frame's passes, in order")]
-    pub(crate) fn run(
+    pub fn run(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         source: &wgpu::Texture,
         panes: &[GlassPane],
-    ) -> (Vec<Composited>, GlassStats) {
+    ) -> (Vec<GlassResult>, GlassStats) {
         self.frame += 1;
         let frame = self.frame;
         self.regions.clear();
@@ -756,12 +771,13 @@ impl Glass {
             ];
             self.regions
                 .insert(held.image.data.id(), (job.page, [rx + 1, ry + 1, w, h]));
-            out.push((
-                pane.id,
-                held.image.clone(),
-                result.create_view(&wgpu::TextureViewDescriptor::default()),
+            out.push(GlassResult {
+                id: pane.id,
+                placeholder: held.image.clone(),
+                texture: result.clone(),
+                region: [rx + 1, ry + 1, w, h],
                 uv,
-            ));
+            });
             stats.panes += 1;
         }
         self.placeholders
@@ -882,13 +898,21 @@ impl Glass {
     }
 
     /// Panes holding a result.
-    pub(crate) fn len(&self) -> usize {
+    #[must_use]
+    pub fn len(&self) -> usize {
         self.placeholders.len()
+    }
+
+    /// No pane holds a result.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.placeholders.is_empty()
     }
 
     /// The result texture registered under `placeholder` this frame, and the
     /// region `[x, y, w, h]` of it the result is.
-    pub(crate) fn result_of(&self, placeholder: &ImageData) -> Option<(&wgpu::Texture, [u32; 4])> {
+    #[must_use]
+    pub fn result_of(&self, placeholder: &ImageData) -> Option<(&wgpu::Texture, [u32; 4])> {
         let (page, region) = self.regions.get(&placeholder.data.id())?;
         Some((&self.pages.get(*page)?.result, *region))
     }

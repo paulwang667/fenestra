@@ -436,3 +436,22 @@ fn panes_share_their_passes() {
     assert_close(&read(&large), &cpu_blur(&img, &large), "large");
     assert_close(&read(&tinted), &cpu_body(&img, &tinted), "tinted");
 }
+
+/// The GPU glass stands on its own: no raster renderer, only a device, a
+/// backdrop texture and the panes (the vello backend drives it this way).
+#[test]
+fn gpu_glass_runs_on_its_own() {
+    let img = backdrop(320, 240);
+    let mut h = headless();
+    let (device, queue, _) = h.raster_gpu().expect("raster backend");
+    let source = upload(device, queue, &img);
+    let p = pane((60, 40, 200, 160), 12.0, 1.5);
+    let mut glass = fenestra_raster::GpuGlass::default();
+    let (results, stats) = glass.run(device, queue, &source, &[p]);
+    assert_eq!(stats.panes, 1);
+    let r = results.iter().find(|r| r.id == p.id).expect("a result");
+    assert_eq!((r.placeholder.width, r.placeholder.height), (200, 160));
+    let [x, y, w, h] = r.region;
+    let got = crate::headless::read_texture(device, queue, &r.texture, (x, y, w, h)).expect("read");
+    assert_close(&got, &cpu_blur(&img, &p), "standalone");
+}

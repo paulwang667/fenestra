@@ -25,7 +25,7 @@ use lyon_tessellation::{FillTessellator, StrokeTessellator};
 use peniko::{BrushRef, Color, Fill, ImageData};
 use wgpu::util::DeviceExt;
 
-pub use glass::{GlassPane, GlassStats};
+pub use glass::{GlassPane, GlassResult, GlassStats, GpuGlass};
 
 use geometry::{Mesh, PaintParams, QuadMesh, ShadowMesh};
 use gpu::{Attachments, GLOBALS_STRIDE, Globals, Pipelines};
@@ -92,7 +92,7 @@ pub struct RasterRenderer {
     pool: LayerPool,
     images: images::ImageCache,
     atlas: glyphs::Atlas,
-    glass: glass::Glass,
+    glass: GpuGlass,
     /// The device's largest texture side; bigger images are downscaled.
     max_texture_dimension: u32,
 }
@@ -122,7 +122,7 @@ impl RasterRenderer {
             pool: LayerPool::default(),
             images: images::ImageCache::default(),
             atlas: glyphs::Atlas::default(),
-            glass: glass::Glass::default(),
+            glass: GpuGlass::default(),
             max_texture_dimension,
         }
     }
@@ -175,9 +175,12 @@ impl RasterRenderer {
     ) {
         let (results, stats) = self.glass.run(device, queue, source, panes);
         let mut out = std::collections::HashMap::new();
-        for (id, placeholder, view, uv) in results {
-            self.images.register(&placeholder, view, uv);
-            out.insert(id, placeholder);
+        for r in results {
+            let view = r
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            self.images.register(&r.placeholder, view, r.uv);
+            out.insert(r.id, r.placeholder);
         }
         (out, stats)
     }
