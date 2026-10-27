@@ -71,7 +71,9 @@ pub use paint_plan::{GlassBody, MultiPassSpec, PassKind};
 pub use proxy::Proxy;
 pub use query::{Query, QueryError, TextMatch, by};
 pub use style::*;
-pub use surface::{Material, Surface, SurfaceBorder, SurfaceBundle, SurfaceFill, SurfaceRadius};
+pub use surface::{
+    Material, MaterialStyle, Surface, SurfaceBorder, SurfaceBundle, SurfaceFill, SurfaceRadius,
+};
 pub use text::Fonts;
 pub use theme::{
     BaseField, Contrast, ContrastViolation, DEFAULT_CORNER_SMOOTHING, DeriveSpec, DuotoneSpec,

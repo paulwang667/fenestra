@@ -46,6 +46,56 @@ pub enum Surface {
     /// behind shows through, with a deep shadow, a hairline edge, and a 1px top
     /// highlight. Floating (ranks with [`Popover`](Surface::Popover)).
     Glass,
+    /// A bar content runs under or beside — a top app bar, a header, a bottom
+    /// navigation bar. Solid: the page surface with a hairline; the glass
+    /// styles frost it.
+    Bar,
+    /// A floating dock of controls — a composer, a floating tab bar. Solid:
+    /// as [`Bar`](Surface::Bar).
+    Dock,
+    /// The window's base: the page colour (Acrylic's Mica: tinted by the
+    /// accent, grained).
+    Window,
+}
+
+/// A named material style: how every [`Surface`] role is rendered —
+/// material, edge, radius, shadow — set on the [`Theme`]
+/// ([`Theme::with_material_style`]).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+pub enum MaterialStyle {
+    /// Solid surfaces: the stock look (glass only on [`Surface::Glass`]).
+    #[default]
+    Solid,
+    /// Apple's Liquid Glass: thin, vivid glass on what floats over content —
+    /// bars, docks, popovers, menus, modals — over solid content.
+    LiquidGlass,
+    /// Fluent's Acrylic over Mica: thick, grained in-app glass on bars and
+    /// transient surfaces, over an accent-tinted, grained window base.
+    Acrylic,
+    /// Material 3's tonal surfaces: no glass — the accent mixed into the
+    /// surface by elevation, shadows only on what floats.
+    Tonal,
+}
+
+impl MaterialStyle {
+    /// The four styles.
+    pub const ALL: [Self; 4] = [Self::Solid, Self::LiquidGlass, Self::Acrylic, Self::Tonal];
+
+    /// Whether bars float over content, which runs on under them (the glass
+    /// styles).
+    #[must_use]
+    pub const fn bars_overlay_content(self) -> bool {
+        matches!(self, Self::LiquidGlass | Self::Acrylic)
+    }
+
+    /// Whether the bottom bar floats as a dock clear of the screen's edges
+    /// (Liquid Glass).
+    #[must_use]
+    pub const fn floating_dock(self) -> bool {
+        matches!(self, Self::LiquidGlass)
+    }
 }
 
 /// The corner-radius shape of a surface bundle: one `Uniform` radius on every
@@ -92,6 +142,10 @@ pub enum SurfaceFill {
     Elevated(u8),
     /// `Theme::neutrals.step(12)` — the inverted high-contrast chip (tooltips).
     Inverted,
+    /// [`Theme::surface`] — bars and docks.
+    Surface,
+    /// [`Theme::bg`] — the page itself (the window).
+    Page,
 }
 
 impl SurfaceFill {
@@ -101,6 +155,8 @@ impl SurfaceFill {
             SurfaceFill::SurfaceRaised => theme.surface_raised,
             SurfaceFill::Elevated(level) => theme.elevated_surface(level),
             SurfaceFill::Inverted => theme.neutrals.step(12),
+            SurfaceFill::Surface => theme.surface,
+            SurfaceFill::Page => theme.bg,
         }
     }
 }
@@ -294,6 +350,23 @@ impl Surface {
                 highlight: None,
                 material: None,
             },
+            // Bars and docks rest on the page surface with a hairline.
+            Surface::Bar | Surface::Dock => SurfaceBundle {
+                radius: SurfaceRadius::Uniform(0.0),
+                fill: SurfaceFill::Surface,
+                border: SurfaceBorder::Subtle,
+                shadow: None,
+                highlight: None,
+                material: None,
+            },
+            Surface::Window => SurfaceBundle {
+                radius: SurfaceRadius::Uniform(0.0),
+                fill: SurfaceFill::Page,
+                border: SurfaceBorder::None,
+                shadow: None,
+                highlight: None,
+                material: None,
+            },
         }
     }
 
@@ -310,6 +383,7 @@ impl Surface {
             Surface::Card | Surface::Raised | Surface::Popover | Surface::Menu | Surface::Glass => {
                 radius.lg
             }
+            Surface::Bar | Surface::Dock | Surface::Window => 0.0,
         }
     }
 
@@ -392,9 +466,18 @@ impl Theme {
     /// point; [`Element::surface`](crate::Element::surface) is the deferred one
     /// for `view()`.
     pub fn surface_style(&self, role: Surface) -> Style {
+        self.apply_surface(role, Style::default())
+    }
+
+    /// Overlays `role`'s material in this theme's [`MaterialStyle`] onto
+    /// `base` (its layout and text untouched) — the one place every surface
+    /// resolves, for [`Theme::surface_style`] and
+    /// [`Element::surface`](crate::Element::surface) alike.
+    #[must_use]
+    pub fn apply_surface(&self, role: Surface, base: Style) -> Style {
         let mut style = role
             .bundle()
-            .apply(self, Style::default())
+            .apply(self, base)
             .rounded(role.radius_px(&self.radius));
         // Flat elevation: resting cards lean on their border + tone-step rather
         // than a shadow; floating roles always keep theirs.
@@ -407,6 +490,127 @@ impl Theme {
 
 #[cfg(test)]
 mod tests {
+
+    /// Today's resolution path (before material styles), kept as the
+    /// reference the Solid style must match bit for bit.
+    fn legacy(theme: &Theme, role: Surface) -> Style {
+        let mut s = role
+            .bundle()
+            .apply(theme, Style::default())
+            .rounded(role.radius_px(&theme.radius));
+        if theme.elevation == Elevation::Flat && matches!(role, Surface::Card | Surface::Raised) {
+            s.shadow_token = None;
+        }
+        s
+    }
+
+    const LEGACY_ROLES: [Surface; 8] = [
+        Surface::Card,
+        Surface::Raised,
+        Surface::Popover,
+        Surface::Menu,
+        Surface::Modal,
+        Surface::Thumb,
+        Surface::Tooltip,
+        Surface::Glass,
+    ];
+
+    #[test]
+    fn solid_resolution_is_unchanged() {
+        for base in [Theme::light(), Theme::dark()] {
+            for radius in [RadiusScale::default(), RadiusScale::sharp()] {
+                for elevation in [Elevation::default(), Elevation::Flat] {
+                    let mut theme = base.clone();
+                    theme.radius = radius;
+                    theme.elevation = elevation;
+                    assert_eq!(theme.material_style, crate::MaterialStyle::Solid);
+                    for role in LEGACY_ROLES {
+                        assert_eq!(theme.surface_style(role), legacy(&theme, role), "{role:?}");
+                        let via_element = theme.apply_surface(role, Style::default());
+                        assert_eq!(
+                            via_element,
+                            legacy(&theme, role),
+                            "{role:?} via apply_surface"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn solid_bar_dock_and_window() {
+        let theme = Theme::dark();
+        for role in [Surface::Bar, Surface::Dock] {
+            let s = theme.surface_style(role);
+            assert_eq!(s.fill, Some(Paint::Solid(theme.surface)), "{role:?}");
+            assert_eq!(
+                s.border,
+                Some(Border {
+                    width: 1.0,
+                    color: theme.border_subtle
+                }),
+                "{role:?}"
+            );
+            assert!(
+                s.backdrop_blur.is_none() && s.shadow_token.is_none(),
+                "{role:?}"
+            );
+        }
+        let w = theme.surface_style(Surface::Window);
+        assert_eq!(w.fill, Some(Paint::Solid(theme.bg)));
+        assert!(w.border.is_none());
+        assert_eq!(w.corner_radius, CornerRadius::all(0.0));
+    }
+
+    #[test]
+    fn material_style_round_trips_through_the_theme_and_spec() {
+        use crate::{DeriveSpec, MaterialStyle, Mode, ThemeSpec};
+        assert_eq!(Theme::dark().material_style, MaterialStyle::Solid);
+        assert!(!Theme::dark().reduce_transparency);
+        let acrylic = Theme::dark().with_material_style(MaterialStyle::Acrylic);
+        assert_eq!(acrylic.material_style, MaterialStyle::Acrylic);
+        assert!(
+            Theme::dark()
+                .with_reduce_transparency(true)
+                .reduce_transparency
+        );
+        let spec: ThemeSpec = serde_json::from_str(r#"{"mode":"dark"}"#).expect("a spec");
+        assert_eq!(spec.material_style, MaterialStyle::Solid);
+        let spec: ThemeSpec =
+            serde_json::from_str(r#"{"mode":"dark","material_style":"LiquidGlass"}"#)
+                .expect("a spec");
+        assert_eq!(spec.theme().material_style, MaterialStyle::LiquidGlass);
+        let high = ThemeSpec {
+            derive: Some(DeriveSpec {
+                base_hue: 250.0,
+                base_chroma: 1.0,
+                accent_hue: 150.0,
+                contrast: crate::Contrast::High,
+            }),
+            mode: Mode::Dark,
+            accent_hue: None,
+            duotone: None,
+            material_style: MaterialStyle::Solid,
+        };
+        assert!(
+            high.theme().reduce_transparency,
+            "high contrast reduces transparency"
+        );
+        assert!(
+            MaterialStyle::LiquidGlass.bars_overlay_content()
+                && MaterialStyle::LiquidGlass.floating_dock()
+        );
+        assert!(
+            MaterialStyle::Acrylic.bars_overlay_content()
+                && !MaterialStyle::Acrylic.floating_dock()
+        );
+        assert!(
+            !MaterialStyle::Tonal.bars_overlay_content()
+                && !MaterialStyle::Solid.bars_overlay_content()
+        );
+        assert_eq!(MaterialStyle::ALL.len(), 4);
+    }
     use super::*;
     use crate::style::{Border, CornerRadius, Edges, Paint};
     use crate::tokens::{R_FULL, R_LG, R_MD, R_XL, SP1, ShadowToken};

@@ -247,6 +247,14 @@ pub struct Theme {
     /// to `Shadowed` (no change to the stock look); set via
     /// [`Theme::with_elevation`].
     pub elevation: Elevation,
+    /// The named material style surfaces resolve in — solid (the default),
+    /// Liquid Glass, Acrylic or Tonal. See [`MaterialStyle`](crate::MaterialStyle)
+    /// and [`Theme::with_material_style`].
+    pub material_style: crate::MaterialStyle,
+    /// Every glass surface resolves opaque (the platforms' "reduce
+    /// transparency"), in any material style. Off by default; on for a
+    /// [`Contrast::High`] derived theme.
+    pub reduce_transparency: bool,
 
     /// Dynamic Type: a multiplier applied to every resolved font size (1.0 =
     /// stock). Clamped to a sane range at resolution. Set via
@@ -464,6 +472,8 @@ impl Theme {
             corner_smoothing: DEFAULT_CORNER_SMOOTHING,
             optical_sizing: OpticalSizing::Auto,
             elevation: Elevation::default(),
+            material_style: crate::MaterialStyle::Solid,
+            reduce_transparency: false,
             text_scale: 1.0,
             text_leading: 1.25,
             direction: WritingDir::default(),
@@ -508,6 +518,23 @@ impl Theme {
     #[must_use]
     pub fn with_elevation(mut self, elevation: Elevation) -> Self {
         self.elevation = elevation;
+        self
+    }
+
+    /// Returns this theme with its surfaces in a named material `style`:
+    /// every [`Surface`](crate::Surface) role — and so every kit component
+    /// built on one — takes that style's material, edge, radius and shadow.
+    #[must_use]
+    pub fn with_material_style(mut self, style: crate::MaterialStyle) -> Self {
+        self.material_style = style;
+        self
+    }
+
+    /// Returns this theme with every glass surface resolved opaque (`true`)
+    /// or as its material style has it (`false`).
+    #[must_use]
+    pub fn with_reduce_transparency(mut self, reduce: bool) -> Self {
+        self.reduce_transparency = reduce;
         self
     }
 
@@ -596,6 +623,9 @@ impl Theme {
             oklch(l, c * chroma_mult, hue)
         }));
         theme.apply_neutral_field(neutrals, hue, chroma_mult);
+        // Higher contrast also asks for opaque materials: the platforms pair
+        // "increase contrast" with "reduce transparency".
+        theme.reduce_transparency = contrast == Contrast::High;
         theme
     }
 
@@ -1132,6 +1162,9 @@ pub struct ThemeSpec {
     /// Three-input derivation (`Theme::derive`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derive: Option<DeriveSpec>,
+    /// The named material style (defaults to solid).
+    #[serde(default)]
+    pub material_style: crate::MaterialStyle,
 }
 
 /// The duotone parameters of a [`ThemeSpec`].
@@ -1164,6 +1197,11 @@ pub struct DeriveSpec {
 impl ThemeSpec {
     /// Resolves the recipe into a full [`Theme`].
     pub fn theme(&self) -> Theme {
+        self.palette().with_material_style(self.material_style)
+    }
+
+    /// The palette half of [`ThemeSpec::theme`].
+    fn palette(&self) -> Theme {
         if let Some(d) = &self.derive {
             return Theme::derive(
                 BaseField {
@@ -1591,6 +1629,7 @@ mod tests {
                 accent_hue: 40.0,
                 contrast: Contrast::High,
             }),
+            material_style: crate::MaterialStyle::default(),
         };
         let json = spec.to_json();
         let back = ThemeSpec::from_json(&json).expect("round-trip");
