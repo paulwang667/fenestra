@@ -12,7 +12,7 @@
 //! neither extra pass — the backdrop scene *is* the final image, byte-for-byte
 //! identical to the plain single-pass paint.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use kurbo::Rect;
 
@@ -92,15 +92,40 @@ pub(crate) enum PaintMode<'a> {
     /// The final pass: each filtered element draws its processed image (looked
     /// up by id) — a glass pane composites its blurred backdrop under the tint;
     /// a foreground-filtered element draws its filtered content in place.
-    Final(&'a HashMap<WidgetId, peniko::ImageData>),
+    /// The second map, when given, names the glass panes whose injected
+    /// image already holds their body (a backend composited it).
+    Final(
+        &'a HashMap<WidgetId, peniko::ImageData>,
+        Option<&'a HashSet<WidgetId>>,
+    ),
+}
+
+/// What a backend needs to composite a glass pane's body itself — the part
+/// [`Frame::paint_final_into`](crate::Frame::paint_final_into) bakes on the
+/// CPU over the frosted backdrop (see [`crate::glass`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlassBody {
+    /// The pane's logical rect (the sheen's geometry is laid over it).
+    pub rect: Rect,
+    /// The solid fill; `None` when the fill is absent or not solid.
+    pub tint: Option<peniko::Color>,
+    /// The light-direction wash over the body.
+    pub sheen: Option<crate::style::Sheen>,
+    /// How the tint shifts with the backdrop's mean luminance.
+    pub adaptive: Option<crate::style::AdaptiveTint>,
 }
 
 impl<'a> PaintMode<'a> {
     /// The processed image for `id` in the final pass, if one was produced
     /// (None in every other mode, or when the region was clamped away).
+    /// Whether the injected image of `id` already holds its glass body.
+    pub(crate) fn baked(&self, id: WidgetId) -> bool {
+        matches!(self, PaintMode::Final(_, Some(baked)) if baked.contains(&id))
+    }
+
     pub(crate) fn injected(&self, id: WidgetId) -> Option<&'a peniko::ImageData> {
         match self {
-            PaintMode::Final(images) => {
+            PaintMode::Final(images, _) => {
                 // Copy the `&'a HashMap` out so the looked-up reference carries
                 // the map's lifetime, not this short `&self` borrow.
                 let images: &'a HashMap<WidgetId, peniko::ImageData> = images;

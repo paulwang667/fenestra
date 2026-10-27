@@ -239,6 +239,8 @@ pub(crate) mod recorder {
         PopLayer,
         Image {
             transform: Affine,
+            /// The drawn image's blob id.
+            id: u64,
         },
         Shadow {
             transform: Affine,
@@ -259,7 +261,7 @@ pub(crate) mod recorder {
                 | Op::Stroke { transform, .. }
                 | Op::PushLayer { transform, .. }
                 | Op::PushClip { transform }
-                | Op::Image { transform }
+                | Op::Image { transform, .. }
                 | Op::Shadow { transform }
                 | Op::Glyphs { transform, .. } => Some(*transform),
                 Op::PopLayer => None,
@@ -331,9 +333,12 @@ pub(crate) mod recorder {
             self.ops.push(Op::PopLayer);
         }
 
-        fn draw_image(&mut self, _image: &ImageData, transform: Affine) {
+        fn draw_image(&mut self, image: &ImageData, transform: Affine) {
             let transform = self.current() * transform;
-            self.ops.push(Op::Image { transform });
+            self.ops.push(Op::Image {
+                transform,
+                id: image.data.id(),
+            });
         }
 
         fn draw_blurred_rounded_rect(

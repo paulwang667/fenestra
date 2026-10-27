@@ -65,7 +65,7 @@ pub use i18n::{Catalog, DateOrder, Locale, PluralCategory};
 pub use id::WidgetId;
 pub use menu::{MenuDesc, MenuItemDesc, MenuSpec};
 pub use nav::Nav;
-pub use paint_plan::{MultiPassSpec, PassKind};
+pub use paint_plan::{GlassBody, MultiPassSpec, PassKind};
 pub use proxy::Proxy;
 pub use query::{Query, QueryError, TextMatch, by};
 pub use style::*;

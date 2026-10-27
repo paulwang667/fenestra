@@ -2302,7 +2302,44 @@ impl Frame {
         state: &mut FrameState,
         injected: &std::collections::HashMap<WidgetId, peniko::ImageData>,
     ) {
-        self.paint_walk(target, fonts, state, &mut PaintMode::Final(injected));
+        self.paint_walk(target, fonts, state, &mut PaintMode::Final(injected, None));
+    }
+
+    /// [`paint_final_into`](Self::paint_final_into), except that the glass
+    /// panes in `baked` already hold their body (tint, sheen, adaptive tint)
+    /// in their injected image — a backend composited it — so the image is
+    /// drawn as it is, and the box loses the fill, sheen and adaptive tint as
+    /// it does for a pane baked here.
+    pub fn paint_final_baked_into<T: DrawTarget>(
+        &self,
+        target: &mut T,
+        fonts: &mut Fonts,
+        state: &mut FrameState,
+        injected: &std::collections::HashMap<WidgetId, peniko::ImageData>,
+        baked: &std::collections::HashSet<WidgetId>,
+    ) {
+        self.paint_walk(
+            target,
+            fonts,
+            state,
+            &mut PaintMode::Final(injected, Some(baked)),
+        );
+    }
+
+    /// The body of the glass pane `id` — what a backend needs to composite it
+    /// itself — or `None` when `id` is not a glass pane in this frame.
+    pub fn glass_body(&self, id: WidgetId) -> Option<crate::GlassBody> {
+        let node = self.frame_node(id)?;
+        node.style.backdrop_blur?;
+        Some(crate::GlassBody {
+            rect: node.rect,
+            tint: match node.style.fill {
+                Some(Paint::Solid(c)) => Some(c),
+                _ => None,
+            },
+            sheen: node.style.sheen,
+            adaptive: node.style.adaptive_tint,
+        })
     }
 
     /// The frame's device scale factor (logical → physical). The shell uses it
@@ -2629,10 +2666,14 @@ impl Frame {
         // the fill about to go over it. Shifting the *tint* is the right model
         // and compressing the backdrop was not — the picture stays honest and
         // the pane moves, which is what keeps glass transparent.
+        // A backend that composited the body itself (the raster backend's GPU
+        // glass) hands in the finished image: nothing here to adapt or bake.
+        let prebaked = backdrop.is_some() && mode.baked(node.id);
         let adapted = node
             .style
             .adaptive_tint
             .zip(backdrop)
+            .filter(|_| !prebaked)
             .and_then(|(tint, image)| adapt_fill(&node.style, tint, image));
         let style = adapted.as_ref().unwrap_or(&node.style);
         // **The body is baked, not painted.** vello would round the tint and
@@ -2649,7 +2690,11 @@ impl Frame {
             // Vibrancy is already in the image: the shell applied it while
             // blurring (`PassKind::BackdropBlur::saturation`), on a field a
             // fraction of this size.
-            let body = bake_cached(state, node.id, image, node.rect, tint, style.sheen.as_ref());
+            let body = if prebaked {
+                image.clone()
+            } else {
+                bake_cached(state, node.id, image, node.rect, tint, style.sheen.as_ref())
+            };
             let mut rest = style.clone();
             if tint.is_some() {
                 rest.fill = None;
@@ -3831,6 +3876,94 @@ mod tests {
             assert_eq!(scroll.offset_y, 50.0, "hidden={hidden}");
             assert_eq!(scroll.thumb_v.is_some(), !hidden, "hidden={hidden}");
         }
+    }
+
+    /// A glass pane (blur, solid tint, sheen, adaptive tint) beside a plain box.
+    fn glass_and_plain() -> (
+        crate::element::Element<()>,
+        crate::Color,
+        crate::style::Sheen,
+    ) {
+        use crate::element::col;
+        let tint = crate::theme::oklch(0.35, 0.01, 250.0).with_alpha(0.72);
+        let sheen = crate::style::Sheen {
+            light_deg: 180.0,
+            top: 0.12,
+            bottom: 0.06,
+        };
+        let root = crate::row().children([
+            col()
+                .id("pane")
+                .w(120.0)
+                .h(80.0)
+                .backdrop_blur(16.0)
+                .bg(tint)
+                .sheen(sheen)
+                .adaptive_tint(crate::style::AdaptiveTint::glass()),
+            col().id("plain").w(120.0).h(80.0).bg(crate::Color::WHITE),
+        ]);
+        (root, tint, sheen)
+    }
+
+    #[test]
+    fn glass_body_reports_the_pane_and_nothing_else() {
+        let (root, tint, sheen) = glass_and_plain();
+        let frame = test_frame(&root, (240.0, 80.0));
+        let pane = frame.get(&crate::query::by::id("pane"));
+        let plain = frame.get(&crate::query::by::id("plain")).id;
+        assert_eq!(
+            frame.glass_body(pane.id),
+            Some(crate::GlassBody {
+                rect: pane.rect,
+                tint: Some(tint),
+                sheen: Some(sheen),
+                adaptive: Some(crate::style::AdaptiveTint::glass()),
+            })
+        );
+        assert_eq!(frame.glass_body(plain), None);
+    }
+
+    /// A pane in `baked` draws its injected image as it is; through
+    /// `paint_final_into` the same image is baked on the CPU into a new one.
+    #[test]
+    fn a_baked_pane_draws_its_image_as_it_is() {
+        use crate::draw::recorder::{Op, Recorder};
+        let (root, _, _) = glass_and_plain();
+        let theme = Theme::light();
+        let mut fonts = Fonts::embedded();
+        let mut state = FrameState::new();
+        let frame = build_frame(&root, &theme, &mut fonts, &mut state, (240.0, 80.0), 1.0);
+        let pane = frame.get(&crate::query::by::id("pane")).id;
+        let image = peniko::ImageData {
+            data: vec![90u8; 120 * 80 * 4].into(),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: 120,
+            height: 80,
+        };
+        let injected = HashMap::from([(pane, image.clone())]);
+        let drawn = |r: &Recorder| -> Vec<u64> {
+            r.ops
+                .iter()
+                .filter_map(|o| match o {
+                    Op::Image { id, .. } => Some(*id),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut baked = Recorder::default();
+        let set = std::collections::HashSet::from([pane]);
+        frame.paint_final_baked_into(&mut baked, &mut fonts, &mut state, &injected, &set);
+        assert_eq!(drawn(&baked), vec![image.data.id()]);
+        let mut cpu = Recorder::default();
+        frame.paint_final_into(&mut cpu, &mut fonts, &mut state, &injected);
+        let cpu_ids = drawn(&cpu);
+        assert_eq!(cpu_ids.len(), 1);
+        assert_ne!(
+            cpu_ids[0],
+            image.data.id(),
+            "the CPU path bakes a new image"
+        );
     }
 
     fn test_frame(root: &crate::element::Element<()>, size: (f32, f32)) -> Frame {
