@@ -113,6 +113,8 @@ pub struct GlassBody {
     pub sheen: Option<crate::style::Sheen>,
     /// How the tint shifts with the backdrop's mean luminance.
     pub adaptive: Option<crate::style::AdaptiveTint>,
+    /// Grain over the body ([`Style::glass_noise`](crate::Style::glass_noise)).
+    pub noise: f32,
 }
 
 impl<'a> PaintMode<'a> {

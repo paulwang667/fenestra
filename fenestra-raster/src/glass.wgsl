@@ -16,6 +16,8 @@ struct Params {
     // Where this pane sits: its output region's origin (the pane's (0, 0)),
     // and its low field's origin in the low atlases.
     o: vec4<i32>,
+    // h.x: the body's grain amplitude.
+    h: vec4<f32>,
     // The blur kernel's weights for offsets 0, 1, … (symmetric).
     w: array<vec4<f32>, 64>,
 }
@@ -76,6 +78,12 @@ fn dither_noise(x: u32, y: u32) -> f32 {
     let a = hash((x * 0x9E3779B9u) ^ (y * 0x85EBCA6Bu));
     let b = hash(a ^ 0xC2B2AE35u);
     return unit(a) + unit(b) - 1.0;
+}
+
+// glass.rs `glass_grain`: uniform on (-1, 1), a hash independent of the
+// dither's.
+fn glass_grain(x: u32, y: u32) -> f32 {
+    return unit(hash((x * 0x27D4EB2Du) ^ (y * 0x165667B1u) ^ 0x5BD1E995u)) * 2.0 - 1.0;
 }
 
 fn dither_to_unit(v: f32, n: f32) -> f32 {
@@ -310,7 +318,7 @@ fn field(q: vec2<f32>) -> vec4<f32> {
 //    with dither, premultiplied. The dither is keyed by pane pixel with a
 //    body (as the final pass bakes it) and by crop pixel without (as the blur
 //    quantizes). a = (pane w, pane h, origin in crop px); b = (f, low w,
-//    low h, flags: 1 lensed, 2 body, 4 tint, 8 sheen); f = (corner radius,
+//    low h, flags: 1 lensed, 2 body, 4 tint, 8 sheen, 16 grain); f = (corner radius,
 //    band, sheen origin, sheen step x); g = (sheen step y, top, bottom, tint
 //    texel). The region is the pane with a one-pixel border of its edge
 //    pixels, so a filtered draw of it never reaches a neighbour.
@@ -357,6 +365,9 @@ fn fs_compose(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
                 black = p.g.z * (t - 0.55) / 0.45;
             }
             rgb = rgb * (1.0 - white - black) + vec3<f32>(white);
+        }
+        if (flags & 16) != 0 {
+            rgb += vec3<f32>(p.h.x * glass_grain(u32(at.x), u32(at.y)));
         }
     }
     let n = dither_noise(u32(key.x), u32(key.y));

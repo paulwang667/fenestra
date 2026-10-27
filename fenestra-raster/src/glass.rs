@@ -304,6 +304,7 @@ struct Params {
     f: [f32; 4],
     g: [f32; 4],
     o: [i32; 4],
+    h: [f32; 4],
     w: [[f32; 4]; 64],
 }
 
@@ -317,6 +318,7 @@ impl Params {
             f,
             g,
             o,
+            h: [0.0; 4],
             w: [[0.0; 4]; 64],
         }
     }
@@ -720,10 +722,12 @@ impl GpuGlass {
                     .as_ref()
                     .map(|s| fenestra_core::glass::sheen_line(s, b.rect, w, h))
             });
+            let noise = body.map_or(0.0, |b| b.noise);
             let flags = i32::from(lensed)
                 | i32::from(body.is_some()) << 1
                 | i32::from(job.tint_at.is_some()) << 2
-                | i32::from(sheen.is_some()) << 3;
+                | i32::from(sheen.is_some()) << 3
+                | i32::from(noise > 0.0) << 4;
             let (sheen_origin, step, top, bottom) = sheen.unwrap_or_default();
             #[expect(clippy::cast_possible_truncation, reason = "gradient coordinates")]
             let line = [sheen_origin as f32, step.0 as f32, step.1 as f32];
@@ -732,13 +736,16 @@ impl GpuGlass {
             let (rx, ry) = job.result_at;
             push(
                 4,
-                Params::new(
-                    [i(w), i(h), job.origin[0], job.origin[1]],
-                    [fi, i(job.low.0), i(job.low.1), flags],
-                    [pane.corner_radius, pane.edge_band, line[0], line[1]],
-                    [line[2], top, bottom, slot],
-                    [i(rx) + 1, i(ry) + 1, low_o[0], low_o[1]],
-                ),
+                Params {
+                    h: [noise, 0.0, 0.0, 0.0],
+                    ..Params::new(
+                        [i(w), i(h), job.origin[0], job.origin[1]],
+                        [fi, i(job.low.0), i(job.low.1), flags],
+                        [pane.corner_radius, pane.edge_band, line[0], line[1]],
+                        [line[2], top, bottom, slot],
+                        [i(rx) + 1, i(ry) + 1, low_o[0], low_o[1]],
+                    )
+                },
                 [rx, ry, w + 2, h + 2],
                 false,
             );

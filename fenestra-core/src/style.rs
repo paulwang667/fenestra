@@ -1015,6 +1015,10 @@ pub struct Style {
     /// composited backdrop image). `None` (the default) keeps a fixed tint, so
     /// non-glass elements stay byte-identical. See [`AdaptiveTint`].
     pub adaptive_tint: Option<AdaptiveTint>,
+    /// Grain over a glass pane's body, `0.0..=1.0` of full scale (`0.0`, the
+    /// default, none; Fluent acrylic's texture is `0.02`). See
+    /// [`Style::glass_noise`].
+    pub glass_noise: f32,
     /// Opacity 0.0..=1.0 applied to the whole subtree.
     pub opacity: f32,
     /// Uniform scale applied at paint time about the element's center
@@ -1126,6 +1130,7 @@ impl Default for Style {
             highlight_top: None,
             specular_edge: None,
             sheen: None,
+            glass_noise: 0.0,
             adaptive_tint: None,
             opacity: 1.0,
             scale: 1.0,
@@ -1896,6 +1901,14 @@ impl Style {
     /// translucent pane read as lit glass. See [`Sheen`] (and [`Sheen::glass`]).
     pub fn sheen(mut self, sheen: Sheen) -> Self {
         self.sheen = Some(sheen);
+        self
+    }
+
+    /// Fine monochrome grain over a glass pane's body, `amount` of full scale
+    /// (`0.02` is Fluent acrylic's texture) — fixed per pixel, so it reads as
+    /// a frosted surface, not as noise. Only glass (`backdrop_blur`) uses it.
+    pub fn glass_noise(mut self, amount: f32) -> Self {
+        self.glass_noise = amount.clamp(0.0, 1.0);
         self
     }
 

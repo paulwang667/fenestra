@@ -2251,6 +2251,13 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Fine monochrome grain over this glass pane's body (`0.02` is Fluent
+    /// acrylic's texture). See [`Style::glass_noise`](crate::Style::glass_noise).
+    pub fn glass_noise(mut self, amount: f32) -> Self {
+        self.style = self.style.glass_noise(amount);
+        self
+    }
+
     /// Backdrop-adaptive vibrancy — shift the glass tint's lightness by the mean
     /// luminance of the frosted backdrop behind it (headless-only). See
     /// [`AdaptiveTint`](crate::AdaptiveTint) (and [`AdaptiveTint::glass`]).

@@ -2142,6 +2142,7 @@ fn bake_cached(
     rect: Rect,
     tint: Option<crate::Color>,
     sheen: Option<&crate::style::Sheen>,
+    noise: f32,
 ) -> peniko::ImageData {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -2153,6 +2154,7 @@ fn bake_cached(
     sheen
         .map(|s| [s.light_deg, s.top, s.bottom].map(f32::to_bits))
         .hash(&mut h);
+    noise.to_bits().hash(&mut h);
     let key = h.finish();
     let now = state.frame_no;
     let fresh = |bake: &crate::frame_state::GlassBake| peniko::ImageData {
@@ -2165,7 +2167,7 @@ fn bake_cached(
         bake.used = now;
         return fresh(bake);
     }
-    let body = crate::glass::bake_body(image, rect, tint, sheen, 1.0);
+    let body = crate::glass::bake_body_noisy(image, rect, tint, sheen, 1.0, noise);
     let bake = crate::frame_state::GlassBake {
         key,
         used: now,
@@ -2351,6 +2353,7 @@ impl Frame {
             },
             sheen: node.style.sheen,
             adaptive: node.style.adaptive_tint,
+            noise: node.style.glass_noise,
         })
     }
 
@@ -2705,7 +2708,15 @@ impl Frame {
             let body = if prebaked {
                 image.clone()
             } else {
-                bake_cached(state, node.id, image, node.rect, tint, style.sheen.as_ref())
+                bake_cached(
+                    state,
+                    node.id,
+                    image,
+                    node.rect,
+                    tint,
+                    style.sheen.as_ref(),
+                    style.glass_noise,
+                )
             };
             let mut rest = style.clone();
             if tint.is_some() {
@@ -3930,6 +3941,7 @@ mod tests {
                 tint: Some(tint),
                 sheen: Some(sheen),
                 adaptive: Some(crate::style::AdaptiveTint::glass()),
+                noise: 0.0,
             })
         );
         assert_eq!(frame.glass_body(plain), None);

@@ -367,7 +367,36 @@ const SECONDARY_TEXT_MIN: f64 = 55.0;
 const CONTROL_LABEL_MIN: f64 = 60.0;
 const COMPONENT_TEXT_MIN: f64 = 40.0;
 
+/// How much a label on glass stands out — Apple's vibrancy levels: the
+/// default for body text, secondary for descriptions and subtitles, tertiary
+/// for what is inactive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Vibrancy {
+    Primary,
+    Secondary,
+    Tertiary,
+}
+
 impl Theme {
+    /// A label colour for text on glass at `level`: the mode's ink (white in
+    /// dark, black in light), translucent so the colour behind the glass
+    /// carries into the text — it stays legible over any backdrop the glass
+    /// frosts, where a fixed grey reads too dark on one and too faint on
+    /// another.
+    #[must_use]
+    pub fn vibrant_label(&self, level: Vibrancy) -> Color {
+        let (ink, alphas) = match self.mode {
+            Mode::Dark => (1.0, [0.92, 0.62, 0.38]),
+            Mode::Light => (0.0, [0.86, 0.56, 0.34]),
+        };
+        let a = match level {
+            Vibrancy::Primary => alphas[0],
+            Vibrancy::Secondary => alphas[1],
+            Vibrancy::Tertiary => alphas[2],
+        };
+        Color::new([ink, ink, ink, a])
+    }
+
     /// Generates every token from one accent hue (OKLCH degrees).
     /// The default fenestra accent is hue 262 (violet-blue).
     pub fn from_accent(hue_deg: f32, mode: Mode) -> Self {
@@ -1179,6 +1208,22 @@ impl ThemeSpec {
 
 #[cfg(test)]
 mod tests {
+
+    /// Text on glass: the mode's ink, translucent so the backdrop's colour
+    /// shows through it, less so at each lower level.
+    #[test]
+    fn vibrant_labels_fade_by_level_in_the_mode_s_ink() {
+        use crate::Vibrancy::{Primary, Secondary, Tertiary};
+        for (theme, ink) in [(Theme::dark(), 1.0), (Theme::light(), 0.0)] {
+            let alphas = [Primary, Secondary, Tertiary].map(|l| {
+                let [r, g, b, a] = theme.vibrant_label(l).components;
+                assert_eq!([r, g, b], [ink; 3], "{:?} ink", theme.mode);
+                a
+            });
+            assert!(alphas[0] > alphas[1] && alphas[1] > alphas[2], "{alphas:?}");
+            assert!(alphas[0] >= 0.85 && alphas[2] >= 0.3, "{alphas:?}");
+        }
+    }
     use super::*;
 
     /// OKLCH lightness of a resolved color (for ordering assertions).

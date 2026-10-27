@@ -75,7 +75,7 @@ pub use surface::{Material, Surface, SurfaceBorder, SurfaceBundle, SurfaceFill, 
 pub use text::Fonts;
 pub use theme::{
     BaseField, Contrast, ContrastViolation, DEFAULT_CORNER_SMOOTHING, DeriveSpec, DuotoneSpec,
-    Mode, Ramp, StatusColors, Theme, ThemeSpec, WritingDir, oklch, oklch_of,
+    Mode, Ramp, StatusColors, Theme, ThemeSpec, Vibrancy, WritingDir, oklch, oklch_of,
 };
 pub use tokens::*;
 

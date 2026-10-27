@@ -101,6 +101,7 @@ fn unit(v: u32) -> f32 {
 /// that is what it restores. Tint and sheen composite source-over in sRGB, the
 /// space vello blends in, so a fill alpha tuned against the old path keeps its
 /// meaning.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn bake_body(
     backdrop: &peniko::ImageData,
@@ -108,6 +109,22 @@ pub(crate) fn bake_body(
     tint: Option<Color>,
     sheen: Option<&Sheen>,
     saturation: f32,
+) -> peniko::ImageData {
+    bake_body_noisy(backdrop, rect, tint, sheen, saturation, 0.0)
+}
+
+/// The body composite above (vibrancy, tint, sheen), then `noise`:
+/// monochrome grain of that amplitude (sRGB, `0.02` is Fluent acrylic's 2%)
+/// laid over the body before it is quantized — [`glass_grain`] per pixel,
+/// so it is fixed, not shimmering.
+#[must_use]
+pub(crate) fn bake_body_noisy(
+    backdrop: &peniko::ImageData,
+    rect: Rect,
+    tint: Option<Color>,
+    sheen: Option<&Sheen>,
+    saturation: f32,
+    noise: f32,
 ) -> peniko::ImageData {
     let (w, h) = (backdrop.width, backdrop.height);
     let src = backdrop.data.as_ref();
@@ -150,6 +167,12 @@ pub(crate) fn bake_body(
                     *c = *c * (1.0 - white - black) + white;
                 }
             }
+            if noise > 0.0 {
+                let g = noise * glass_grain(x, y);
+                for c in &mut rgb {
+                    *c += g;
+                }
+            }
             let n = dither_noise(x, y);
             out.extend(rgb.map(|c| dither_to_u8(c, n)));
             out.push(px[3]);
@@ -164,9 +187,9 @@ pub(crate) fn bake_body(
     }
 }
 
-/// [`bake_body`] without vibrancy (the shell applies it while blurring), as
-/// the final pass calls it. (Public, hidden, as the reference the raster
-/// backend's GPU glass is tested against.)
+/// [`bake_body`] without vibrancy (the shell applies it while blurring),
+/// with `noise`, as the final pass calls it. (Public, hidden, as the
+/// reference the raster backend's GPU glass is tested against.)
 #[doc(hidden)]
 #[must_use]
 pub fn bake_glass_body(
@@ -174,8 +197,19 @@ pub fn bake_glass_body(
     rect: Rect,
     tint: Option<Color>,
     sheen: Option<&Sheen>,
+    noise: f32,
 ) -> peniko::ImageData {
-    bake_body(backdrop, rect, tint, sheen, 1.0)
+    bake_body_noisy(backdrop, rect, tint, sheen, 1.0, noise)
+}
+
+/// The glass grain at pixel `(x, y)`, uniform on `-1.0..1.0`: a hash of
+/// the position independent of [`dither_noise`]'s. (Public, hidden: the
+/// raster backend's GPU glass lays the same grain.)
+#[doc(hidden)]
+#[must_use]
+pub fn glass_grain(x: u32, y: u32) -> f32 {
+    let v = hash(x.wrapping_mul(0x27D4_EB2D) ^ y.wrapping_mul(0x1656_67B1) ^ 0x5BD1_E995);
+    unit(v) * 2.0 - 1.0
 }
 
 /// The sheen's gradient for a `w`×`h` image of the pane `rect`: `t` at pixel
@@ -236,6 +270,39 @@ impl SheenLine {
 
 #[cfg(test)]
 mod tests {
+
+    /// Noise (Fluent's acrylic texture) is monochrome grain within its
+    /// amplitude around the body, fixed per pixel, keeping the mean.
+    #[test]
+    fn body_noise_is_bounded_grain_keeping_the_mean() {
+        let flat = peniko::ImageData {
+            data: peniko::Blob::new(std::sync::Arc::new(vec![128u8; 64 * 64 * 4])),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: 64,
+            height: 64,
+        };
+        let rect = Rect::new(0.0, 0.0, 64.0, 64.0);
+        let plain = bake_glass_body(&flat, rect, None, None, 0.0);
+        let grainy = bake_glass_body(&flat, rect, None, None, 0.04);
+        let again = bake_glass_body(&flat, rect, None, None, 0.04);
+        assert_eq!(grainy.data.as_ref(), again.data.as_ref(), "fixed per pixel");
+        let (mut sum, mut moved) = (0i64, 0);
+        for (p, g) in plain
+            .data
+            .as_ref()
+            .chunks(4)
+            .zip(grainy.data.as_ref().chunks(4))
+        {
+            let d: Vec<i32> = (0..3).map(|c| i32::from(g[c]) - i32::from(p[c])).collect();
+            assert!(d[0] == d[1] && d[1] == d[2], "monochrome");
+            assert!(d[0].abs() <= 12, "within 0.04 of 255 (+ dither): {}", d[0]);
+            sum += i64::from(d[0]);
+            moved += i32::from(d[0] != 0);
+        }
+        assert!(moved > 64 * 64 / 2, "most pixels move");
+        assert!(sum.abs() < 64 * 64 / 4, "the mean holds: {sum}");
+    }
     use super::*;
 
     fn flat(v: [u8; 3], w: u32, h: u32) -> peniko::ImageData {

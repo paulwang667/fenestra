@@ -290,6 +290,7 @@ fn bodied(
             tint: Some(tint),
             sheen,
             adaptive,
+            noise: 0.0,
         }),
         ..pane(rect, 8.0, 1.0)
     }
@@ -309,6 +310,7 @@ fn cpu_body(img: &RgbaImage, p: &GlassPane) -> RgbaImage {
         body.rect,
         tint,
         body.sheen.as_ref(),
+        body.noise,
     ))
 }
 
@@ -504,4 +506,18 @@ fn vello_glass_follows_the_window_to_another_device() {
     );
     assert_eq!(out.len(), 1, "composited on the new device");
     assert_eq!(glass.registered(), 1, "and registered only there");
+}
+
+/// The body's noise (Fluent's acrylic grain) is the CPU bake's, pixel for
+/// pixel.
+#[test]
+fn the_body_noise_matches_the_cpu_bake() {
+    let img = backdrop(320, 240);
+    let tint = fenestra_core::oklch(0.35, 0.01, 250.0).with_alpha(0.72);
+    let mut p = bodied((60, 40, 200, 160), tint, None, None);
+    if let Some(body) = p.body.as_mut() {
+        body.noise = 0.04;
+    }
+    let gpu = gpu(&mut headless(), &img, &[p]).expect("a result");
+    assert_close(&gpu, &cpu_body(&img, &p), "noise");
 }
