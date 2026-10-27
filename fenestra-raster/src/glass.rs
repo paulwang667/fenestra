@@ -135,6 +135,7 @@ struct Pipes {
     linearize: wgpu::RenderPipeline,
     boxp: wgpu::RenderPipeline,
     upsample: wgpu::RenderPipeline,
+    refract: wgpu::RenderPipeline,
     quantize: wgpu::RenderPipeline,
 }
 
@@ -205,6 +206,7 @@ impl Pipes {
             linearize: pipe("fs_linearize", FIELD),
             boxp: pipe("fs_box", FIELD),
             upsample: pipe("fs_upsample", FIELD),
+            refract: pipe("fs_refract", FIELD),
             quantize: pipe("fs_quantize", RESULT),
             layout,
         }
@@ -218,6 +220,8 @@ struct PaneTextures {
     low_a: wgpu::Texture,
     low_b: wgpu::Texture,
     field: wgpu::Texture,
+    /// The refracted field (lensed panes only).
+    refracted: wgpu::Texture,
     result: wgpu::Texture,
     placeholder: ImageData,
     last_used: u64,
@@ -327,7 +331,7 @@ impl Glass {
                 .get(&pane.id)
                 .is_none_or(|t| t.size != (w, h) || t.low != low);
             if stale {
-                stats.textures_created += 4;
+                stats.textures_created += 5;
                 self.panes.insert(
                     pane.id,
                     PaneTextures {
@@ -336,6 +340,7 @@ impl Glass {
                         low_a: texture(device, low, FIELD, wgpu::TextureUsages::empty()),
                         low_b: texture(device, low, FIELD, wgpu::TextureUsages::empty()),
                         field: texture(device, (w, h), FIELD, wgpu::TextureUsages::empty()),
+                        refracted: texture(device, (w, h), FIELD, wgpu::TextureUsages::empty()),
                         result: texture(device, (w, h), RESULT, wgpu::TextureUsages::COPY_SRC),
                         placeholder: crate::texture_placeholder(w, h),
                         last_used: frame,
@@ -347,6 +352,7 @@ impl Glass {
             let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
             let (low_a, low_b) = (view(&tex.low_a), view(&tex.low_b));
             let field = view(&tex.field);
+            let refracted = view(&tex.refracted);
             let result = view(&tex.result);
             let origin = [x - cx0, y - cy0];
             let mut pass = |pipeline: &wgpu::RenderPipeline,
@@ -430,6 +436,21 @@ impl Glass {
                 &low_a,
                 &field,
             );
+            // Bend the rim — only for a pane wholly on screen (a clamped one
+            // would lens its cut edge) and big enough to have a rim.
+            let lensed = pane.lensed && w >= 4 && h >= 4;
+            if lensed {
+                pass(
+                    &pipes.refract,
+                    Params {
+                        a: [i(w), i(h), 0, 0],
+                        b: [0; 4],
+                        f: [pane.corner_radius, pane.edge_band, 0.0, 0.0],
+                    },
+                    &field,
+                    &refracted,
+                );
+            }
             pass(
                 &pipes.quantize,
                 Params {
@@ -437,7 +458,7 @@ impl Glass {
                     b: [0; 4],
                     f: [0.0; 4],
                 },
-                &field,
+                if lensed { &refracted } else { &field },
                 &result,
             );
             stats.panes += 1;

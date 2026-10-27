@@ -140,3 +140,65 @@ fn fs_quantize(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let rgb = vec3<f32>(dither_to_unit(v.r, n), dither_to_unit(v.g, n), dither_to_unit(v.b, n));
     return vec4<f32>(rgb * a, a);
 }
+
+// Edge-clamped bilinear sample at fractional pixel-centre coordinates of a
+// w×h field (blur.rs `bilinear`).
+fn bilinear(s: vec2<f32>, size: vec2<i32>) -> vec4<f32> {
+    let last = vec2<f32>(size - vec2<i32>(1));
+    let fxy = clamp(s - vec2<f32>(0.5), vec2<f32>(0.0), last);
+    let i0 = vec2<i32>(floor(fxy));
+    let t = fxy - floor(fxy);
+    let i1 = min(i0 + vec2<i32>(1), size - vec2<i32>(1));
+    let top = mix(textureLoad(src, i0, 0), textureLoad(src, vec2<i32>(i1.x, i0.y), 0), t.x);
+    let bot = mix(textureLoad(src, vec2<i32>(i0.x, i1.y), 0), textureLoad(src, i1, 0), t.x);
+    return mix(top, bot, t.y);
+}
+
+fn sign_of(v: f32) -> f32 {
+    return select(1.0, -1.0, v < 0.0);
+}
+
+// The outward unit normal of the rounded-box SDF (blur.rs `sdf_normal`).
+fn sdf_normal(r: vec2<f32>, e: vec2<f32>) -> vec2<f32> {
+    let s = vec2<f32>(sign_of(r.x), sign_of(r.y));
+    let d = abs(r) - e;
+    if d.x > 0.0 && d.y > 0.0 {
+        let len = max(length(d), 1e-6);
+        return s * d / len;
+    }
+    if d.x >= d.y {
+        return vec2<f32>(s.x, 0.0);
+    }
+    return vec2<f32>(0.0, s.y);
+}
+
+// 5. Edge refraction (blur.rs `refract_edges`): within the bevel band along
+//    the rounded-rect outline, resample from further inside along the inward
+//    normal, the three channels at slightly different depths (dispersion).
+//    a.xy = pane size; f = (corner radius, band) in px.
+@fragment
+fn fs_refract(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let size = p.a.xy;
+    let at = vec2<i32>(pos.xy);
+    let whf = vec2<f32>(size);
+    let half = whf * 0.5;
+    let r = clamp(p.f.x, 0.0, min(half.x, half.y));
+    let band = min(max(p.f.y, 1.0), min(half.x, half.y));
+    let max_disp = band * 0.55;
+    let e = half - vec2<f32>(r);
+    let px = vec2<f32>(at) + vec2<f32>(0.5);
+    let rel = px - half;
+    let q = abs(rel) - e;
+    let outside = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
+    let d = -outside;
+    if !(d > 0.0 && d < band) {
+        return textureLoad(src, at, 0);
+    }
+    let n = sdf_normal(rel, e);
+    let t = d / band;
+    let disp = max_disp * (1.0 - t) * (1.0 - t);
+    let rp = bilinear(px - n * disp * 0.94, size);
+    let gp = bilinear(px - n * disp, size);
+    let bp = bilinear(px - n * disp * 1.06, size);
+    return vec4<f32>(rp.r, gp.g, bp.b, gp.a);
+}

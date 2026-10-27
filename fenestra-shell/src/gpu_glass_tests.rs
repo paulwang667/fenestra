@@ -182,3 +182,46 @@ fn a_pane_that_resizes_or_goes_away_keeps_no_stale_texture() {
         "a pane gone for good is dropped"
     );
 }
+
+/// A lensed pane: the CPU's refraction over its blur.
+fn lensed(rect: (i32, i32, u32, u32), std_dev: f32) -> GlassPane {
+    GlassPane {
+        corner_radius: 24.0,
+        edge_band: 14.0,
+        lensed: true,
+        ..pane(rect, std_dev, 1.0)
+    }
+}
+
+/// The 14 px band just inside the pane's edge (where refraction moves things).
+fn band(img: &RgbaImage) -> RgbaImage {
+    let (w, h) = img.dimensions();
+    RgbaImage::from_fn(w, h, |x, y| {
+        let edge = x.min(y).min(w - 1 - x).min(h - 1 - y);
+        if edge < 14 { *img.get_pixel(x, y) } else { image::Rgba([0, 0, 0, 0]) }
+    })
+}
+
+#[test]
+fn refraction_matches_the_cpu() {
+    let img = backdrop(320, 240);
+    let p = lensed((60, 60, 200, 120), 1.5);
+    let reference = crate::blur::refract_edges(&cpu_blur(&img, &p), 24.0, 14.0);
+    let gpu = gpu(&mut headless(), &img, &[p]).expect("a result");
+    assert_close(&gpu, &reference, "refracted pane");
+    assert_close(&band(&gpu), &band(&reference), "the refracted band");
+}
+
+#[test]
+fn an_unlensed_pane_is_not_refracted() {
+    let img = backdrop(320, 240);
+    let p = GlassPane {
+        lensed: false,
+        ..lensed((60, 60, 200, 120), 1.5)
+    };
+    let plain = cpu_blur(&img, &p);
+    let gpu = gpu(&mut headless(), &img, &[p]).expect("a result");
+    assert_close(&gpu, &plain, "unlensed pane");
+    let refracted = crate::blur::refract_edges(&plain, 24.0, 14.0);
+    assert_ne!(band(&plain), band(&refracted), "the fixture's band does refract");
+}
