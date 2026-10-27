@@ -17,6 +17,16 @@ workspace = true
 # only behind one of these, and they are mutually exclusive — pick
 # `android-game-activity` with `default-features = false`. GameActivity is
 # the one with an `InputConnection`, so IME text (pinyin, accents) arrives.
+#
+# `android-game-activity` needs a winit with GameActivity IME support
+# (`Ime::TextState`), not yet in a release. An app using it adds, in its own
+# root `Cargo.toml` (a patch here would only reach this workspace):
+#
+#     [patch.crates-io]
+#     winit = { git = "https://github.com/paulwang667/winit", rev = "18d09344b46c772fdd2b8b3ba318ee7ae58a06ea" }
+#
+# That is 0.30.13 plus the IME delivery. Neither the default activity nor
+# any other target needs it.
 [features]
 default = ["android-native-activity"]
 android-native-activity = ["winit/android-native-activity"]
