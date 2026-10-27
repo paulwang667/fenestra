@@ -182,6 +182,12 @@ pub struct WindowOptions {
     /// needs to bind the event loop to the activity.
     #[cfg(target_os = "android")]
     pub android_app: Option<winit::platform::android::activity::AndroidApp>,
+    /// Android: what a back press the app leaves alone does — normally
+    /// sending the app to the background (`Activity.moveTaskToBack`), which
+    /// takes a JNI call this crate (no `unsafe`) leaves to the app. `None`
+    /// ignores it.
+    #[cfg(target_os = "android")]
+    pub android_back: Option<fn(&winit::platform::android::activity::AndroidApp)>,
 }
 
 impl WindowOptions {
@@ -203,6 +209,8 @@ impl WindowOptions {
             locale: None,
             #[cfg(target_os = "android")]
             android_app: None,
+            #[cfg(target_os = "android")]
+            android_back: None,
         }
     }
 
@@ -325,6 +333,18 @@ impl WindowOptions {
     #[cfg(target_os = "android")]
     pub fn with_android_app(mut self, app: winit::platform::android::activity::AndroidApp) -> Self {
         self.android_app = Some(app);
+        self
+    }
+
+    /// Sets what a back press the app leaves alone does (Android only; see
+    /// [`WindowOptions::android_back`]).
+    #[cfg(target_os = "android")]
+    #[must_use]
+    pub fn with_android_back(
+        mut self,
+        f: fn(&winit::platform::android::activity::AndroidApp),
+    ) -> Self {
+        self.android_back = Some(f);
         self
     }
 }
@@ -2040,6 +2060,19 @@ fn build_menu<Msg: Clone>(
     Ok((menu, actions))
 }
 
+/// What one input event did in the main window.
+#[derive(Clone, Copy, Debug, Default)]
+struct InputOutcome {
+    /// Something changed on screen (focus, selection, hover).
+    #[cfg_attr(
+        not(target_os = "android"),
+        expect(dead_code, reason = "read by the Android back key")
+    )]
+    redraw: bool,
+    /// It produced messages for the app.
+    consumed: bool,
+}
+
 impl<A: App> AppRunner<A> {
     /// Dispatches the long presses that have come due (a finger held still
     /// for [`crate::touch::LONG_PRESS`]), in every window.
@@ -2545,9 +2578,9 @@ impl<A: App> AppRunner<A> {
         }
     }
 
-    fn input(&mut self, event: InputEvent) -> bool {
+    fn input(&mut self, event: InputEvent) -> InputOutcome {
         let Some((view, frame)) = &self.last else {
-            return false;
+            return InputOutcome::default();
         };
         let result = dispatch(view, frame, &mut self.state, &mut self.fonts, event);
         if let Some(cursor) = result.cursor
@@ -2571,13 +2604,32 @@ impl<A: App> AppRunner<A> {
                 w.request_redraw();
             }
         }
-        had_msgs
+        InputOutcome {
+            redraw: result.redraw,
+            consumed: had_msgs,
+        }
+    }
+
+    /// Android's back key: the app's (closing an overlay, leaving a field
+    /// or a page) when anything takes it, else the system's
+    /// ([`WindowOptions::android_back`]).
+    #[cfg(target_os = "android")]
+    fn back(&mut self, event_loop: &ActiveEventLoop, input: InputEvent) {
+        let outcome = self.input(input);
+        if outcome.consumed {
+            self.after_update(event_loop);
+        } else if !outcome.redraw
+            && let Some(app) = &self.shell.options.android_app
+            && let Some(back) = self.shell.options.android_back
+        {
+            back(app);
+        }
     }
 
     /// Routes one input event into the main window, reconciling windows
     /// afterwards if it produced messages.
     fn input_main(&mut self, event_loop: &ActiveEventLoop, event: InputEvent) {
-        if self.input(event) {
+        if self.input(event).consumed {
             self.after_update(event_loop);
         }
     }
@@ -3053,7 +3105,8 @@ pub(crate) fn map_logical_key(
         WKey::Named(named) => match named {
             NamedKey::Enter => Key::Enter,
             NamedKey::Space => Key::Space,
-            NamedKey::Escape => Key::Escape,
+            // Android's back key: closes the top overlay, then the app's own back.
+            NamedKey::Escape | NamedKey::BrowserBack => Key::Escape,
             NamedKey::ArrowLeft => Key::ArrowLeft,
             NamedKey::ArrowRight => Key::ArrowRight,
             NamedKey::ArrowUp => Key::ArrowUp,
@@ -3510,6 +3563,13 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                             self.input_main(event_loop, InputEvent::Text(t.to_string()));
                         }
                     } else if let Some(input) = map_key(&event, mods) {
+                        #[cfg(target_os = "android")]
+                        if event.logical_key
+                            == winit::keyboard::Key::Named(winit::keyboard::NamedKey::BrowserBack)
+                        {
+                            self.back(event_loop, input);
+                            return;
+                        }
                         self.input_main(event_loop, input);
                     }
                 }
@@ -3733,6 +3793,16 @@ mod input_mapping_tests {
 
     /// Android reports Tab and Enter as characters (`"\t"`, `"\n"`), not as
     /// named keys; they are the same keys.
+    /// Android's back key arrives as `BrowserBack`; it is Escape, which
+    /// closes the top overlay and then reaches `App::window_key`.
+    #[test]
+    fn android_back_is_escape() {
+        assert_eq!(
+            map_logical_key(&WKey::Named(NamedKey::BrowserBack), ModifiersState::empty()),
+            Some(InputEvent::Key(KeyInput::plain(Key::Escape)))
+        );
+    }
+
     #[test]
     fn control_characters_are_the_keys_they_stand_for() {
         let none = ModifiersState::empty();
