@@ -20,7 +20,7 @@
 //!     .into();
 //! ```
 
-use fenestra_core::{Element, SP1, Theme, col, div, row};
+use fenestra_core::{Element, SP1, Surface, Theme, col, div, row};
 
 /// A toolbar entry: a control or a separator rule. The control is boxed so the
 /// separator variant doesn't bloat every slot to an `Element`'s width.
@@ -108,10 +108,13 @@ impl<Msg> From<Toolbar<Msg>> for Element<Msg> {
             .shrink0()
             // Hug the controls rather than stretch across a wider parent.
             .self_start()
+            // A floating strip of controls: a dock in the material styles.
             .themed(|t: &Theme, s| {
-                s.bg(t.surface_raised)
-                    .border(1.0, t.border)
-                    .rounded(t.radius.lg)
+                super::material::role_or_own(t, Surface::Dock, s, |s| {
+                    s.bg(t.surface_raised)
+                        .border(1.0, t.border)
+                        .rounded(t.radius.lg)
+                })
             })
             .children(kids);
         if let Some(label) = tb.label {

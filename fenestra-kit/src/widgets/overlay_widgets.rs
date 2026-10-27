@@ -124,12 +124,16 @@ impl<Msg: Clone + 'static> From<Modal<Msg>> for Element<Msg> {
             .rounded(20.0)
             .overflow_hidden()
             .shadow(ShadowToken::Lg)
+            // The kit's glass sheet under the solid style; the material
+            // styles' modal elsewhere.
             .themed(|t: &Theme, s| {
-                let fill = Material::new(0.50, 20.0, 1.6).tint(t.surface);
-                s.bg(fill)
-                    .backdrop_blur(20.0)
-                    .sheen(Sheen::glass())
-                    .adaptive_tint(AdaptiveTint::glass())
+                super::material::role_or_own(t, Surface::Modal, s, |s| {
+                    let fill = Material::new(0.50, 20.0, 1.6).tint(t.surface);
+                    s.bg(fill)
+                        .backdrop_blur(20.0)
+                        .sheen(Sheen::glass())
+                        .adaptive_tint(AdaptiveTint::glass())
+                })
             })
             .children([header])
             .children(m.content)

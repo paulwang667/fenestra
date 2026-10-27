@@ -15,6 +15,7 @@ mod empty_state;
 mod field;
 mod glass;
 mod kbd;
+mod material;
 mod menu;
 mod multi_select;
 mod nav_list;
