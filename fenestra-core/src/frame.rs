@@ -1327,8 +1327,19 @@ impl Realize<'_> {
         } else {
             visible
         };
-        let scroll_dy = scroll.as_ref().map_or(0.0, |s| f64::from(s.offset_y));
-        let scroll_dx = scroll.as_ref().map_or(0.0, |s| f64::from(s.offset_x));
+        // A touch's stretch past an edge moves the content on top of the
+        // (in-range) offset: painted and hit where it shows.
+        let (stretch_x, stretch_y) = if scroll.is_some() {
+            self.state.scroll_stretch(node.id)
+        } else {
+            (0.0, 0.0)
+        };
+        let scroll_dy = scroll
+            .as_ref()
+            .map_or(0.0, |s| f64::from(s.offset_y + stretch_y));
+        let scroll_dx = scroll
+            .as_ref()
+            .map_or(0.0, |s| f64::from(s.offset_x + stretch_x));
         // Children follow this node's resolved (possibly sticky-clamped) origin.
         let child_origin = Point::new(rect.x0 - scroll_dx, rect.y0 - scroll_dy);
         // A scroll container is the viewport its sticky descendants stick within

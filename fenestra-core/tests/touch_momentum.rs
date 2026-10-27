@@ -3,8 +3,8 @@
 //! touch handling. The wheel is unchanged.
 
 use fenestra_core::{
-    Element, Fonts, Frame, FrameState, InputEvent, Theme, WidgetId, build_frame, col, dispatch,
-    div, row, scroll_moving_at,
+    Element, Fonts, Frame, FrameState, InputEvent, Semantics, Theme, WidgetId, build_frame, by,
+    col, dispatch, div, row, scroll_moving_at,
 };
 use kurbo::Point;
 
@@ -22,7 +22,13 @@ fn list() -> Element<()> {
             .h(VIEW_H)
             .scroll_y()
             .hide_scrollbar()
-            .children((0..40).map(|i| div().id(&format!("row{i}")).h(48.0).shrink0())),
+            .children((0..40).map(|i| {
+                div()
+                    .id(&format!("row{i}"))
+                    .semantics(Semantics::Label)
+                    .h(48.0)
+                    .shrink0()
+            })),
     )
 }
 
@@ -72,6 +78,12 @@ impl Touchy {
         };
         t.send(InputEvent::PointerMove { x: 50.0, y: 200.0 });
         t
+    }
+
+    /// Swaps the view (the next frame builds it).
+    fn set_view(&mut self, view: Element<()>) {
+        self.view = view;
+        self.build();
     }
 
     fn send(&mut self, event: InputEvent) {
@@ -305,4 +317,77 @@ fn scroll_moving_at_sees_only_the_moving_scroller() {
     ));
     t.run(3.0);
     assert!(!scroll_moving_at(&t.frame, &t.state, Point::new(50.0, 200.0)));
+}
+
+/// A sticky log of `rows` rows of 48 in a 400 viewport.
+fn feed(rows: usize) -> Element<()> {
+    col().w(400.0).h(500.0).child(
+        col()
+            .id("feed")
+            .w(200.0)
+            .h(VIEW_H)
+            .scroll_y()
+            .stick_to_bottom()
+            .hide_scrollbar()
+            .children((0..rows).map(|_| div().h(48.0).shrink0())),
+    )
+}
+
+#[test]
+fn the_stretch_moves_what_is_painted_and_hit() {
+    let mut t = Touchy::new(list());
+    let still = t.frame.get(&by::id("row0")).rect;
+    t.pan(100.0);
+    let pulled = t.frame.get(&by::id("row0")).rect;
+    let stretch = -t.stretch();
+    assert!(stretch > 40.0);
+    assert!(
+        (pulled.y0 - still.y0 - f64::from(stretch)).abs() < 0.5,
+        "row 0 moved {} for a stretch of {stretch}",
+        pulled.y0 - still.y0
+    );
+    let row0 = t.frame.get(&by::id("row0")).id;
+    let inside = kurbo::Point::new(50.0, pulled.y0 + 2.0);
+    assert!(t.frame.hit_chain(inside).contains(&row0), "hit where it is painted");
+}
+
+#[test]
+fn a_sticky_feed_stays_pinned_after_a_bounce() {
+    let mut t = Touchy::new(feed(40));
+    let feed_id = t.list();
+    assert_eq!(t.state.scroll_offset(feed_id), MAX, "starts at the bottom");
+    t.pan(-80.0);
+    assert!(t.state.scroll_stretch(feed_id).1 > 10.0, "pulled past the bottom");
+    t.end(0.0);
+    t.run(1.0);
+    assert_eq!(t.state.scroll_stretch(feed_id).1, 0.0);
+    assert_eq!(t.state.scroll_offset(feed_id), MAX);
+    t.set_view(feed(42));
+    assert_eq!(
+        t.state.scroll_offset(feed_id),
+        MAX + 96.0,
+        "still follows new rows"
+    );
+}
+
+#[test]
+fn a_vanished_scroller_stops_animating() {
+    let mut t = Touchy::new(list());
+    t.pan(-100.0);
+    t.end(-3000.0);
+    t.run(0.1);
+    assert!(t.frame.animating);
+    t.set_view(col().w(400.0).h(500.0));
+    t.run(DT);
+    assert!(!t.frame.animating);
+    t.run(DT);
+    assert!(!t.frame.animating);
+}
+
+#[test]
+fn a_still_frame_does_not_animate() {
+    let mut t = Touchy::new(list());
+    t.run(0.5);
+    assert!(!t.frame.animating);
+    assert_eq!(t.stretch(), 0.0);
 }
