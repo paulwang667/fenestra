@@ -1679,7 +1679,7 @@ where
         fonts,
         state,
         cursor: Point::ORIGIN,
-        touch: crate::touch::Touch::new(false),
+        touch: crate::touch::Touch::new(crate::touch::GESTURES),
         #[cfg(target_os = "android")]
         keyboard_shown: false,
         #[cfg(target_os = "android")]
@@ -2041,6 +2041,53 @@ fn build_menu<Msg: Clone>(
 }
 
 impl<A: App> AppRunner<A> {
+    /// Dispatches the long presses that have come due (a finger held still
+    /// for [`crate::touch::LONG_PRESS`]), in every window.
+    fn fire_long_presses(&mut self, event_loop: &ActiveEventLoop) {
+        let now = self.started.elapsed().as_secs_f64();
+        for event in self.touch.tick(now) {
+            self.input_main(event_loop, event);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let due: Vec<(String, Vec<InputEvent>)> = self
+                .secondary
+                .iter_mut()
+                .map(|(key, bundle)| (key.clone(), bundle.touch.tick(now)))
+                .filter(|(_, events)| !events.is_empty())
+                .collect();
+            for (key, events) in due {
+                for event in events {
+                    self.secondary_input_main(&key, event_loop, event);
+                }
+            }
+        }
+    }
+
+    /// Makes the event loop wake when a held finger's long press comes due,
+    /// keeping an earlier wake (an animation frame) if one is set.
+    fn touch_wake(&self, event_loop: &ActiveEventLoop) {
+        let main = self.touch.deadline();
+        #[cfg(not(target_arch = "wasm32"))]
+        let due = self
+            .secondary
+            .values()
+            .filter_map(|b| b.touch.deadline())
+            .chain(main)
+            .reduce(f64::min);
+        #[cfg(target_arch = "wasm32")]
+        let due = main;
+        let Some(due) = due else {
+            return;
+        };
+        let due = self.started + Duration::from_secs_f64(due.max(0.0));
+        match event_loop.control_flow() {
+            ControlFlow::Poll => {}
+            ControlFlow::WaitUntil(t) if t <= due => {}
+            _ => event_loop.set_control_flow(ControlFlow::WaitUntil(due)),
+        }
+    }
+
     /// Reconciles the native menu bar against [`App::menu`]: rebuilt only
     /// when the structural fingerprint changes; `None` after a menu was
     /// attached leaves the last menu in place (macOS keeps an app menu
@@ -2621,7 +2668,7 @@ impl<A: App> AppRunner<A> {
                             shell,
                             state,
                             cursor: Point::ORIGIN,
-                            touch: crate::touch::Touch::new(false),
+                            touch: crate::touch::Touch::new(crate::touch::GESTURES),
                             last: None,
                             on_close: desc.on_close,
                             title: desc.title,
@@ -2806,7 +2853,14 @@ impl<A: App> AppRunner<A> {
                 let (x, y) = (touch.location.x, touch.location.y);
                 let at = Point::new(x / scale, y / scale);
                 let now = self.started.elapsed().as_secs_f64();
-                let Some(events) = bundle.touch.event(touch.id, touch.phase, at, now, false) else {
+                let owns_drag = touch.phase == TouchPhase::Started
+                    && bundle.last.as_ref().is_some_and(|(view, frame)| {
+                        fenestra_core::owns_touch_drag(view, frame, &bundle.state, at)
+                    });
+                let Some(events) = bundle
+                    .touch
+                    .event(touch.id, touch.phase, at, now, owns_drag)
+                else {
                     return;
                 };
                 bundle.cursor = at;
@@ -3189,10 +3243,11 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
         }
     }
 
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
             return;
         }
+        self.fire_long_presses(event_loop);
         if let Some(w) = self.shell.window() {
             w.request_redraw();
         }
@@ -3202,6 +3257,12 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                 w.request_redraw();
             }
         }
+    }
+
+    // Last in each turn of the loop, after frames set the control flow: a
+    // held finger's long press must still wake it.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.touch_wake(event_loop);
     }
 
     fn window_event(
@@ -3292,7 +3353,11 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                 let (x, y) = (touch.location.x, touch.location.y);
                 let at = Point::new(x / scale, y / scale);
                 let now = self.started.elapsed().as_secs_f64();
-                if let Some(events) = self.touch.event(touch.id, touch.phase, at, now, false) {
+                let owns_drag = touch.phase == TouchPhase::Started
+                    && self.last.as_ref().is_some_and(|(view, frame)| {
+                        fenestra_core::owns_touch_drag(view, frame, &self.state, at)
+                    });
+                if let Some(events) = self.touch.event(touch.id, touch.phase, at, now, owns_drag) {
                     self.cursor = at;
                     for event in events {
                         self.input_main(event_loop, event);

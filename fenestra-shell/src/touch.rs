@@ -11,6 +11,11 @@ pub(crate) const TAP_SLOP: f64 = 10.0;
 /// How long a finger held still takes to long-press (seconds).
 pub(crate) const LONG_PRESS: f64 = 0.5;
 
+/// Whether touches scroll and long-press: on the touch platforms. Elsewhere
+/// (desktop touch screens, the web, whose browser has its own gestures) a
+/// touch stays only the pointer.
+pub(crate) const GESTURES: bool = cfg!(any(target_os = "android", target_os = "ios"));
+
 /// What the driving finger is doing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mode {
