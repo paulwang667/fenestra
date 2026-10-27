@@ -477,6 +477,19 @@ fn reuses_raster_frame(
     !dirty && rendered == Some(now) && !needs_new_target(target, surface)
 }
 
+/// One frame of an animation (the browser paces the web's frames itself).
+#[cfg(not(target_arch = "wasm32"))]
+const ANIMATION_FRAME: Duration = Duration::from_millis(16);
+
+/// When an animation's next frame is due: one frame after this one
+/// *started*, so its own work counts toward the period (counted from its
+/// end, a 31 ms frame ran every 47 ms). One that took longer has the next
+/// due at once.
+#[cfg(not(target_arch = "wasm32"))]
+fn next_animation_frame(started: Instant) -> Instant {
+    started + ANIMATION_FRAME
+}
+
 /// The handoff slot for the web's async surface creation: the setup result,
 /// carrying the error when WebGPU is unavailable.
 #[cfg(target_arch = "wasm32")]
@@ -1538,6 +1551,7 @@ struct StaticApp {
 #[cfg(not(target_arch = "wasm32"))]
 impl StaticApp {
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        let frame_started = Instant::now();
         let Some((lw, lh, scale)) = self.shell.logical_size() else {
             return;
         };
@@ -1563,9 +1577,8 @@ impl StaticApp {
             return;
         }
         if frame.animating {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(16),
-            ));
+            event_loop
+                .set_control_flow(ControlFlow::WaitUntil(next_animation_frame(frame_started)));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
         }
@@ -2146,6 +2159,8 @@ impl<A: App> AppRunner<A> {
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let frame_started = Instant::now();
         if let Err(e) = self.shell.pump() {
             self.shell.fail(event_loop, e);
             return;
@@ -2308,9 +2323,8 @@ impl<A: App> AppRunner<A> {
         }
         if frame.animating {
             #[cfg(not(target_arch = "wasm32"))]
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(16),
-            ));
+            event_loop
+                .set_control_flow(ControlFlow::WaitUntil(next_animation_frame(frame_started)));
             // The browser paces frames; just ask for the next one.
             #[cfg(target_arch = "wasm32")]
             if let Some(w) = self.shell.window() {
@@ -2667,6 +2681,7 @@ impl<A: App> AppRunner<A> {
     /// against its own retained state and `view_for(key)`.
     #[cfg(not(target_arch = "wasm32"))]
     fn secondary_redraw(&mut self, key: &str, event_loop: &ActiveEventLoop) {
+        let frame_started = Instant::now();
         let theme = self.app.theme_for(key);
         let now = self.started.elapsed().as_secs_f64();
         let Some(bundle) = self.secondary.get_mut(key) else {
@@ -2755,9 +2770,8 @@ impl<A: App> AppRunner<A> {
             w.request_redraw();
         }
         if frame.animating {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(16),
-            ));
+            event_loop
+                .set_control_flow(ControlFlow::WaitUntil(next_animation_frame(frame_started)));
         }
         if let Some(caret) = bundle.state.ime_caret()
             && let Some(w) = bundle.shell.window()
@@ -3787,5 +3801,23 @@ mod input_mapping_tests {
             map_logical_key(&WKey::Named(NamedKey::Enter), none),
             Some(InputEvent::Key(KeyInput::plain(Key::Enter)))
         );
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod animation_frame_tests {
+    use super::next_animation_frame;
+    use std::time::{Duration, Instant};
+
+    /// The next frame of an animation is due one period after this frame
+    /// *started*: its own work counts toward the period. A 10 ms frame waits
+    /// 6 ms more; a 31 ms frame's next one is already due when it ends.
+    #[test]
+    fn the_next_animation_frame_counts_from_this_frames_start() {
+        let start = Instant::now();
+        let ms = Duration::from_millis;
+        assert_eq!(next_animation_frame(start), start + ms(16));
+        assert!(next_animation_frame(start) - (start + ms(10)) == ms(6));
+        assert!(next_animation_frame(start) <= start + ms(31));
     }
 }
