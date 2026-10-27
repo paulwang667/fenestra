@@ -2063,14 +2063,23 @@ fn build_menu<Msg: Clone>(
 /// What one input event did in the main window.
 #[derive(Clone, Copy, Debug, Default)]
 struct InputOutcome {
-    /// Something changed on screen (focus, selection, hover).
+    /// It produced messages for the app.
+    consumed: bool,
+    /// A key nothing took: core left it unhandled and the app's
+    /// `window_key` had nothing for it.
     #[cfg_attr(
         not(target_os = "android"),
         expect(dead_code, reason = "read by the Android back key")
     )]
-    redraw: bool,
-    /// It produced messages for the app.
-    consumed: bool,
+    unhandled: bool,
+}
+
+/// Whether a back press goes to the system: only when core left the key
+/// unhandled (no overlay, field or focused control took it) and the app's
+/// `window_key` had no message for it.
+#[cfg(any(target_os = "android", test))]
+fn back_to_system(unhandled_by_core: bool, app_took_it: bool) -> bool {
+    unhandled_by_core && !app_took_it
 }
 
 impl<A: App> AppRunner<A> {
@@ -2589,10 +2598,12 @@ impl<A: App> AppRunner<A> {
             w.set_cursor(winit::window::Cursor::Icon(map_cursor(cursor)));
         }
         let mut msgs = result.msgs;
-        if let Some(key) = &result.unhandled
-            && let Some(msg) = self.app.window_key(key)
-        {
-            msgs.push(msg);
+        let mut unhandled = false;
+        if let Some(key) = &result.unhandled {
+            match self.app.window_key(key) {
+                Some(msg) => msgs.push(msg),
+                None => unhandled = true,
+            }
         }
         let had_msgs = !msgs.is_empty();
         for msg in msgs {
@@ -2605,8 +2616,8 @@ impl<A: App> AppRunner<A> {
             }
         }
         InputOutcome {
-            redraw: result.redraw,
             consumed: had_msgs,
+            unhandled,
         }
     }
 
@@ -2618,7 +2629,8 @@ impl<A: App> AppRunner<A> {
         let outcome = self.input(input);
         if outcome.consumed {
             self.after_update(event_loop);
-        } else if !outcome.redraw
+        }
+        if back_to_system(outcome.unhandled, outcome.consumed)
             && let Some(app) = &self.shell.options.android_app
             && let Some(back) = self.shell.options.android_back
         {
@@ -3105,8 +3117,11 @@ pub(crate) fn map_logical_key(
         WKey::Named(named) => match named {
             NamedKey::Enter => Key::Enter,
             NamedKey::Space => Key::Space,
-            // Android's back key: closes the top overlay, then the app's own back.
-            NamedKey::Escape | NamedKey::BrowserBack => Key::Escape,
+            NamedKey::Escape => Key::Escape,
+            // Android's back key: closes the top overlay, then the app's own
+            // back. (A desktop keyboard's Browser Back key stays unmapped.)
+            #[cfg(target_os = "android")]
+            NamedKey::BrowserBack => Key::Escape,
             NamedKey::ArrowLeft => Key::ArrowLeft,
             NamedKey::ArrowRight => Key::ArrowRight,
             NamedKey::ArrowUp => Key::ArrowUp,
@@ -3300,6 +3315,11 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
         if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
             return;
         }
+        // This wake is spent: a frame still animating asks for the next one,
+        // and `about_to_wait` restores a pending long press. Left as it was, a
+        // past deadline (a tap that changed nothing) would wake the loop
+        // again at once, for ever.
+        event_loop.set_control_flow(ControlFlow::Wait);
         self.fire_long_presses(event_loop);
         if let Some(w) = self.shell.window() {
             w.request_redraw();
@@ -3791,18 +3811,38 @@ mod input_mapping_tests {
     use fenestra_core::{InputEvent, Key, KeyInput};
     use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 
-    /// Android reports Tab and Enter as characters (`"\t"`, `"\n"`), not as
-    /// named keys; they are the same keys.
     /// Android's back key arrives as `BrowserBack`; it is Escape, which
-    /// closes the top overlay and then reaches `App::window_key`.
+    /// closes the top overlay and then reaches `App::window_key`. Elsewhere
+    /// (a keyboard's Browser Back key) it stays unmapped.
     #[test]
     fn android_back_is_escape() {
-        assert_eq!(
-            map_logical_key(&WKey::Named(NamedKey::BrowserBack), ModifiersState::empty()),
-            Some(InputEvent::Key(KeyInput::plain(Key::Escape)))
+        let back = map_logical_key(&WKey::Named(NamedKey::BrowserBack), ModifiersState::empty());
+        if cfg!(target_os = "android") {
+            assert_eq!(back, Some(InputEvent::Key(KeyInput::plain(Key::Escape))));
+        } else {
+            assert_eq!(back, None);
+        }
+    }
+
+    /// Back goes to the system only when nothing took it: core left the key
+    /// unhandled and the app's `window_key` had nothing for it. An overlay
+    /// that ate it (even without telling the app) or a page the app goes
+    /// back from keeps it.
+    #[test]
+    fn back_goes_to_the_system_only_when_nothing_took_it() {
+        assert!(super::back_to_system(true, false));
+        assert!(
+            !super::back_to_system(true, true),
+            "the app went back a page"
+        );
+        assert!(
+            !super::back_to_system(false, false),
+            "an overlay or field took it"
         );
     }
 
+    /// Android reports Tab and Enter as characters (`"\t"`, `"\n"`), not as
+    /// named keys; they are the same keys.
     #[test]
     fn control_characters_are_the_keys_they_stand_for() {
         let none = ModifiersState::empty();
