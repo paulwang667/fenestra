@@ -215,7 +215,12 @@ impl Headless {
                 dimension: wgpu::TextureDimension::D2,
                 format: TextureFormat::Rgba8Unorm,
                 usage: usage | TextureUsages::COPY_SRC,
-                view_formats: &[],
+                // The raster backend's GPU glass reads it in linear light.
+                view_formats: if usage.contains(TextureUsages::TEXTURE_BINDING) {
+                    &[TextureFormat::Rgba8UnormSrgb]
+                } else {
+                    &[]
+                },
             })
     }
 

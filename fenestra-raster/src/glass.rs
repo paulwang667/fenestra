@@ -2,8 +2,11 @@
 //! when the radius allows), vibrancy, the rim's refraction and the body (tint
 //! adapted to the backdrop, sheen, dither) — the shell's CPU path
 //! (`fenestra-shell` `blur.rs` / `multi_pass.rs`, core's `bake_body` and
-//! `adapt_fill`) step for step, with no readback. Each pane's result is a texture registered under a placeholder
-//! image, which the final pass draws like any other.
+//! `adapt_fill`) within the goldens' tolerance, with no readback. A pane takes
+//! three to five render passes (a mobile tiler pays about a millisecond for
+//! each, whatever it does — see glass.wgsl). Each pane's result is a texture
+//! registered under a placeholder image, which the final pass draws like any
+//! other.
 
 use std::collections::HashMap;
 
@@ -128,24 +131,23 @@ pub struct GlassStats {
 
 /// A float texture the passes read and write.
 const FIELD: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// The luma sums and the adapted tint: full float, as sums of a megapixel's
-/// luma outgrow half precision.
+/// The adapted tint, at full float.
 const SUMS: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
-/// The largest side of the luma grid the mean is reduced through.
-const LUMA_GRID: u32 = 16;
 /// The result, as the image cache keeps images: premultiplied RGBA8.
 const RESULT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// The longest kernel radius the uniform block holds (`Params::w`).
+const MAX_KERNEL: usize = 255;
+/// About this many low texels a side feed the adaptive tint's mean.
+const LUMA_SAMPLES: u32 = 48;
 
 struct Pipes {
     layout: wgpu::BindGroupLayout,
-    linearize: wgpu::RenderPipeline,
-    boxp: wgpu::RenderPipeline,
-    upsample: wgpu::RenderPipeline,
-    refract: wgpu::RenderPipeline,
-    quantize: wgpu::RenderPipeline,
-    luma: wgpu::RenderPipeline,
+    sampler: wgpu::Sampler,
+    downsample: wgpu::RenderPipeline,
+    blur_h: wgpu::RenderPipeline,
+    blur_v: wgpu::RenderPipeline,
     tint: wgpu::RenderPipeline,
-    bake: wgpu::RenderPipeline,
+    compose: wgpu::RenderPipeline,
 }
 
 impl Pipes {
@@ -154,6 +156,16 @@ impl Pipes {
             label: Some("fenestra-raster glass"),
             source: wgpu::ShaderSource::Wgsl(include_str!("glass.wgsl").into()),
         });
+        let texture_entry = |binding, filterable| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("fenestra-raster glass"),
             entries: &[
@@ -167,24 +179,12 @@ impl Pipes {
                     },
                     count: None,
                 },
+                texture_entry(1, true),
+                texture_entry(2, false),
                 wgpu::BindGroupLayoutEntry {
-                    binding: 1,
+                    binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
             ],
@@ -221,15 +221,19 @@ impl Pipes {
                 cache: None,
             })
         };
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("fenestra-raster glass"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         Self {
-            linearize: pipe("fs_linearize", FIELD),
-            boxp: pipe("fs_box", FIELD),
-            upsample: pipe("fs_upsample", FIELD),
-            refract: pipe("fs_refract", FIELD),
-            quantize: pipe("fs_quantize", RESULT),
-            luma: pipe("fs_luma", SUMS),
+            downsample: pipe("fs_downsample", FIELD),
+            blur_h: pipe("fs_blur_h", FIELD),
+            blur_v: pipe("fs_blur_v", FIELD),
             tint: pipe("fs_tint", SUMS),
-            bake: pipe("fs_bake", RESULT),
+            compose: pipe("fs_compose", RESULT),
+            sampler,
             layout,
         }
     }
@@ -239,16 +243,14 @@ impl Pipes {
 struct PaneTextures {
     size: (u32, u32),
     low: (u32, u32),
+    /// The low field blurred across (linear light).
     low_a: wgpu::Texture,
+    /// The block means (a downsampled blur), then the field blurred down
+    /// (sRGB, vibrancy applied).
     low_b: wgpu::Texture,
-    field: wgpu::Texture,
-    /// The refracted field (lensed panes only).
-    refracted: wgpu::Texture,
-    result: wgpu::Texture,
-    /// Per-block luma sums (adaptive tint only).
-    luma: wgpu::Texture,
     /// The 1×1 tint the body composites, adapted or not.
     tint: wgpu::Texture,
+    result: wgpu::Texture,
     placeholder: ImageData,
     last_used: u64,
 }
@@ -270,6 +272,56 @@ struct Params {
     b: [i32; 4],
     f: [f32; 4],
     g: [f32; 4],
+    w: [[f32; 4]; 64],
+}
+
+impl Params {
+    fn new(a: [i32; 4], b: [i32; 4], f: [f32; 4], g: [f32; 4]) -> Self {
+        Self {
+            a,
+            b,
+            f,
+            g,
+            w: [[0.0; 4]; 64],
+        }
+    }
+}
+
+/// The three box passes of half-widths `radii` as one kernel: its radius
+/// and its weights for offsets `0..=radius` (symmetric), packed four to a
+/// vector. The CPU runs the boxes one after another, each clamping at the
+/// field's edge; one kernel clamping once differs only within its reach of
+/// the crop's edge, which sits a full reach outside the pane except where
+/// the crop meets the frame. A kernel past [`MAX_KERNEL`] is cut there.
+fn kernel(radii: [u32; 3]) -> (i32, [[f32; 4]; 64]) {
+    let mut taps = vec![1.0_f64];
+    for k in radii {
+        let width = 2 * k as usize + 1;
+        let mut next = vec![0.0; taps.len() + width - 1];
+        for (i, t) in taps.iter().enumerate() {
+            for n in &mut next[i..i + width] {
+                *n += t / width as f64;
+            }
+        }
+        taps = next;
+    }
+    let full = taps.len() / 2;
+    let radius = full.min(MAX_KERNEL);
+    let kept = &taps[full - radius..=full + radius];
+    let total: f64 = kept.iter().sum();
+    let mut w = [[0.0; 4]; 64];
+    for (t, v) in kept[radius..].iter().enumerate() {
+        #[expect(clippy::cast_possible_truncation, reason = "a weight in 0..=1")]
+        let v = (v / total) as f32;
+        w[t / 4][t % 4] = v;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "≤ 255"
+    )]
+    let radius = radius as i32;
+    (radius, w)
 }
 
 #[expect(
@@ -307,6 +359,7 @@ fn texture(
 impl Glass {
     /// Composites `panes` from `source` and submits the work. Returns each
     /// pane's placeholder and its texture view (to register), and the stats.
+    /// `source` is RGBA8, and must allow its sRGB view (`view_formats`).
     pub(crate) fn run(
         &mut self,
         device: &wgpu::Device,
@@ -317,7 +370,12 @@ impl Glass {
         self.frame += 1;
         let frame = self.frame;
         let pipes = self.pipes.get_or_insert_with(|| Pipes::new(device));
-        let source_view = source.create_view(&wgpu::TextureViewDescriptor::default());
+        // Read through the sRGB view: loads and bilinear taps then come back
+        // in linear light, decoded before they are averaged.
+        let source_view = source.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(source.format().add_srgb_suffix()),
+            ..Default::default()
+        });
         let (sw, sh) = (source.width(), source.height());
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("fenestra-raster glass"),
@@ -330,8 +388,8 @@ impl Glass {
                 continue;
             }
             // The crop the blur reads: the pane padded by the blur's reach,
-            // cut to the source (the box passes clamp at its edges, as the
-            // CPU path clamps at its crop).
+            // cut to the source (the blur clamps at its edges, as the CPU
+            // path clamps at its crop).
             let pad = i(blur_reach(pane.std_dev));
             let cx0 = (x - pad).clamp(0, i(sw));
             let cy0 = (y - pad).clamp(0, i(sh));
@@ -352,14 +410,14 @@ impl Glass {
                 three_box_radii((sigma_sq / fl(f * f) - 0.25).max(0.0))
                     .map(|k| k.min(low.0.max(low.1)))
             };
+            let (radius, weights) = kernel(radii);
 
-            let grid = (w.min(LUMA_GRID), h.min(LUMA_GRID));
             let stale = self
                 .panes
                 .get(&pane.id)
                 .is_none_or(|t| t.size != (w, h) || t.low != low);
             if stale {
-                stats.textures_created += 7;
+                stats.textures_created += 4;
                 self.panes.insert(
                     pane.id,
                     PaneTextures {
@@ -367,11 +425,8 @@ impl Glass {
                         low,
                         low_a: texture(device, low, FIELD, wgpu::TextureUsages::empty()),
                         low_b: texture(device, low, FIELD, wgpu::TextureUsages::empty()),
-                        field: texture(device, (w, h), FIELD, wgpu::TextureUsages::empty()),
-                        refracted: texture(device, (w, h), FIELD, wgpu::TextureUsages::empty()),
-                        result: texture(device, (w, h), RESULT, wgpu::TextureUsages::COPY_SRC),
-                        luma: texture(device, grid, SUMS, wgpu::TextureUsages::empty()),
                         tint: texture(device, (1, 1), SUMS, wgpu::TextureUsages::empty()),
+                        result: texture(device, (w, h), RESULT, wgpu::TextureUsages::COPY_SRC),
                         placeholder: crate::texture_placeholder(w, h),
                         last_used: frame,
                     },
@@ -381,11 +436,8 @@ impl Glass {
             tex.last_used = frame;
             let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
             let (low_a, low_b) = (view(&tex.low_a), view(&tex.low_b));
-            let field = view(&tex.field);
-            let refracted = view(&tex.refracted);
-            let result = view(&tex.result);
-            let luma = view(&tex.luma);
             let tint = view(&tex.tint);
+            let result = view(&tex.result);
             let origin = [x - cx0, y - cy0];
             let mut pass = |pipeline: &wgpu::RenderPipeline,
                             params: Params,
@@ -411,8 +463,13 @@ impl Glass {
                         },
                         wgpu::BindGroupEntry {
                             binding: 2,
-                            // Only the bake reads it; the rest take any view.
-                            resource: wgpu::BindingResource::TextureView(second.unwrap_or(input)),
+                            // Only the last pass reads it; the rest take any
+                            // non-filtered view.
+                            resource: wgpu::BindingResource::TextureView(second.unwrap_or(&tint)),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::Sampler(&pipes.sampler),
                         },
                     ],
                 });
@@ -437,150 +494,101 @@ impl Glass {
                 rp.draw(0..3, 0..1);
                 stats.passes += 1;
             };
-            pass(
-                &pipes.linearize,
-                Params {
-                    a: [cx0, cy0, i(cw), i(ch)],
-                    b: [i(f), 0, 0, 0],
-                    f: [0.0; 4],
-                    g: [0.0; 4],
-                },
-                &source_view,
-                None,
-                &low_a,
-            );
-            for k in radii {
-                if k == 0 {
-                    continue;
-                }
-                for (horizontal, input, output) in [(1, &low_a, &low_b), (0, &low_b, &low_a)] {
-                    pass(
-                        &pipes.boxp,
-                        Params {
-                            a: [i(k), horizontal, i(low.0), i(low.1)],
-                            b: [0; 4],
-                            f: [0.0; 4],
-                            g: [0.0; 4],
-                        },
-                        input,
-                        None,
-                        output,
-                    );
-                }
+            let with_weights = |mut p: Params| {
+                p.w = weights;
+                p
+            };
+            let crop = [cx0, cy0, i(cw), i(ch)];
+            if f > 1 {
+                pass(
+                    &pipes.downsample,
+                    Params::new(crop, [i(f), 0, 0, 0], [0.0; 4], [0.0; 4]),
+                    &source_view,
+                    None,
+                    &low_b,
+                );
             }
             pass(
-                &pipes.upsample,
-                Params {
-                    a: [origin[0], origin[1], i(f), 0],
-                    b: [i(low.0), i(low.1), 0, 0],
-                    f: [pane.saturation, 0.0, 0.0, 0.0],
-                    g: [0.0; 4],
-                },
+                &pipes.blur_h,
+                with_weights(Params::new(
+                    crop,
+                    [i(f), i(low.0), i(low.1), radius],
+                    [0.0; 4],
+                    [0.0; 4],
+                )),
+                if f > 1 { &low_b } else { &source_view },
+                None,
+                &low_a,
+            );
+            pass(
+                &pipes.blur_v,
+                with_weights(Params::new(
+                    [radius, i(low.1), 0, 0],
+                    [0; 4],
+                    [pane.saturation, 0.0, 0.0, 0.0],
+                    [0.0; 4],
+                )),
                 &low_a,
                 None,
-                &field,
+                &low_b,
             );
+            // The tint the body composites, adapted to the frosted field's
+            // mean luma (`adapt_fill`) on the GPU, in this same submission.
+            let body = pane.body.as_ref();
+            let tinted = body.and_then(|b| b.tint.map(|c| (c, b.adaptive)));
+            if let Some((color, adaptive)) = tinted {
+                // The low texels under the pane, sampled about
+                // `LUMA_SAMPLES` a side.
+                let fi = i(f);
+                let lo = [origin[0] / fi, origin[1] / fi];
+                let hi = [
+                    ((origin[0] + i(w) - 1) / fi + 1).min(i(low.0)),
+                    ((origin[1] + i(h) - 1) / fi + 1).min(i(low.1)),
+                ];
+                #[expect(clippy::cast_sign_loss, reason = "hi > lo")]
+                let extent = ((hi[0] - lo[0]).max(hi[1] - lo[1]).max(1)) as u32;
+                let step = i(extent.div_ceil(LUMA_SAMPLES));
+                let (on, pivot, gain) = adaptive.map_or((0, 0.0, 0.0), |a| (1, a.pivot, a.gain));
+                pass(
+                    &pipes.tint,
+                    Params::new(
+                        [lo[0], lo[1], hi[0], hi[1]],
+                        [on, step, 0, 0],
+                        color.components,
+                        [pivot, gain, 0.0, 0.0],
+                    ),
+                    &low_b,
+                    Some(&low_b),
+                    &tint,
+                );
+            }
             // Bend the rim — only for a pane wholly on screen (a clamped one
             // would lens its cut edge) and big enough to have a rim.
             let lensed = pane.lensed && w >= 4 && h >= 4;
-            if lensed {
-                pass(
-                    &pipes.refract,
-                    Params {
-                        a: [i(w), i(h), 0, 0],
-                        b: [0; 4],
-                        f: [pane.corner_radius, pane.edge_band, 0.0, 0.0],
-                        g: [0.0; 4],
-                    },
-                    &field,
-                    None,
-                    &refracted,
-                );
-            }
-            let frosted = if lensed { &refracted } else { &field };
-            if let Some(body) = &pane.body {
-                // The body over the frosted field (`bake_body`), its tint
-                // adapted to the field's mean luma (`adapt_fill`) on the GPU,
-                // in this same submission.
-                if let Some(color) = body.tint {
-                    if let Some(adaptive) = body.adaptive {
-                        pass(
-                            &pipes.luma,
-                            Params {
-                                a: [i(w), i(h), i(grid.0), i(grid.1)],
-                                b: [0; 4],
-                                f: [0.0; 4],
-                                g: [0.0; 4],
-                            },
-                            frosted,
-                            None,
-                            &luma,
-                        );
-                        pass(
-                            &pipes.tint,
-                            Params {
-                                a: [i(grid.0), i(grid.1), 1, 0],
-                                b: [0; 4],
-                                f: color.components,
-                                g: [adaptive.pivot, adaptive.gain, 0.0, 0.0],
-                            },
-                            &luma,
-                            None,
-                            &tint,
-                        );
-                    } else {
-                        pass(
-                            &pipes.tint,
-                            Params {
-                                a: [0; 4],
-                                b: [0; 4],
-                                f: color.components,
-                                g: [0.0; 4],
-                            },
-                            frosted,
-                            None,
-                            &tint,
-                        );
-                    }
-                }
-                let sheen = body
-                    .sheen
+            let sheen = body.and_then(|b| {
+                b.sheen
                     .as_ref()
-                    .map(|s| fenestra_core::glass::sheen_line(s, body.rect, w, h));
-                let (origin_t, step, top, bottom) = sheen.unwrap_or_default();
-                #[expect(clippy::cast_possible_truncation, reason = "gradient coordinates")]
-                let line = [origin_t as f32, step.0 as f32, step.1 as f32, top];
-                pass(
-                    &pipes.bake,
-                    Params {
-                        a: [
-                            i32::from(body.tint.is_some()),
-                            i32::from(sheen.is_some()),
-                            0,
-                            0,
-                        ],
-                        b: [0; 4],
-                        f: line,
-                        g: [bottom, 0.0, 0.0, 0.0],
-                    },
-                    frosted,
-                    Some(&tint),
-                    &result,
-                );
-            } else {
-                pass(
-                    &pipes.quantize,
-                    Params {
-                        a: [origin[0], origin[1], 0, 0],
-                        b: [0; 4],
-                        f: [0.0; 4],
-                        g: [0.0; 4],
-                    },
-                    frosted,
-                    None,
-                    &result,
-                );
-            }
+                    .map(|s| fenestra_core::glass::sheen_line(s, b.rect, w, h))
+            });
+            let flags = i32::from(lensed)
+                | i32::from(body.is_some()) << 1
+                | i32::from(tinted.is_some()) << 2
+                | i32::from(sheen.is_some()) << 3;
+            let (sheen_origin, step, top, bottom) = sheen.unwrap_or_default();
+            #[expect(clippy::cast_possible_truncation, reason = "gradient coordinates")]
+            let line = [sheen_origin as f32, step.0 as f32, step.1 as f32];
+            pass(
+                &pipes.compose,
+                Params::new(
+                    [i(w), i(h), origin[0], origin[1]],
+                    [i(f), i(low.0), i(low.1), flags],
+                    [pane.corner_radius, pane.edge_band, line[0], line[1]],
+                    [line[2], top, bottom, 0.0],
+                ),
+                &low_b,
+                Some(&tint),
+                &result,
+            );
             stats.panes += 1;
             out.push((pane.id, tex.placeholder.clone(), result));
         }

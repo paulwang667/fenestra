@@ -1239,7 +1239,8 @@ impl WindowShell {
                 usage: TextureUsages::RENDER_ATTACHMENT
                     | TextureUsages::TEXTURE_BINDING
                     | TextureUsages::COPY_SRC,
-                view_formats: &[],
+                // The GPU glass reads it in linear light.
+                view_formats: &[TextureFormat::Rgba8UnormSrgb],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             raster.target = Some(RasterTarget {

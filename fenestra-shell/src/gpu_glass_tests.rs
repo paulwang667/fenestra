@@ -38,7 +38,7 @@ fn upload(device: &wgpu::Device, queue: &wgpu::Queue, img: &RgbaImage) -> wgpu::
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
+        view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
     });
     queue.write_texture(
         texture.as_image_copy(),
@@ -337,4 +337,40 @@ fn a_tint_out_of_gamut_after_the_shift_is_mapped_like_the_cpu() {
     let img = flat(160, 120, [8, 8, 8]);
     let gpu = gpu(&mut headless(), &img, &[p]).expect("a result");
     assert_close(&gpu, &cpu_body(&img, &p), "saturated tint over black");
+}
+
+/// Each render pass costs a mobile tiler about a millisecond whatever it
+/// does, so a pane takes a fixed few: blur across (a small blur reading the
+/// backdrop directly; a large one after a downsample, as a tap per block is
+/// cheaper than re-averaging each block for every tap), blur down, (the
+/// tint,) then everything else at once.
+#[test]
+fn a_pane_takes_three_to_five_passes() {
+    let img = backdrop(320, 240);
+    let mut h = headless();
+    let (device, queue, raster) = h.raster_gpu().expect("raster backend");
+    let source = upload(device, queue, &img);
+    let tint = fenestra_core::oklch(0.6, 0.03, 250.0).with_alpha(0.6);
+    let rim = |p: GlassPane| GlassPane {
+        corner_radius: 16.0,
+        edge_band: 7.0,
+        lensed: true,
+        ..p
+    };
+    let tinted = |std_dev| GlassPane {
+        std_dev,
+        ..rim(bodied(
+            (60, 40, 200, 160),
+            tint,
+            Some(fenestra_core::Sheen::glass()),
+            Some(fenestra_core::AdaptiveTint::glass()),
+        ))
+    };
+    for (std_dev, plain, with_tint) in [(4.0, 3, 4), (30.0, 4, 5)] {
+        let p = rim(pane((60, 40, 200, 160), std_dev, 1.5));
+        let (_, stats) = raster.glass(device, queue, &source, &[p]);
+        assert_eq!(stats.passes, plain, "σ {std_dev}, no body");
+        let (_, stats) = raster.glass(device, queue, &source, &[tinted(std_dev)]);
+        assert_eq!(stats.passes, with_tint, "σ {std_dev}, adapted tint");
+    }
 }
