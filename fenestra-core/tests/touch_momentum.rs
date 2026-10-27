@@ -430,3 +430,91 @@ fn a_still_frame_does_not_animate() {
     assert!(!t.frame.animating);
     assert_eq!(t.stretch(), 0.0);
 }
+
+/// A bar laid over a gliding scroller (a glass app bar the content runs on
+/// under): a touch on the bar is the bar's, not a catch.
+#[test]
+fn a_bar_over_a_gliding_scroller_is_not_a_catch() {
+    let view = fenestra_core::stack().w(400.0).h(500.0).children([
+        col()
+            .id("list")
+            .w(200.0)
+            .h(VIEW_H)
+            .scroll_y()
+            .hide_scrollbar()
+            .children((0..40).map(|_| div().h(48.0).shrink0())),
+        div()
+            .id("bar")
+            .semantics(Semantics::Button)
+            .absolute()
+            .top(0.0)
+            .left(0.0)
+            .w(200.0)
+            .h(48.0),
+    ]);
+    let mut t = Touchy::new(view);
+    t.pan(-100.0);
+    t.end(-2000.0);
+    t.run(0.1);
+    assert!(scroll_moving_at(
+        &t.frame,
+        &t.state,
+        Point::new(50.0, 200.0)
+    ));
+    assert!(
+        !scroll_moving_at(&t.frame, &t.state, Point::new(50.0, 20.0)),
+        "the bar is on top"
+    );
+}
+
+/// Pulled past the top, then flicked back into the list: it glides on into
+/// the content instead of springing through the edge.
+#[test]
+fn a_flick_out_of_a_stretch_glides_into_the_content() {
+    let mut t = Touchy::new(list());
+    t.pan(100.0);
+    assert!(t.stretch() < -40.0);
+    t.end(-2000.0);
+    for _ in 0..90 {
+        t.run(DT);
+        assert!(
+            t.stretch() <= 0.5,
+            "never past the far edge: {}",
+            t.stretch()
+        );
+    }
+    assert!(t.offset() > 100.0, "glided into the list: {}", t.offset());
+    assert_eq!(t.stretch(), 0.0);
+}
+
+/// Setting the offset from code (jump to the newest message, scroll to
+/// top) ends a glide and a stretch: the new offset is where it stays.
+#[test]
+fn scrolling_from_code_stops_the_touch_motion() {
+    let mut t = Touchy::new(list());
+    t.pan(-100.0);
+    t.end(-3000.0);
+    t.run(0.05);
+    let list = t.list();
+    t.state.scroll_to(list, 0.0);
+    t.run(0.5);
+    assert_eq!(t.offset(), 0.0, "stays where it was sent");
+    assert!(!t.frame.animating);
+
+    t.pan(100.0);
+    t.end(0.0);
+    t.run(2.0 * DT);
+    assert!(t.stretch() < -1.0);
+    t.state.scroll_to(list, 200.0);
+    t.build();
+    assert_eq!(t.stretch(), 0.0, "the stretch goes with it");
+    assert_eq!(t.offset(), 200.0);
+
+    t.pan(-50.0);
+    t.end(-3000.0);
+    t.run(0.05);
+    t.send(InputEvent::Wheel { dx: 0.0, dy: -10.0 });
+    let after_wheel = t.offset();
+    t.run(0.5);
+    assert_eq!(t.offset(), after_wheel, "a wheel takes over from a glide");
+}

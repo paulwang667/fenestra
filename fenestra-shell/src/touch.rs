@@ -23,6 +23,41 @@ const MAX_VELOCITY: f64 = 8000.0;
 /// How many recent positions a finger keeps for its velocity.
 const SAMPLES: usize = 8;
 
+/// A drag this many times longer on one axis than the other, when it
+/// leaves the tap slop, keeps to that axis until the lift.
+const AXIS_LOCK: f64 = 2.0;
+
+/// Which axes a scrolling finger moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Lock {
+    Free,
+    Vertical,
+    Horizontal,
+}
+
+impl Lock {
+    /// The lock for a drag that has travelled `travel` past the slop.
+    fn of(travel: kurbo::Vec2) -> Self {
+        let (x, y) = (travel.x.abs(), travel.y.abs());
+        if y > AXIS_LOCK * x {
+            Self::Vertical
+        } else if x > AXIS_LOCK * y {
+            Self::Horizontal
+        } else {
+            Self::Free
+        }
+    }
+
+    /// `(x, y)` with the locked-out axis zeroed.
+    fn keep(self, x: f64, y: f64) -> (f64, f64) {
+        match self {
+            Self::Free => (x, y),
+            Self::Vertical => (0.0, y),
+            Self::Horizontal => (x, 0.0),
+        }
+    }
+}
+
 /// Whether touches scroll and long-press: on the touch platforms. Elsewhere
 /// (desktop touch screens, the web, whose browser has its own gestures) a
 /// touch stays only the pointer.
@@ -52,6 +87,8 @@ struct Finger {
     down_at: f64,
     last: Point,
     mode: Mode,
+    /// The axes a scroll moves, set when it starts.
+    lock: Lock,
     /// Recent `(time, position)` samples, oldest first, for the velocity
     /// at the lift.
     samples: [(f64, Point); SAMPLES],
@@ -86,7 +123,9 @@ impl Finger {
         if dt < 1e-3 {
             return (0.0, 0.0);
         }
-        let v = (last_p - first_p) / dt;
+        let travel = last_p - first_p;
+        let (x, y) = self.lock.keep(travel.x, travel.y);
+        let v = kurbo::Vec2::new(x, y) / dt;
         let speed = v.hypot();
         let v = if speed > MAX_VELOCITY {
             v * (MAX_VELOCITY / speed)
@@ -161,6 +200,7 @@ impl Touch {
                 down_at: now,
                 last: at,
                 mode,
+                lock: Lock::Free,
                 samples: [(0.0, Point::ZERO); SAMPLES],
                 len: 0,
             };
@@ -186,19 +226,23 @@ impl Touch {
             TouchPhase::Started | TouchPhase::Moved => match finger.mode {
                 Mode::Pending if finger.down.distance(at) > TAP_SLOP => {
                     finger.mode = Mode::Scrolling;
+                    finger.lock = Lock::of(at - finger.down);
                     events.extend([InputEvent::PointerLeave, InputEvent::PointerUp]);
-                    events.extend(scroll_step(finger.down, finger.last, at));
+                    events.extend(scroll_step(finger.down, finger.last, at, finger.lock));
                 }
                 // A catch never pressed: past the slop it just scrolls.
                 Mode::Caught if finger.down.distance(at) > TAP_SLOP => {
                     finger.mode = Mode::Scrolling;
-                    events.extend(scroll_step(finger.down, finger.last, at));
+                    finger.lock = Lock::of(at - finger.down);
+                    events.extend(scroll_step(finger.down, finger.last, at, finger.lock));
                 }
                 // Undecided, the pointer stays where the finger landed: a
                 // wiggle must not drag a text selection or a hover along.
                 Mode::Pending | Mode::LongPressed | Mode::Caught => {}
                 Mode::Pointer => events.push(pointer_at(at)),
-                Mode::Scrolling => events.extend(scroll_step(finger.down, finger.last, at)),
+                Mode::Scrolling => {
+                    events.extend(scroll_step(finger.down, finger.last, at, finger.lock));
+                }
             },
             TouchPhase::Ended => {
                 events.extend(match finger.mode {
@@ -266,8 +310,12 @@ impl Touch {
 /// One scroll step of a finger that landed at `down`: the pointer goes to
 /// the landing point only for the pan (so the same container scrolls) and
 /// leaves again before any frame paints a hover there.
-fn scroll_step(down: Point, from: Point, to: Point) -> [InputEvent; 3] {
-    [pointer_at(down), pan(from, to), InputEvent::PointerLeave]
+fn scroll_step(down: Point, from: Point, to: Point, lock: Lock) -> [InputEvent; 3] {
+    [
+        pointer_at(down),
+        pan(from, to, lock),
+        InputEvent::PointerLeave,
+    ]
 }
 
 /// The lift of a finger that landed at `down` and was driving a scroller,
@@ -280,13 +328,15 @@ fn pan_end(down: Point, vx: f32, vy: f32) -> [InputEvent; 3] {
     ]
 }
 
-/// The pan for a finger moving `from` → `to`: its travel, so content
-/// follows the finger (the core scrolls by the negated delta).
+/// The pan for a finger moving `from` → `to`: its travel on the axes
+/// `lock` keeps, so content follows the finger (the core scrolls by the
+/// negated delta).
 #[expect(clippy::cast_possible_truncation, reason = "deltas fit in f32")]
-fn pan(from: Point, to: Point) -> InputEvent {
+fn pan(from: Point, to: Point, lock: Lock) -> InputEvent {
+    let (dx, dy) = lock.keep(to.x - from.x, to.y - from.y);
     InputEvent::Pan {
-        dx: (to.x - from.x) as f32,
-        dy: (to.y - from.y) as f32,
+        dx: dx as f32,
+        dy: dy as f32,
     }
 }
 
@@ -326,6 +376,51 @@ mod tests {
                 _ => None,
             })
             .expect("a PanEnd")
+    }
+
+    /// A mostly vertical drag is locked vertical: its sideways drift
+    /// neither scrolls nor flings a horizontal scroller under it.
+    #[test]
+    fn a_mostly_vertical_drag_is_locked_vertical() {
+        let mut t = Touch::new(true);
+        t.event(0, Started, p(100., 500.), 0.0, false, false);
+        let first = t
+            .event(0, Moved, p(104., 470.), 0.01, false, false)
+            .unwrap();
+        assert!(
+            first.contains(&InputEvent::Pan { dx: 0.0, dy: -30.0 }),
+            "{first:?}"
+        );
+        let next = t
+            .event(0, Moved, p(112., 440.), 0.02, false, false)
+            .unwrap();
+        assert!(
+            next.contains(&InputEvent::Pan { dx: 0.0, dy: -30.0 }),
+            "{next:?}"
+        );
+        let end = t
+            .event(0, Ended, p(112., 440.), 0.02, false, false)
+            .unwrap();
+        let (vx, vy) = pan_end(&end);
+        assert_eq!(vx, 0.0);
+        assert!(vy < -1000.0);
+    }
+
+    /// A diagonal drag stays free on both axes.
+    #[test]
+    fn a_diagonal_drag_moves_both_axes() {
+        let mut t = Touch::new(true);
+        t.event(0, Started, p(100., 500.), 0.0, false, false);
+        let first = t
+            .event(0, Moved, p(120., 480.), 0.01, false, false)
+            .unwrap();
+        assert!(
+            first.contains(&InputEvent::Pan {
+                dx: 20.0,
+                dy: -20.0
+            }),
+            "{first:?}"
+        );
     }
 
     #[test]

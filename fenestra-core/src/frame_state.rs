@@ -57,6 +57,15 @@ struct Scroll {
     last_step: Option<f64>,
 }
 
+impl Scroll {
+    /// The offset is set another way (from code, the wheel, the keyboard):
+    /// a glide and a stretch end where they are.
+    fn stop_touch(&mut self) {
+        self.motion_y = Motion::default();
+        self.motion_x = Motion::default();
+    }
+}
+
 /// One axis of a touch-driven scroll: the glide's velocity and the stretch
 /// past an edge. The offset itself stays in range; the stretch only moves
 /// what is painted (and hit).
@@ -157,11 +166,23 @@ impl Motion {
             }
         }
         if self.stretch != 0.0 || self.stretch_v != 0.0 {
+            let before = self.stretch;
             (self.stretch, self.stretch_v) = if rigid {
                 (0.0, 0.0)
             } else {
                 spring(self.stretch, self.stretch_v, dt)
             };
+            // Back at the edge still moving into the content (a flick out
+            // of the stretch): it glides on from there rather than
+            // springing through to the far side.
+            let into_content = before != 0.0 && self.stretch_v * before < 0.0;
+            if into_content && (self.stretch == 0.0 || self.stretch * before < 0.0) {
+                if self.stretch_v.abs() >= STOP_SPEED {
+                    self.velocity = self.stretch_v;
+                }
+                self.stretch = 0.0;
+                self.stretch_v = 0.0;
+            }
         }
         offset
     }
@@ -399,6 +420,7 @@ impl FrameState {
     /// range on the next frame build, when content size is known.
     pub fn scroll_by(&mut self, id: WidgetId, dy: f32) {
         let entry = self.scroll.entry(id).or_default();
+        entry.stop_touch();
         entry.offset_y += dy;
         entry.last_change = self.now;
         // Recomputed at the next clamp; a manual move unpins the bottom.
@@ -532,6 +554,7 @@ impl FrameState {
     pub fn scroll_to(&mut self, id: WidgetId, offset_y: f32) {
         let now = self.now;
         let entry = self.scroll.entry(id).or_default();
+        entry.stop_touch();
         entry.offset_y = offset_y.max(0.0);
         entry.last_change = now;
         // Recomputed at the next clamp; a manual move unpins the bottom.
@@ -557,6 +580,7 @@ impl FrameState {
     /// Adds to a scrollable's horizontal offset (clamped on the next build).
     pub fn scroll_by_x(&mut self, id: WidgetId, dx: f32) {
         let entry = self.scroll.entry(id).or_default();
+        entry.stop_touch();
         entry.offset_x += dx;
         entry.last_change = self.now;
     }
@@ -570,6 +594,7 @@ impl FrameState {
     pub fn scroll_to_x(&mut self, id: WidgetId, offset_x: f32) {
         let now = self.now;
         let entry = self.scroll.entry(id).or_default();
+        entry.stop_touch();
         entry.offset_x = offset_x.max(0.0);
         entry.last_change = now;
     }

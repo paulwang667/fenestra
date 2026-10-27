@@ -587,9 +587,14 @@ fn press_target<Msg>(
 /// gliding or springing back — a finger landing there catches it rather
 /// than pressing what is under it.
 pub fn scroll_moving_at(frame: &Frame, state: &FrameState, point: Point) -> bool {
+    // Only a scroller the touch would reach: a bar laid over the content
+    // (the content running on under it) is on top, and a touch there is
+    // the bar's.
+    let chain = frame.hit_chain(point);
     [frame.scrollable_y_at(point), frame.scrollable_x_at(point)]
         .into_iter()
         .flatten()
+        .filter(|id| chain.contains(id))
         .any(|id| state.scroll_moving(id))
 }
 
