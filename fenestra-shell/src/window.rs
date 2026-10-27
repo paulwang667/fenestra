@@ -1110,12 +1110,10 @@ impl WindowShell {
             return None;
         };
         let handle = &self.context.devices[surface.dev_id];
-        let renderer = self.renderers[surface.dev_id].as_mut()?;
         let source = &self.readback.as_ref()?.texture;
         Some(self.vello_glass.composite(
-            &handle.device,
-            &handle.queue,
-            renderer,
+            (surface.dev_id, &handle.device, &handle.queue),
+            &mut self.renderers,
             source,
             origin,
             panes,
@@ -1125,13 +1123,8 @@ impl WindowShell {
     /// Withdraws this window's GPU glass from vello (a frame that draws none).
     #[cfg(not(target_arch = "wasm32"))]
     fn release_vello_glass(&mut self) {
-        if self.vello_glass.registered() == 0 {
-            return;
-        }
-        if let Some(dev_id) = self.surface_device()
-            && let Some(renderer) = self.renderers[dev_id].as_mut()
-        {
-            self.vello_glass.release(renderer);
+        if self.vello_glass.registered() > 0 {
+            self.vello_glass.release(&mut self.renderers);
         }
     }
 
@@ -1171,7 +1164,7 @@ impl WindowShell {
             && self
                 .surface_backend()
                 .is_some_and(crate::backend::raster_supported);
-        let (panes, rest) = if gpu {
+        let (panes, mut rest) = if gpu {
             crate::multi_pass::glass_panes(specs, frame, scale, (pw, ph))
         } else {
             (Vec::new(), specs.to_vec())
@@ -1192,6 +1185,12 @@ impl WindowShell {
         let baked: std::collections::HashSet<_> = injected.keys().copied().collect();
         if !panes.is_empty() {
             note(crate::frame_stats::Phase::Filters, tg.elapsed());
+            rest.extend(crate::multi_pass::uncomposited(
+                specs,
+                &injected,
+                scale,
+                (pw, ph),
+            ));
         }
         if !rest.is_empty() {
             let backdrop = match self.read_region()? {
@@ -2581,10 +2580,10 @@ impl<A: App> AppRunner<A> {
                 // Glass composites on the GPU from the target as it is;
                 // only the other filters still read their region back.
                 let tg = Instant::now();
-                let (panes, specs) = if crate::backend::gpu_glass_enabled() {
+                let (panes, mut rest) = if crate::backend::gpu_glass_enabled() {
                     crate::multi_pass::glass_panes(&specs, frame, scale, (pw, ph))
                 } else {
-                    (Vec::new(), specs)
+                    (Vec::new(), specs.clone())
                 };
                 let mut injected = if panes.is_empty() {
                     std::collections::HashMap::new()
@@ -2596,10 +2595,18 @@ impl<A: App> AppRunner<A> {
                 };
                 crate::frame_stats::record(crate::frame_stats::Phase::Filters, tg.elapsed());
                 let baked: std::collections::HashSet<_> = injected.keys().copied().collect();
-                if specs.is_empty() {
+                if !panes.is_empty() {
+                    rest.extend(crate::multi_pass::uncomposited(
+                        &specs,
+                        &injected,
+                        scale,
+                        (pw, ph),
+                    ));
+                }
+                if rest.is_empty() {
                     (injected, baked)
                 } else {
-                    let region = crate::multi_pass::backdrop_region(&specs, scale, pw, ph)
+                    let region = crate::multi_pass::backdrop_region(&rest, scale, pw, ph)
                         .unwrap_or((0, 0, 1.min(pw), 1.min(ph)));
                     let tr = Instant::now();
                     let backdrop = match self.shell.raster_read(region) {
@@ -2623,7 +2630,7 @@ impl<A: App> AppRunner<A> {
                         &backdrop,
                         (region.0, region.1),
                         (pw, ph),
-                        &specs,
+                        &rest,
                         scale,
                         &custom_fn,
                         &mut self.custom_cache,

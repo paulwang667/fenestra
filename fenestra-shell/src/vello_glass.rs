@@ -14,25 +14,39 @@ use vello::wgpu;
 #[derive(Default)]
 pub(crate) struct VelloGlass {
     glass: GpuGlass,
-    /// The placeholders handed to vello as overrides, by blob id.
+    /// The device (index into the renderers) the glass and the overrides
+    /// live on: a window's surface can come back on another adapter.
+    device: Option<usize>,
+    /// The placeholders handed to that device's renderer as overrides, by
+    /// blob id.
     registered: HashMap<u64, ImageData>,
 }
 
 impl VelloGlass {
-    /// Composites `panes` (frame coordinates) from `source`, the backdrop
+    /// Composites `panes` (frame coordinates) on device `dev_id` (whose
+    /// vello renderer is `renderers[dev_id]`) from `source`, the backdrop
     /// region vello rendered with its top-left at `origin` in the frame, and
-    /// makes each result's placeholder draw it in `renderer`. Placeholders
-    /// registered last time and not this time are withdrawn. Returns each
-    /// pane's placeholder, for the final pass to draw as baked.
+    /// makes each result's placeholder draw it in that renderer.
+    /// Placeholders registered last time and not this time are withdrawn;
+    /// on a new device everything is withdrawn from the old one and the
+    /// glass rebuilt. Returns each pane's placeholder, for the final pass to
+    /// draw as baked.
     pub(crate) fn composite(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        renderer: &mut vello::Renderer,
+        (dev_id, device, queue): (usize, &wgpu::Device, &wgpu::Queue),
+        renderers: &mut [Option<vello::Renderer>],
         source: &wgpu::Texture,
         (ox, oy): (u32, u32),
         panes: &[GlassPane],
     ) -> HashMap<WidgetId, ImageData> {
+        if self.device != Some(dev_id) {
+            self.release(renderers);
+            self.glass = GpuGlass::default();
+            self.device = Some(dev_id);
+        }
+        let Some(renderer) = renderers.get_mut(dev_id).and_then(Option::as_mut) else {
+            return HashMap::new();
+        };
         let (ox, oy) = (i(ox), i(oy));
         let shifted: Vec<GlassPane> = panes
             .iter()
@@ -70,11 +84,18 @@ impl VelloGlass {
         out
     }
 
-    /// Withdraws every placeholder from `renderer`: for a frame that draws no
-    /// GPU glass (no panes, or the CPU path).
-    pub(crate) fn release(&mut self, renderer: &mut vello::Renderer) {
-        for image in self.registered.values() {
-            renderer.override_image(image, None);
+    /// Withdraws every placeholder from the renderer they were handed to:
+    /// for a frame that draws no GPU glass (no panes, or the CPU path), or
+    /// before moving to another device.
+    pub(crate) fn release(&mut self, renderers: &mut [Option<vello::Renderer>]) {
+        if let Some(renderer) = self
+            .device
+            .and_then(|d| renderers.get_mut(d))
+            .and_then(Option::as_mut)
+        {
+            for image in self.registered.values() {
+                renderer.override_image(image, None);
+            }
         }
         self.registered.clear();
     }

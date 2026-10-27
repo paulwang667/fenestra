@@ -455,3 +455,53 @@ fn gpu_glass_runs_on_its_own() {
     let got = crate::headless::read_texture(device, queue, &r.texture, (x, y, w, h)).expect("read");
     assert_close(&got, &cpu_blur(&img, &p), "standalone");
 }
+
+/// A vello renderer for `device`, as the shells build one.
+fn vello_renderer(device: &wgpu::Device) -> vello::Renderer {
+    vello::Renderer::new(
+        device,
+        vello::RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::area_only(),
+            num_init_threads: std::num::NonZeroUsize::new(1),
+            pipeline_cache: None,
+        },
+    )
+    .expect("a vello renderer")
+}
+
+/// A window's surface can come back on another adapter: its vello glass
+/// must rebuild there (not bind the old device's pipelines and atlases) and
+/// withdraw what it handed the old device's renderer.
+#[test]
+fn vello_glass_follows_the_window_to_another_device() {
+    let img = backdrop(320, 240);
+    let p = pane((60, 40, 200, 160), 12.0, 1.5);
+    let (mut a, mut b) = (headless(), headless());
+    let mut glass = crate::vello_glass::VelloGlass::default();
+    let (device_a, queue_a, _) = a.raster_gpu().expect("raster backend");
+    let (device_b, queue_b, _) = b.raster_gpu().expect("raster backend");
+    let mut renderers = vec![
+        Some(vello_renderer(device_a)),
+        Some(vello_renderer(device_b)),
+    ];
+    let source_a = upload(device_a, queue_a, &img);
+    let source_b = upload(device_b, queue_b, &img);
+    let out = glass.composite(
+        (0, device_a, queue_a),
+        &mut renderers,
+        &source_a,
+        (0, 0),
+        &[p],
+    );
+    assert_eq!(out.len(), 1);
+    let out = glass.composite(
+        (1, device_b, queue_b),
+        &mut renderers,
+        &source_b,
+        (0, 0),
+        &[p],
+    );
+    assert_eq!(out.len(), 1, "composited on the new device");
+    assert_eq!(glass.registered(), 1, "and registered only there");
+}

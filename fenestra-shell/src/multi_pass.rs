@@ -373,6 +373,26 @@ pub(crate) fn glass_panes(
     (panes, rest)
 }
 
+/// The glass specs among `specs` the GPU glass did not composite (absent
+/// from `done`: too large for its atlas) that show in the `pw`×`ph` frame —
+/// they fall back to the CPU path rather than lose their frost.
+pub(crate) fn uncomposited<T>(
+    specs: &[MultiPassSpec],
+    done: &HashMap<WidgetId, T>,
+    scale: f64,
+    (pw, ph): (u32, u32),
+) -> Vec<MultiPassSpec> {
+    specs
+        .iter()
+        .filter(|s| {
+            matches!(s.kind, PassKind::BackdropBlur { .. })
+                && !done.contains_key(&s.id)
+                && physical_rect(s.rect, scale, pw, ph).is_some()
+        })
+        .copied()
+        .collect()
+}
+
 /// The final pass as a vello scene (logical coordinates), drawing the panes
 /// in `baked` from their injected images as they are (the GPU composited
 /// their bodies).

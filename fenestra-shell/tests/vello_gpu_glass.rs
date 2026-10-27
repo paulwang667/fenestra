@@ -304,3 +304,43 @@ fn a_vanished_pane_is_unregistered_from_vello() {
         "the gone pane's override is dropped"
     );
 }
+
+/// Sum of horizontal neighbour differences inside `rect`: high for
+/// stripes, low once they are blurred.
+fn energy(image: &RgbaImage, (x, y, w, h): (u32, u32, u32, u32)) -> u64 {
+    let mut e = 0;
+    for yy in y..y + h {
+        for xx in x..x + w - 1 {
+            let (a, b) = (image.get_pixel(xx, yy).0, image.get_pixel(xx + 1, yy).0);
+            e += a
+                .iter()
+                .zip(b.iter())
+                .map(|(p, q)| u64::from(p.abs_diff(*q)))
+                .sum::<u64>();
+        }
+    }
+    e
+}
+
+/// A pane the GPU glass cannot take (wider than the device's largest
+/// texture) still frosts: it falls back to the CPU, as before.
+#[test]
+fn a_pane_too_wide_for_the_gpu_still_frosts_on_the_cpu() {
+    let t = Theme::light();
+    // Blur only (no tint to dim the stripes on its own).
+    let wide = col()
+        .id("wide")
+        .absolute()
+        .left(40.0)
+        .top(20.0)
+        .w(20_000.0)
+        .h(60.0)
+        .backdrop_blur(10.0);
+    let (glass, _) = render(&scene(&t, vec![wide]), true);
+    let (sharp, _) = render(&scene(&t, vec![]), true);
+    let under = (48, 28, 300, 44);
+    assert!(
+        energy(&glass, under) * 2 < energy(&sharp, under),
+        "the stripes under the pane are blurred"
+    );
+}

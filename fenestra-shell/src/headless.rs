@@ -288,11 +288,9 @@ impl Headless {
         let has_glass = specs
             .iter()
             .any(|s| matches!(s.kind, fenestra_core::PassKind::BackdropBlur { .. }));
-        if !(gpu_glass && has_glass)
-            && self.vello_glass.registered() > 0
-            && let Some(renderer) = self.renderer.as_mut()
-        {
-            self.vello_glass.release(renderer);
+        if !(gpu_glass && has_glass) && self.vello_glass.registered() > 0 {
+            self.vello_glass
+                .release(std::slice::from_mut(&mut self.renderer));
         }
         if specs.is_empty() {
             // Fast path: one pass, identical to `render`.
@@ -353,8 +351,9 @@ impl Headless {
         let (device, queue) = (&handle.device, &handle.queue);
         let source = crate::vello_glass::render_target(device, (region.2, region.3));
         let view = source.create_view(&wgpu::TextureViewDescriptor::default());
-        let renderer = self.renderer.as_mut().expect("built above");
-        renderer
+        self.renderer
+            .as_mut()
+            .expect("built above")
             .render_to_texture(
                 device,
                 queue,
@@ -368,16 +367,23 @@ impl Headless {
                 },
             )
             .map_err(ShellError::Vello)?;
-        let (panes, rest) = crate::multi_pass::glass_panes(specs, frame, scale, (width, height));
+        let (panes, mut rest) =
+            crate::multi_pass::glass_panes(specs, frame, scale, (width, height));
+        // One device: the renderer is the slice's only entry.
         let mut injected = self.vello_glass.composite(
-            device,
-            queue,
-            renderer,
+            (0, device, queue),
+            std::slice::from_mut(&mut self.renderer),
             &source,
             (region.0, region.1),
             &panes,
         );
         let baked: std::collections::HashSet<_> = injected.keys().copied().collect();
+        rest.extend(crate::multi_pass::uncomposited(
+            specs,
+            &injected,
+            scale,
+            (width, height),
+        ));
         if !rest.is_empty() {
             let backdrop = read_texture(device, queue, &source, (0, 0, region.2, region.3))?;
             self.backdrop_reads += 1;
@@ -428,9 +434,16 @@ impl Headless {
         // Glass composites on the GPU straight from the backdrop texture;
         // only the other filters (if any) still read their region back.
         let (mut injected, specs) = if self.gpu_glass {
-            let (panes, rest) =
+            let (panes, mut rest) =
                 crate::multi_pass::glass_panes(&specs, frame, frame.scale(), (width, height));
             let (glass, _) = raster.glass(&handle.device, &handle.queue, &target, &panes);
+            // Panes too large for the GPU glass fall back to the CPU.
+            rest.extend(crate::multi_pass::uncomposited(
+                &specs,
+                &glass,
+                frame.scale(),
+                (width, height),
+            ));
             (glass, rest)
         } else {
             (std::collections::HashMap::new(), specs)
