@@ -26,6 +26,7 @@ mod palette;
 mod panes;
 mod radio;
 mod rating;
+mod scaffold;
 mod segmented;
 mod select;
 mod skeleton;
@@ -77,6 +78,9 @@ pub use palette::{CommandPalette, command_palette};
 pub use panes::{SplitPane, split_pane};
 pub use radio::{Radio, radio, radio_group};
 pub use rating::{Rating, rating};
+pub use scaffold::{
+    APP_BAR_H, AppBar, Scaffold, TAB_BAR_H, TabItem, app_bar, scaffold, tab_bar, tab_item,
+};
 pub use segmented::{Segmented, segmented};
 pub use select::{Select, SelectOption, select};
 pub use skeleton::{skeleton, skeleton_circle, skeleton_text};
