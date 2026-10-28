@@ -463,6 +463,46 @@ fn needs_new_target(current: Option<(u32, u32)>, surface: (u32, u32)) -> bool {
     current != Some(surface)
 }
 
+/// Whether a freshly created window still has to be shown: winit creates it
+/// hidden, and iOS reports no visibility at all (`None`), where waiting for
+/// `Some(false)` left the window hidden forever.
+fn needs_show(visible: Option<bool>) -> bool {
+    visible != Some(true)
+}
+
+/// The window geometry [`WindowOptions`] asks of winit.
+#[derive(Debug)]
+struct Geometry {
+    inner_size: Option<(f64, f64)>,
+    min_size: Option<(f64, f64)>,
+    position: Option<(f64, f64)>,
+    maximized: bool,
+    fullscreen: bool,
+}
+
+/// The geometry to open `options` with. A `mobile` window (iOS) takes none
+/// of it: size, position, maximized and fullscreen are desktop notions, and
+/// winit on iOS turns an inner size into the UIWindow's frame — a
+/// 1024×768-point window on a phone.
+fn window_geometry(options: &WindowOptions, mobile: bool) -> Geometry {
+    if mobile {
+        return Geometry {
+            inner_size: None,
+            min_size: None,
+            position: None,
+            maximized: false,
+            fullscreen: false,
+        };
+    }
+    Geometry {
+        inner_size: Some(options.inner_size),
+        min_size: options.min_size,
+        position: options.position,
+        maximized: options.maximized,
+        fullscreen: options.fullscreen,
+    }
+}
+
 /// Whether a clean frame is presented again from the raster target instead
 /// of repainted: nothing changed since it was rendered for `rendered` (the
 /// logical size and scale), and the target still holds it at the
@@ -531,10 +571,21 @@ impl WindowShell {
         // surface the failure in the browser console before stopping.
         #[cfg(target_arch = "wasm32")]
         web_sys::console::error_1(&format!("fenestra: {err}").into());
-        if self.fatal.is_none() {
-            self.fatal = Some(err);
+        // iOS never returns from `run_app`, so nobody would read `fatal`:
+        // the app would sit on a black screen. Panic instead, which puts
+        // the error in the console and the crash report.
+        #[cfg(target_os = "ios")]
+        {
+            let _ = event_loop;
+            panic!("fenestra: {err}");
         }
-        event_loop.exit();
+        #[cfg(not(target_os = "ios"))]
+        {
+            if self.fatal.is_none() {
+                self.fatal = Some(err);
+            }
+            event_loop.exit();
+        }
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) -> Result<(), ShellError> {
@@ -556,21 +607,22 @@ impl WindowShell {
         let window = match cached {
             Some(window) => window,
             None => {
+                let geometry = window_geometry(&self.options, cfg!(target_os = "ios"));
                 let attrs = Window::default_attributes()
                     .with_decorations(!self.options.borderless)
                     .with_title(self.options.title.clone())
-                    .with_inner_size(LogicalSize::new(
-                        self.options.inner_size.0,
-                        self.options.inner_size.1,
-                    ))
                     .with_resizable(self.options.resizable)
-                    .with_maximized(self.options.maximized)
+                    .with_maximized(geometry.maximized)
                     .with_visible(false);
-                let attrs = match self.options.min_size {
+                let attrs = match geometry.inner_size {
+                    Some((w, h)) => attrs.with_inner_size(LogicalSize::new(w, h)),
+                    None => attrs,
+                };
+                let attrs = match geometry.min_size {
                     Some((w, h)) => attrs.with_min_inner_size(LogicalSize::new(w, h)),
                     None => attrs,
                 };
-                let attrs = if self.options.fullscreen {
+                let attrs = if geometry.fullscreen {
                     attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)))
                 } else {
                     attrs
@@ -580,7 +632,7 @@ impl WindowShell {
                 // fullscreen window lands on a chosen monitor. Winit has no
                 // "fullscreen on the monitor at this point" — placing it there
                 // first is the portable way to say it.
-                let attrs = match self.options.position {
+                let attrs = match geometry.position {
                     Some((x, y)) => attrs.with_position(LogicalPosition::new(x, y)),
                     None => attrs,
                 };
@@ -612,7 +664,7 @@ impl WindowShell {
             }
         };
         before_visible(event_loop, &window);
-        let was_hidden = window.is_visible() == Some(false);
+        let was_hidden = needs_show(window.is_visible());
         self.activate(window.clone())?;
         if was_hidden {
             window.set_visible(true);
@@ -4108,5 +4160,35 @@ mod animation_frame_tests {
         assert_eq!(next_animation_frame(start), start + ms(16));
         assert!(next_animation_frame(start) - (start + ms(10)) == ms(6));
         assert!(next_animation_frame(start) <= start + ms(31));
+    }
+}
+
+#[cfg(test)]
+mod mobile_window_tests {
+    use super::{WindowOptions, needs_show, window_geometry};
+
+    #[test]
+    fn a_window_of_unknown_visibility_is_shown() {
+        assert!(needs_show(None), "iOS never reports visibility");
+        assert!(needs_show(Some(false)));
+        assert!(!needs_show(Some(true)));
+    }
+
+    #[test]
+    fn a_mobile_window_ignores_desktop_geometry() {
+        let o = WindowOptions::titled("t")
+            .with_min_size(960.0, 640.0)
+            .with_position(10.0, 20.0)
+            .fullscreen();
+        let g = window_geometry(&o, true);
+        assert_eq!(
+            (g.inner_size, g.min_size, g.position, g.maximized, g.fullscreen),
+            (None, None, None, false, false)
+        );
+        let d = window_geometry(&o, false);
+        assert_eq!(d.inner_size, Some((1024.0, 768.0)));
+        assert_eq!(d.min_size, Some((960.0, 640.0)));
+        assert_eq!(d.position, Some((10.0, 20.0)));
+        assert!(d.fullscreen);
     }
 }
