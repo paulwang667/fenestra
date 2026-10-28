@@ -684,6 +684,19 @@ pub enum RovingAxis {
     Horizontal,
 }
 
+/// Where an element's entrance starts ([`Element::enter_from`]): it plays
+/// from these values to its own style when it first appears.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnterFrom {
+    /// Opacity the entrance starts at.
+    pub opacity: f32,
+    /// Scale the entrance starts at, about the element's transform origin.
+    pub scale: f32,
+    /// Offset the entrance starts at, logical px `(dx, dy)`, added to the
+    /// element's own translate.
+    pub translate: (f32, f32),
+}
+
 /// How an element animates *out* when it leaves the tree (the counterpart of
 /// [`Element::enter`]). When an element tagged with [`Element::exit`] is
 /// removed, a paint-only snapshot ("ghost") is left in its place and animates
@@ -882,6 +895,8 @@ pub struct Element<Msg> {
     /// Exit animation: a paint-only ghost lingers and animates out when the
     /// id is removed from the tree (the counterpart of [`Self::enter`]).
     pub(crate) exit: Option<ExitAnim>,
+    /// Where an entrance starts ([`Element::enter_from`]).
+    pub(crate) enter_from: Option<EnterFrom>,
     /// FLIP/shared-element layout animation: when the element's measured rect
     /// moves between frames it slides from the old position to the new.
     pub(crate) animate_layout: bool,
@@ -971,6 +986,7 @@ impl<Msg> Element<Msg> {
             selectable: false,
             enter: None,
             exit: None,
+            enter_from: None,
             animate_layout: false,
             on_type_ahead: None,
             label: None,
@@ -1613,6 +1629,33 @@ impl<Msg> Element<Msg> {
             opacity_to: opacity,
             scale_to: scale,
             translate_to: (dx, dy),
+        });
+        self
+    }
+
+    /// Like [`Self::enter`], but the entrance starts at an explicit `opacity`,
+    /// `scale` (about the element's transform origin) and `(dx, dy)` offset —
+    /// the counterpart of [`Self::exit_to`]. `enter_from(0.0, 1.0, 40.0, 0.0)`
+    /// slides a page in from the right as it fades in. Timing is the
+    /// standard entrance (decelerate-eased
+    /// [`MotionDuration::Base`](crate::tokens::MotionDuration::Base)) unless
+    /// [`Self::enter`] or [`Self::transition`] sets one. Plays when the
+    /// element first appears (give it a stable [`Self::id`]); inert under
+    /// reduced motion.
+    pub fn enter_from(mut self, opacity: f32, scale: f32, dx: f32, dy: f32) -> Self {
+        let timing = self.enter.unwrap_or_else(|| {
+            crate::style::Transition::all()
+                .duration_ms(crate::tokens::MotionDuration::Base.ms())
+                .easing(crate::tokens::EASE_DECELERATE)
+        });
+        self.enter = Some(crate::style::Transition {
+            opacity: true,
+            ..timing
+        });
+        self.enter_from = Some(EnterFrom {
+            opacity,
+            scale,
+            translate: (dx, dy),
         });
         self
     }
@@ -2873,6 +2916,7 @@ impl<Msg: 'static> Element<Msg> {
             selectable: self.selectable,
             enter: self.enter,
             exit: self.exit,
+            enter_from: self.enter_from,
             animate_layout: self.animate_layout,
             label: self.label,
             themed: self.themed,

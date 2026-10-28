@@ -14,6 +14,12 @@
 
 ### Added
 
+- **`Element::enter_from(opacity, scale, dx, dy)`**, the counterpart of
+  `exit_to`: an element's entrance starts at that opacity, scale and offset
+  and plays to its own style (standard decelerate timing unless `.enter()`
+  or `.transition()` sets one). `enter_from(0.0, 1.0, 40.0, 0.0)` slides a
+  page in from the right; paired with `exit_to`, pages move with a
+  direction. Inert under reduced motion.
 - **The focused element scrolls into view.** When focus moves to an element
   (Tab, Next, a tap, code, arrow keys in a list) or the window changes size
   while it holds focus (an Android keyboard shrinking the window), its

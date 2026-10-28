@@ -648,7 +648,16 @@ fn resolve<Msg>(
         let anim = state.anims.entry(id).or_insert_with(|| {
             // First appearance: enter-animated elements seed from the
             // target faded out, so they play in toward it.
-            let seed = if el.enter.is_some() {
+            let seed = if let Some(start) = el.enter_from {
+                let mut from = style.clone();
+                from.opacity = start.opacity;
+                from.scale = start.scale;
+                from.translate = (
+                    style.translate.0 + start.translate.0,
+                    style.translate.1 + start.translate.1,
+                );
+                from
+            } else if el.enter.is_some() {
                 let mut from = style.clone();
                 from.opacity = 0.0;
                 from

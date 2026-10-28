@@ -761,6 +761,18 @@ impl FrameState {
         self.prev_rects.get(&id).copied()
     }
 
+    /// Where `id`'s running animation started — `(opacity, scale,
+    /// translate)` — which for an entering element is its entrance seed
+    /// ([`Element::enter_from`](crate::Element::enter_from)); `None` without
+    /// one.
+    #[doc(hidden)]
+    pub fn anim_seed(&self, id: WidgetId) -> Option<(f32, f32, (f32, f32))> {
+        self.anims.get(&id).map(|a| {
+            let s = a.start();
+            (s.opacity, s.scale, s.translate)
+        })
+    }
+
     /// The exit ghost's frozen paint-time translate for `id` (what the leaving
     /// element last painted with, including any in-flight FLIP slide), or `None`
     /// when no exit is tracked for it.

@@ -432,3 +432,57 @@ fn exit_ghost_inherits_a_mid_flip_slide() {
     // Painting the transformed ghost exercises the frozen-transform path.
     let _ = f3.paint(&mut fonts, &mut state);
 }
+
+// ------------------------------------------------------------ enter_from
+
+/// A page that slides in: `enter_from` seeds its entrance at the given
+/// opacity, scale and offset, and it plays to its target, then stops.
+#[test]
+fn enter_from_starts_offset_and_settles() {
+    let theme = Theme::light();
+    let mut fonts = Fonts::embedded();
+    let mut state = FrameState::new();
+    let view = |present: bool| -> Element<()> {
+        let mut kids: Vec<Element<()>> = vec![div::<()>().id("keep").w(100.0).h(20.0).shrink0()];
+        if present {
+            kids.push(
+                div::<()>()
+                    .id("page")
+                    .w(100.0)
+                    .h(20.0)
+                    .shrink0()
+                    .enter_from(0.0, 0.98, 40.0, 0.0),
+            );
+        }
+        col::<()>().w(200.0).h(400.0).children(kids)
+    };
+    build_frame(&view(false), &theme, &mut fonts, &mut state, SIZE, 1.0);
+    state.tick(1.0);
+    let f = build_frame(&view(true), &theme, &mut fonts, &mut state, SIZE, 1.0);
+    let page = f.get(&by::id("page")).id;
+    assert_eq!(state.anim_seed(page), Some((0.0, 0.98, (40.0, 0.0))));
+    assert!(f.animating, "it plays in");
+    state.tick(3.0);
+    let f = build_frame(&view(true), &theme, &mut fonts, &mut state, SIZE, 1.0);
+    assert!(!f.animating, "and settles");
+    // An element without it is untouched.
+    let keep = f.get(&by::id("keep")).id;
+    assert_eq!(state.anim_seed(keep), None);
+}
+
+#[test]
+fn enter_from_is_inert_under_reduced_motion() {
+    let theme = Theme::light();
+    let mut fonts = Fonts::embedded();
+    let mut state = FrameState::new();
+    state.reduced_motion = true;
+    let view = col::<()>().w(200.0).h(400.0).children([div::<()>()
+        .id("page")
+        .w(100.0)
+        .h(20.0)
+        .enter_from(0.0, 1.0, 40.0, 0.0)]);
+    let f = build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
+    let page = f.get(&by::id("page")).id;
+    assert!(!f.animating);
+    assert_eq!(state.anim_seed(page), None);
+}

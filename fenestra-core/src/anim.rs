@@ -21,6 +21,12 @@ pub(crate) struct Anim {
 }
 
 impl Anim {
+    /// Where the current segment started (an entrance's seed, until the
+    /// target changes).
+    pub(crate) fn start(&self) -> &Style {
+        &self.from
+    }
+
     pub(crate) fn new(target: Style, now: f64, seen: u64) -> Self {
         Self {
             from: target.clone(),
