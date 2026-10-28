@@ -1963,18 +1963,24 @@ pub fn build_frame<Msg>(
             .unwrap_or(usize::MAX)
     });
 
-    // ---- the focused element into view: once, when focus moves to it or
-    // the window changes size under it (an on-screen keyboard), so later
-    // scrolling is the user's.
+    // ---- the focused element into view: once, when the keyboard or code
+    // moves focus to it (a press is where the pointer already is, and may be
+    // a drag starting), or the window changes size while it shows (an
+    // on-screen keyboard opening) — so later scrolling is the user's.
     let focus = state.focused();
-    if let Some(id) = focus
-        && (state.revealed_focus != focus || state.revealed_size != size)
-    {
-        let moved =
-            reveal(&root_node, id, state) || overlays.iter().any(|o| reveal(&o.node, id, state));
-        // The new offsets apply on the next frame.
-        animating |= moved;
+    if let Some(id) = focus {
+        let moved_to = state.revealed_focus != focus && state.focus_visible;
+        let resized_under =
+            state.revealed_focus == focus && state.revealed_size != size && state.revealed_shown;
+        if moved_to || resized_under {
+            let moved = reveal(&root_node, id, state)
+                || overlays.iter().any(|o| reveal(&o.node, id, state));
+            // The new offsets apply on the next frame.
+            animating |= moved;
+        }
     }
+    state.revealed_shown = focus
+        .is_some_and(|id| shown(&root_node, id) || overlays.iter().any(|o| shown(&o.node, id)));
     state.revealed_focus = focus;
     state.revealed_size = size;
 
@@ -2103,9 +2109,36 @@ fn mirror_rtl(node: &mut FrameNode, w: f64) {
     }
 }
 
-/// Finds a node's rect within a realized subtree.
 /// Space kept around an element scrolled into view (logical px).
 const REVEAL_MARGIN: f64 = 8.0;
+
+/// The content box of a scroll container: its padding (room left under a
+/// floating bar) counts as hidden.
+fn scroll_view(node: &FrameNode) -> Rect {
+    let pad = &node.style.padding;
+    Rect::new(
+        node.rect.x0 + f64::from(pad.left),
+        node.rect.y0 + f64::from(pad.top),
+        node.rect.x1 - f64::from(pad.right),
+        node.rect.y1 - f64::from(pad.bottom),
+    )
+}
+
+/// Whether `id`, under `node`, shows at least in part through every scroll
+/// container above it.
+fn shown(node: &FrameNode, id: WidgetId) -> bool {
+    let mut chain = Vec::new();
+    if !chain_to(node, id, &mut chain) {
+        return false;
+    }
+    let Some((target, ancestors)) = chain.split_last() else {
+        return false;
+    };
+    ancestors
+        .iter()
+        .filter(|a| a.scroll.is_some())
+        .all(|a| target.rect.intersect(scroll_view(a)).area() > 0.0)
+}
 
 /// Pushes the nodes from `node` down to `id` onto `chain` (both included);
 /// whether `id` is under `node`.
@@ -2150,13 +2183,7 @@ fn reveal(node: &FrameNode, id: WidgetId, state: &mut FrameState) -> bool {
         let Some(scroll) = &anc.scroll else {
             continue;
         };
-        let pad = &anc.style.padding;
-        let view = Rect::new(
-            anc.rect.x0 + f64::from(pad.left),
-            anc.rect.y0 + f64::from(pad.top),
-            anc.rect.x1 - f64::from(pad.right),
-            anc.rect.y1 - f64::from(pad.bottom),
-        );
+        let view = scroll_view(anc);
         let dy = if scroll.can_scroll_y {
             reveal_delta(target.y0, target.y1, view.y0, view.y1)
         } else {
@@ -2184,6 +2211,7 @@ fn reveal(node: &FrameNode, id: WidgetId, state: &mut FrameState) -> bool {
     moved
 }
 
+/// Finds a node's rect within a realized subtree.
 fn rect_in(node: &FrameNode, id: WidgetId) -> Option<Rect> {
     if node.id == id {
         return Some(node.rect);

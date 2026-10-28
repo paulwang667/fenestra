@@ -206,6 +206,9 @@ pub struct FrameState {
     /// change in either scrolls the focused element into view.
     pub(crate) revealed_focus: Option<WidgetId>,
     pub(crate) revealed_size: (f32, f32),
+    /// Whether the focused element showed in the last frame: a resize
+    /// reveals it only then, leaving a list scrolled away from it alone.
+    pub(crate) revealed_shown: bool,
     /// Elements currently hovered (with hover styling or handlers), with
     /// the clock time the hover began (tooltips key off it).
     pub(crate) hovered: HashMap<WidgetId, f64>,
@@ -307,6 +310,7 @@ impl Default for FrameState {
             reduced_motion: false,
             revealed_focus: None,
             revealed_size: (0.0, 0.0),
+            revealed_shown: false,
             hovered: HashMap::new(),
             active: None,
             focus: None,

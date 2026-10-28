@@ -298,3 +298,97 @@ fn a_focused_menu_item_is_revealed_in_its_overlay() {
     let view = f.frame.rect_of(menu_id).unwrap();
     assert_inside(item, view, MARGIN);
 }
+
+/// A 200-tall list of focusable rows, as kit buttons and list rows are.
+fn rows(_: ()) -> Element<()> {
+    col().w(400.0).h_full().child(
+        col()
+            .id("list")
+            .w(300.0)
+            .h(200.0)
+            .scroll_y()
+            .hide_scrollbar()
+            .children((0..20).map(|i| {
+                div()
+                    .id(&format!("r{i}"))
+                    .semantics(Semantics::Button)
+                    .focusable(true)
+                    .h(48.0)
+                    .shrink0()
+            })),
+    )
+}
+
+/// A press focuses a row partly out of view (the finger is starting a
+/// scroll): the list does not jump under it.
+#[test]
+fn a_press_on_a_partly_hidden_row_does_not_scroll() {
+    let mut f = Fixture::new(rows);
+    let (list_id, _) = f.scroller(Point::new(50.0, 50.0));
+    f.state.scroll_to(list_id, 30.0);
+    f.build();
+    // Row 0 shows only its bottom 18 px; press there.
+    for event in [
+        InputEvent::PointerMove { x: 50.0, y: 10.0 },
+        InputEvent::PointerDown,
+    ] {
+        let _ = fenestra_core::dispatch(&rows(()), &f.frame, &mut f.state, &mut f.fonts, event);
+    }
+    assert_eq!(f.state.focused(), Some(f.id("r0")), "the press focused it");
+    f.build();
+    f.build();
+    assert_eq!(f.state.scroll_offset(list_id), 30.0, "no jump");
+}
+
+/// A field focused by a tap, then a keyboard shrinking the window: the field
+/// still comes into view (the size changed while it showed).
+#[test]
+fn a_tapped_field_is_revealed_when_the_window_shrinks() {
+    fn full(_: ()) -> Element<()> {
+        col().w(400.0).h_full().child(
+            col()
+                .id("list")
+                .w(300.0)
+                .h_full()
+                .scroll_y()
+                .hide_scrollbar()
+                .children(fields(20)),
+        )
+    }
+    let mut f = Fixture::new(full);
+    let at = f.rect("f5").center();
+    for event in [
+        InputEvent::PointerMove {
+            x: at.x as f32,
+            y: at.y as f32,
+        },
+        InputEvent::PointerDown,
+        InputEvent::PointerUp,
+    ] {
+        let _ = fenestra_core::dispatch(&full(()), &f.frame, &mut f.state, &mut f.fonts, event);
+    }
+    f.build();
+    assert_eq!(f.state.focused(), Some(f.id("f5")));
+    f.size = (400.0, 150.0);
+    f.build();
+    f.build();
+    let (_, view) = f.scroller(Point::new(50.0, 50.0));
+    assert_inside(f.rect("f5"), view, MARGIN);
+}
+
+/// Scrolled away from the focused field, a resize (a window edge dragged, a
+/// keyboard closed) leaves the list where the user put it.
+#[test]
+fn a_resize_leaves_a_scrolled_away_field_alone() {
+    let mut f = Fixture::new(list);
+    f.focus("f1");
+    let (list_id, _) = f.scroller(Point::new(50.0, 50.0));
+    f.state.scroll_to(list_id, 500.0);
+    f.build();
+    f.size = (400.0, 280.0);
+    f.build();
+    f.size = (400.0, 260.0);
+    f.build();
+    f.build();
+    assert_eq!(f.state.scroll_offset(list_id), 500.0);
+}
