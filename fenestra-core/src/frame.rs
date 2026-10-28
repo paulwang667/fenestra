@@ -4275,20 +4275,28 @@ mod tests {
     fn corner_overlay_frame(safe_area: kurbo::Insets) -> Frame {
         use crate::element::{col, div};
         let toast = div::<()>().id("toast").w(100.0).h(40.0);
-        let root = col().w_full().h_full().child(div::<()>().id("anchor").child(
-            toast.overlay(Overlay {
+        let root = col()
+            .w_full()
+            .h_full()
+            .child(div::<()>().id("anchor").child(toast.overlay(Overlay {
                 mode: OverlayMode::Open,
                 placement: OverlayPlacement::TopRight { margin: 8.0 },
                 backdrop: false,
                 trap_focus: false,
                 enter: false,
                 match_anchor_width: false,
-            }),
-        ));
+            })));
         let mut fonts = Fonts::embedded();
         let mut state = FrameState::new();
         state.safe_area = safe_area;
-        build_frame(&root, &Theme::light(), &mut fonts, &mut state, (402.0, 874.0), 1.0)
+        build_frame(
+            &root,
+            &Theme::light(),
+            &mut fonts,
+            &mut state,
+            (402.0, 874.0),
+            1.0,
+        )
     }
 
     /// Overlays are placed inside the safe area (iOS): a corner toast clears
