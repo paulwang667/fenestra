@@ -14,6 +14,13 @@
 
 ### Added
 
+- **The focused element scrolls into view.** When focus moves to an element
+  (Tab, Next, a tap, code, arrow keys in a list) or the window changes size
+  while it holds focus (an Android keyboard shrinking the window), its
+  scroll containers scroll just far enough to show it with an 8 px margin
+  inside their content box (padding under a floating bar counts as hidden);
+  one taller than the view shows its top. Once per change: scrolling
+  afterwards is left alone. Overlays too.
 - **Inputs say what keyboard and enter key they want.** `Element::keyboard`
   (`Keyboard::{Text, Number, Decimal, Phone, Email, Url}`) and
   `Element::enter_key` (`EnterKey::{Default, Send, Search, Go, Done, Next,
