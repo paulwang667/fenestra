@@ -18,7 +18,8 @@
   system's fonts as well as the embedded ones, so Chinese and other
   scripts Inter lacks render instead of as missing-glyph boxes. Off by
   default (installed fonts vary by machine, so such goldens are not
-  portable).
+  portable). Fonts registered through `with_fonts` apply either way
+  (`Fonts::sync_registrations` replays them into the system set).
 
 - **iOS (simulator) runs fenestra apps.** The main window opens full screen
   and lays the app out inside the safe area, on a root painted with the

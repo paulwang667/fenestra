@@ -296,6 +296,9 @@ pub struct Fonts {
     cache: HashMap<LayoutKey, Layout<LayoutBrush>>,
     /// Family names registered per role (Display/Serif design faces).
     roles: HashMap<FamilyRole, String>,
+    /// Every successful [`Fonts::register`], in order, so another set can
+    /// replay them ([`Fonts::sync_registrations`]).
+    registered: Vec<(FamilyRole, Blob<u8>)>,
     /// The UI language, which picks among faces that draw the same
     /// characters differently (Han in Chinese, Japanese and Korean forms).
     locale: Option<parley::Language>,
@@ -374,6 +377,7 @@ impl Fonts {
             layout_cx: LayoutContext::new(),
             cache: HashMap::new(),
             roles: HashMap::new(),
+            registered: Vec::new(),
             locale: None,
         }
     }
@@ -473,8 +477,21 @@ impl Fonts {
     /// Which family a multi-family blob binds to is [`pick_family`], and it
     /// does not depend on the order the faces come back in.
     pub fn register(&mut self, role: FamilyRole, data: Vec<u8>) -> bool {
+        self.register_blob(role, Blob::new(std::sync::Arc::new(data)))
+    }
+
+    /// Replays the registrations `from` has that this set does not, in
+    /// order — for a set that takes registrations only this way (the
+    /// harness's system-font set, kept in step with the embedded one).
+    pub fn sync_registrations(&mut self, from: &Fonts) {
+        for (role, blob) in from.registered.iter().skip(self.registered.len()) {
+            self.register_blob(*role, blob.clone());
+        }
+    }
+
+    fn register_blob(&mut self, role: FamilyRole, blob: Blob<u8>) -> bool {
         let collection = &mut self.font_cx.collection;
-        let registered = collection.register_fonts(Blob::new(std::sync::Arc::new(data)), None);
+        let registered = collection.register_fonts(blob.clone(), None);
         let names: Vec<String> = registered
             .into_iter()
             .filter_map(|(family, _fonts)| collection.family_name(family).map(str::to_owned))
@@ -484,6 +501,7 @@ impl Fonts {
             return false;
         };
         self.roles.insert(role, name);
+        self.registered.push((role, blob));
         self.cache.clear();
         true
     }
@@ -1023,6 +1041,24 @@ impl Fonts {
 
 #[cfg(test)]
 mod tests {
+
+    /// Registrations carry over: a set synced from another binds the same
+    /// roles, and syncing again replays only the ones made since.
+    #[test]
+    fn sync_registrations_replays_the_missing_ones() {
+        use crate::FamilyRole;
+        let mut from = super::Fonts::embedded();
+        let mut to = super::Fonts::embedded();
+        assert!(from.register(FamilyRole::Display, super::INTER_MEDIUM.to_vec()));
+        to.sync_registrations(&from);
+        assert_eq!(to.role_family(FamilyRole::Display), Some("Inter"));
+        assert_eq!(to.role_family(FamilyRole::Serif), None);
+        assert!(from.register(FamilyRole::Serif, super::INTER_SEMIBOLD.to_vec()));
+        to.sync_registrations(&from);
+        assert_eq!(to.role_family(FamilyRole::Serif), Some("Inter"));
+        to.sync_registrations(&from);
+        assert_eq!(to.registered.len(), 2, "nothing is registered twice");
+    }
 
     /// The UI language parses from a BCP 47 tag; `None` or garbage clears it.
     #[test]

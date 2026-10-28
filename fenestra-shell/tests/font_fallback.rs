@@ -5,8 +5,8 @@
 
 #![cfg(target_os = "macos")]
 
-use fenestra_core::{App, Element, Fonts, Theme, col, text};
-use fenestra_shell::{Harness, render_element_with};
+use fenestra_core::{App, Element, FamilyRole, Fonts, Theme, col, text};
+use fenestra_shell::{Harness, render_element_with, with_fonts};
 
 fn cjk_view() -> Element<()> {
     col()
@@ -83,5 +83,60 @@ fn a_harness_with_system_fonts_renders_cjk() {
         differing(&h.render(), &embedded),
         0,
         "turning it off goes back to the embedded fonts"
+    );
+}
+
+struct DisplayLine;
+
+fn display_view() -> Element<()> {
+    col().p(12.0).children([text("Display 微信")
+        .size_px(22.0)
+        .family(FamilyRole::Display)])
+}
+
+impl App for DisplayLine {
+    type Msg = ();
+    fn update(&mut self, _msg: ()) {}
+    fn view(&self) -> Element<()> {
+        display_view()
+    }
+}
+
+/// A font registered through `with_fonts` applies with system fonts on as
+/// well, even when the system set already exists.
+#[test]
+fn a_registered_font_applies_with_system_fonts() {
+    let Ok(songti) = std::fs::read("/System/Library/Fonts/Supplemental/Songti.ttc") else {
+        eprintln!("skipped: no Songti");
+        return;
+    };
+    let theme = Theme::light();
+    let mut h = Harness::new(DisplayLine, theme.clone(), (300, 60));
+    h.set_system_fonts(true);
+    let before = h.render();
+    assert!(with_fonts(
+        |f| f.register(FamilyRole::Display, songti.clone())
+    ));
+    h.rebuild();
+    let after = h.render();
+
+    let mut fonts = Fonts::with_system();
+    fonts.register(FamilyRole::Display, songti);
+    let expected = render_element_with(display_view(), &theme, (300, 60), &mut fonts);
+    // Two vello renders of the same frame can differ by a few anti-aliased
+    // pixels from run to run; a channel tolerance keeps this about faces.
+    let differing = |a: &image::RgbaImage, b: &image::RgbaImage| {
+        a.pixels()
+            .zip(b.pixels())
+            .filter(|(pa, pb)| pa.0.iter().zip(pb.0).any(|(x, y)| x.abs_diff(y) > 24))
+            .count()
+    };
+    assert!(
+        differing(&before, &after) > 300,
+        "the registered face draws"
+    );
+    assert!(
+        differing(&after, &expected) < 20,
+        "as system-font rendering with it registered"
     );
 }
