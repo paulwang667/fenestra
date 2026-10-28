@@ -232,6 +232,11 @@ pub struct WindowOptions {
     #[cfg(target_os = "android")]
     pub android_haptic:
         Option<fn(&winit::platform::android::activity::AndroidApp, fenestra_core::Haptic)>,
+    /// iOS: plays a touch feedback, normally a `UIImpactFeedbackGenerator`
+    /// — an Objective-C call this crate (no `unsafe`) leaves to the app.
+    /// `None` plays nothing.
+    #[cfg(target_os = "ios")]
+    pub ios_haptic: Option<fn(fenestra_core::Haptic)>,
 }
 
 impl WindowOptions {
@@ -257,6 +262,8 @@ impl WindowOptions {
             android_back: None,
             #[cfg(target_os = "android")]
             android_haptic: None,
+            #[cfg(target_os = "ios")]
+            ios_haptic: None,
         }
     }
 
@@ -403,6 +410,15 @@ impl WindowOptions {
         f: fn(&winit::platform::android::activity::AndroidApp, fenestra_core::Haptic),
     ) -> Self {
         self.android_haptic = Some(f);
+        self
+    }
+
+    /// Sets how a touch feedback plays (iOS only; see
+    /// [`WindowOptions::ios_haptic`]).
+    #[cfg(target_os = "ios")]
+    #[must_use]
+    pub fn with_ios_haptic(mut self, f: fn(fenestra_core::Haptic)) -> Self {
+        self.ios_haptic = Some(f);
         self
     }
 }
@@ -3032,8 +3048,8 @@ impl<A: App> AppRunner<A> {
         }
     }
 
-    /// Plays a touch feedback through the app's hook (Android); nothing
-    /// elsewhere.
+    /// Plays a touch feedback through the app's hook (Android, iOS);
+    /// nothing elsewhere.
     fn play_haptic(&self, haptic: fenestra_core::Haptic) {
         #[cfg(target_os = "android")]
         if let (Some(play), Some(app)) = (
@@ -3042,7 +3058,11 @@ impl<A: App> AppRunner<A> {
         ) {
             play(app, haptic);
         }
-        #[cfg(not(target_os = "android"))]
+        #[cfg(target_os = "ios")]
+        if let Some(play) = self.shell.options.ios_haptic {
+            play(haptic);
+        }
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let _ = haptic;
     }
 
