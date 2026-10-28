@@ -4,6 +4,17 @@
 
 ### Added
 
+- **iOS text input (`ios-text-input`, with the winit fork).** Input methods
+  compose on iOS (Chinese pinyin and others): the focused field is mirrored
+  into the view's `UITextInput` and each edit comes back as
+  `Ime::TextState`, as on Android GameActivity. The keyboard's layout and
+  return key follow the field (`Keyboard`, `EnterKey`), the keyboard joins
+  the safe area so a focused field rises above it, and trackpad and
+  mouse-wheel scrolling work. Needs `paulwang667/winit` branch
+  `fenestra/v0.30.13-ios-text-input` patched in.
+- **`WindowOptions::with_ios_haptic`**: the long-press haptic on iOS, an
+  app hook like `with_android_haptic`.
+
 - **iOS (simulator) runs fenestra apps.** The main window opens full screen
   and lays the app out inside the safe area, on a root painted with the
   view's own background so the status bar and home indicator areas match;
@@ -14,6 +25,9 @@
 
 ### Fixed
 
+- **A safe-area change now scrolls the focused field into view**, as a
+  window resize does (the iOS keyboard grows the safe area instead of
+  resizing the window).
 - **Text squeezed below its longest word came out one line per word.** A
   text's min-content height was measured at a zero wrap width; it is now
   the height at its min-content width, so short words still share lines
