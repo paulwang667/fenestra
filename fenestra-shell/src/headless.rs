@@ -3,11 +3,11 @@
 
 use std::num::NonZeroUsize;
 
+use crate::gpu::GpuContext;
 use fenestra_core::draw::DrawTarget;
 use fenestra_core::{Fonts, Frame, FrameState};
 use image::RgbaImage;
 use vello::peniko::Color;
-use vello::util::RenderContext;
 use vello::wgpu::{
     self, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, TexelCopyBufferInfo,
     TexelCopyBufferLayout, TextureDescriptor, TextureFormat, TextureUsages,
@@ -42,7 +42,7 @@ fn cpu_flag(v: Option<&std::ffi::OsStr>) -> bool {
 /// A reusable offscreen renderer. Creating one compiles its shaders, so
 /// tests should create it once and render many scenes through it.
 pub struct Headless {
-    context: RenderContext,
+    context: GpuContext,
     dev_id: usize,
     /// vello, built on first use: frames go through it with
     /// [`Backend::Vello`], and [`render`](Self::render) always does.
@@ -71,7 +71,7 @@ impl Headless {
     /// [`Headless::new`] rendering frames through `backend` — or vello, when
     /// the adapter cannot run the raster backend.
     pub fn with_backend(backend: Backend) -> Result<Self, ShellError> {
-        let mut context = RenderContext::new();
+        let mut context = GpuContext::new();
         let dev_id = pollster::block_on(context.device(None)).ok_or(ShellError::NoDevice)?;
         let handle = &context.devices[dev_id];
         let max_dim = handle.device.limits().max_texture_dimension_2d;

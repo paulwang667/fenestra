@@ -17,6 +17,7 @@ mod element_render;
 #[cfg(not(target_arch = "wasm32"))]
 mod embed;
 mod frame_stats;
+mod gpu;
 #[cfg(test)]
 mod gpu_glass_tests;
 #[cfg(not(target_arch = "wasm32"))]

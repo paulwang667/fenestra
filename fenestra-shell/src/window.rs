@@ -11,6 +11,7 @@ use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 
+use crate::gpu::{GpuContext, GpuSurface};
 #[cfg(not(target_arch = "wasm32"))]
 use fenestra_core::Theme;
 #[allow(unused_imports)]
@@ -23,7 +24,6 @@ use fenestra_core::{
 use image::RgbaImage;
 use kurbo::Point;
 use vello::peniko::Color;
-use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu::{
     self, CurrentSurfaceTexture, Extent3d, TextureDescriptor, TextureFormat, TextureUsages,
 };
@@ -372,7 +372,7 @@ impl WindowOptions {
 
 enum RenderState {
     Active {
-        surface: Box<RenderSurface<'static>>,
+        surface: Box<GpuSurface<'static>>,
         valid_surface: bool,
         window: Arc<Window>,
     },
@@ -384,7 +384,7 @@ enum RenderState {
 
 /// Shared surface plumbing for every windowed runner.
 struct WindowShell {
-    context: RenderContext,
+    context: GpuContext,
     renderers: Vec<Option<Renderer>>,
     state: RenderState,
     scene: Scene,
@@ -494,14 +494,14 @@ fn next_animation_frame(started: Instant) -> Instant {
 /// carrying the error when WebGPU is unavailable.
 #[cfg(target_arch = "wasm32")]
 type WasmReady = std::rc::Rc<
-    std::cell::RefCell<Option<Result<(RenderContext, Box<RenderSurface<'static>>), ShellError>>>,
+    std::cell::RefCell<Option<Result<(GpuContext, Box<GpuSurface<'static>>), ShellError>>>,
 >;
 
 impl WindowShell {
     fn new(options: WindowOptions, background: Color) -> Self {
         let transparent = options.transparent;
         Self {
-            context: RenderContext::new(),
+            context: GpuContext::new(),
             renderers: Vec::new(),
             state: RenderState::Suspended(None),
             scene: Scene::new(),
@@ -643,7 +643,7 @@ impl WindowShell {
     /// not advertise is a validation error, and an opaque window is a worse
     /// picture but still a picture.
     #[cfg(not(target_arch = "wasm32"))]
-    fn composite_with_alpha(&self, surface: &mut RenderSurface<'static>) {
+    fn composite_with_alpha(&self, surface: &mut GpuSurface<'static>) {
         if !self.options.transparent {
             return;
         }
@@ -765,7 +765,7 @@ impl WindowShell {
         let ready = std::rc::Rc::clone(&self.ready);
         let win = window.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let mut context = RenderContext::new();
+            let mut context = GpuContext::new();
             let surface = context
                 .create_surface(
                     win.clone(),
