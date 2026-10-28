@@ -14,6 +14,11 @@
   `fenestra/v0.30.13-ios-text-input` patched in.
 - **`WindowOptions::with_ios_haptic`**: the long-press haptic on iOS, an
   app hook like `with_android_haptic`.
+- **`Harness::set_system_fonts`**: a harness can lay out and draw with the
+  system's fonts as well as the embedded ones, so Chinese and other
+  scripts Inter lacks render instead of as missing-glyph boxes. Off by
+  default (installed fonts vary by machine, so such goldens are not
+  portable).
 
 - **iOS (simulator) runs fenestra apps.** The main window opens full screen
   and lays the app out inside the safe area, on a root painted with the

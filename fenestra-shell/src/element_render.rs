@@ -20,6 +20,22 @@ pub fn with_fonts<R>(f: impl FnOnce(&mut Fonts) -> R) -> R {
     f(&mut guard)
 }
 
+static SYSTEM_FONTS: OnceLock<Mutex<Fonts>> = OnceLock::new();
+
+/// [`with_fonts`], or with the embedded fonts plus the system's
+/// ([`Fonts::with_system`]) when `system` is set. Scanning the system's
+/// fonts is slow, so that set is built once per process too.
+pub(crate) fn with_fonts_for<R>(system: bool, f: impl FnOnce(&mut Fonts) -> R) -> R {
+    if !system {
+        return with_fonts(f);
+    }
+    let fonts = SYSTEM_FONTS.get_or_init(|| Mutex::new(Fonts::with_system()));
+    let mut guard = fonts
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(&mut guard)
+}
+
 /// Runs `f` with a process-wide shared [`Headless`] renderer. Creating a
 /// renderer compiles vello's shaders, so tests share one.
 pub fn with_headless<R>(f: impl FnOnce(&mut Headless) -> R) -> Result<R, ShellError> {

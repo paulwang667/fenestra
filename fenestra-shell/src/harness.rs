@@ -15,7 +15,8 @@
 //! let _png = h.render();                 // pixels only when asked
 //! ```
 //!
-//! Determinism: scale 1.0, reduced motion, embedded fonts, and an
+//! Determinism: scale 1.0, reduced motion, embedded fonts (system fonts
+//! only by opting in with [`Harness::set_system_fonts`]), and an
 //! explicit clock — animations only advance when [`Harness::pump`] is
 //! called. Nothing is painted unless [`Harness::render`] is called, so
 //! structural tests stay fast. [`Harness::film`] captures a whole sequence
@@ -33,7 +34,7 @@ use fenestra_core::{
 };
 use image::RgbaImage;
 
-use crate::element_render::with_fonts;
+use crate::element_render::with_fonts_for;
 use crate::with_headless;
 
 /// Hard ceiling on `frames` in [`Harness::film`]: a filmstrip is meant for
@@ -73,6 +74,9 @@ pub struct Harness<A: App> {
     slots: HashMap<String, WindowSlot<A::Msg>>,
     /// Animations snap by default (deterministic); motion tests opt in.
     reduced_motion: bool,
+    /// Embedded fonts only by default (deterministic); tests that need
+    /// CJK or other scripts Inter lacks opt in.
+    system_fonts: bool,
     /// The window verbs and queries currently target.
     active: String,
     /// Deferred effect units queued by `update_with` returns; executed
@@ -131,12 +135,21 @@ where
             slots: HashMap::new(),
             active: MAIN_WINDOW.to_owned(),
             reduced_motion: true,
+            system_fonts: false,
             effects: startup,
             sub_due: HashMap::new(),
         };
         harness.slots.insert(
             MAIN_WINDOW.to_owned(),
-            Self::new_slot(&harness.app, &harness.theme, MAIN_WINDOW, size, 0.0, true),
+            Self::new_slot(
+                &harness.app,
+                &harness.theme,
+                MAIN_WINDOW,
+                size,
+                0.0,
+                true,
+                false,
+            ),
         );
         harness.rebuild();
         Ok(harness)
@@ -149,6 +162,7 @@ where
         size: (u32, u32),
         clock: f64,
         reduced_motion: bool,
+        system_fonts: bool,
     ) -> WindowSlot<A::Msg> {
         let size =
             with_headless(|h| h.clamp_size(size.0, size.1)).expect("headless renderer unavailable");
@@ -158,7 +172,9 @@ where
         #[expect(clippy::cast_precision_loss, reason = "window sizes fit in f32")]
         let logical = (size.0 as f32, size.1 as f32);
         let view = app.view_at(key, logical);
-        let frame = with_fonts(|fonts| build_frame(&view, theme, fonts, &mut state, logical, 1.0));
+        let frame = with_fonts_for(system_fonts, |fonts| {
+            build_frame(&view, theme, fonts, &mut state, logical, 1.0)
+        });
         WindowSlot {
             state,
             view,
@@ -218,6 +234,7 @@ where
                     size,
                     self.clock,
                     self.reduced_motion,
+                    self.system_fonts,
                 );
                 self.slots.insert(desc.key.clone(), slot);
             }
@@ -230,7 +247,7 @@ where
             let slot = self.slots.get_mut(&key).expect("slot exists");
             slot.view = self.app.view_at(&key, slot.logical);
             slot.state.tick(self.clock);
-            slot.frame = with_fonts(|fonts| {
+            slot.frame = with_fonts_for(self.system_fonts, |fonts| {
                 build_frame(
                     &slot.view,
                     &self.theme,
@@ -255,6 +272,15 @@ where
         for slot in self.slots.values_mut() {
             slot.state.reduced_motion = reduced;
         }
+        self.rebuild();
+    }
+
+    /// Lays out and draws with the system's fonts as well as the embedded
+    /// ones, so CJK and other scripts Inter lacks render instead of as
+    /// missing-glyph boxes. Off by default: what the system has installed
+    /// varies by machine, so goldens taken with it on are not portable.
+    pub fn set_system_fonts(&mut self, system: bool) {
+        self.system_fonts = system;
         self.rebuild();
     }
 
@@ -297,7 +323,7 @@ where
         slot.logical = logical;
         slot.view = view;
         slot.state.tick(self.clock);
-        slot.frame = with_fonts(|fonts| {
+        slot.frame = with_fonts_for(self.system_fonts, |fonts| {
             build_frame(
                 &slot.view,
                 &self.theme,
@@ -324,8 +350,9 @@ where
             .slots
             .get_mut(&self.active)
             .expect("active slot exists");
-        let result =
-            with_fonts(|fonts| dispatch(&slot.view, &slot.frame, &mut slot.state, fonts, event));
+        let result = with_fonts_for(self.system_fonts, |fonts| {
+            dispatch(&slot.view, &slot.frame, &mut slot.state, fonts, event)
+        });
         let mut msgs = result.msgs;
         if let Some(key) = &result.unhandled
             && let Some(msg) = self.app.window_key(key)
@@ -727,7 +754,7 @@ where
         let slot = self.slots.get_mut(key).expect("checked above");
         // Two-pass planner (fonts → headless lock order) so frosted glass blurs;
         // glass-free frames fast-path to a single pass.
-        with_fonts(|fonts| {
+        with_fonts_for(self.system_fonts, |fonts| {
             with_headless(|h| {
                 h.render_plan(
                     &slot.frame,
