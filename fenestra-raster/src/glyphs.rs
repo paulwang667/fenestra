@@ -369,8 +369,12 @@ impl Atlas {
         })
     }
 
-    /// Room for a `w`×`h` cell in a `kind` page: an existing page, then one
-    /// freed of glyphs this frame does not use, then a new page.
+    /// Room for a `w`×`h` cell in a `kind` page: an existing page, then a
+    /// new one while under [`KEEP_PAGES`], then one freed of glyphs this
+    /// frame does not use, then a new page beyond the budget (trimmed when
+    /// unused). Growing before evicting keeps what the next frame needs —
+    /// text scrolling by fractions of a pixel moves its glyphs through their
+    /// subpixel bins frame by frame.
     fn allocate(&mut self, kind: Kind, w: u32, h: u32) -> Option<(usize, AllocId, (u32, u32))> {
         #[expect(clippy::cast_possible_wrap, reason = "cells are small")]
         let size = size2(w as i32, h as i32);
@@ -380,7 +384,11 @@ impl Atlas {
                 p.alloc.allocate(size).map(|a| (i, a))
             })
         };
+        let under_budget = self.pages() < KEEP_PAGES;
         let found = try_pages(&mut self.pages).or_else(|| {
+            if under_budget {
+                return None;
+            }
             // Evict this kind's glyphs the frame has not used.
             let frame = self.frame;
             let pages = &mut self.pages;

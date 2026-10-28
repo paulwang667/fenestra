@@ -178,6 +178,49 @@ fn a_second_frame_rasterizes_nothing() {
     assert_eq!(second.glyphs_rasterized, 0);
 }
 
+/// Text scrolling by fractions of a pixel (a list on a 2.6x phone) visits
+/// each glyph's quarter-pixel bins in turn; with more variants than one
+/// page holds, once every bin has been seen, later frames rasterize nothing
+/// — the atlas grows to its page budget rather than evicting what the next
+/// frame needs.
+#[test]
+fn text_scrolling_by_fractions_stops_rasterizing() {
+    const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let lines: Vec<(String, (f32, f32))> = (0..24)
+        .map(|row| {
+            let skip = (row * 7) % ALPHABET.len();
+            let line: String = ALPHABET.chars().cycle().skip(skip).take(40).collect();
+            // A different fractional start per line: every horizontal bin.
+            (
+                line,
+                (2.0 + 0.25 * (row % 4) as f32, 40.0 * row as f32 + 34.0),
+            )
+        })
+        .collect();
+    let font = inter();
+    let mut r = renderer();
+    let mut late = Vec::new();
+    for k in 0..12 {
+        // 3.1 px a frame: the vertical bin changes every frame.
+        let dy = 3.1 * k as f32;
+        let shifted: Vec<(&str, (f32, f32))> = lines
+            .iter()
+            .map(|(s, (x, y))| (s.as_str(), (*x, *y - dy)))
+            .collect();
+        let text = Text::new(font.clone(), 56.0, &shifted);
+        let (_, stats) = render_raster(&mut r, &text, (1100, 960));
+        if k >= 8 {
+            late.push(stats.glyphs_rasterized);
+        }
+    }
+    assert!(
+        late.iter().all(|&n| n == 0),
+        "still rasterizing after every bin was seen: {late:?} ({:?})",
+        r.cache_sizes()
+    );
+    assert!(r.cache_sizes().atlas_pages <= 4, "{:?}", r.cache_sizes());
+}
+
 /// 3000 distinct 48px ideographs need several atlas pages in one frame;
 /// none may go missing, and the extra pages go once they are unused.
 #[test]

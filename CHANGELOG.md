@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- **The raster backend re-rasterized glyphs on every frame while text
+  scrolled** on high-density screens. A full glyph atlas page evicted every
+  glyph the frame had not used yet before growing, so text moving by
+  fractions of a pixel (each glyph through its quarter-pixel bins) threw
+  out the variants the next frame needed: on a OnePlus 6 (2.6x) a chat page
+  rasterized ~200 glyphs a frame. The atlas now grows to its four-page
+  budget before evicting.
+
 ### Added
 
 - **Touch scrolling glides, catches and bounces** (Android, iOS). A
