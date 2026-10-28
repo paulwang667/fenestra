@@ -59,10 +59,19 @@ pub(crate) fn gesture_phase(phase: TouchPhase) -> GesturePhase {
     }
 }
 
+/// The `set_ime_allowed` call that keeps a soft keyboard in step with the
+/// caret: `want` (a field holds the caret), `shown` (what the keyboard was
+/// last asked to be), `tapped` (the focused field was tapped, which brings
+/// back a keyboard the user dismissed). `None` leaves it alone.
+#[cfg(any(target_os = "android", target_os = "ios", test))]
+fn keyboard_change(want: bool, shown: bool, tapped: bool) -> Option<bool> {
+    (want != shown || (want && tapped)).then_some(want)
+}
+
 /// Whether a finger that went down at `down` and lifted at `up` tapped the
 /// focused field — the one gesture that brings back a soft keyboard the user
 /// dismissed. A scroll, or a tap anywhere else, leaves it down.
-#[cfg(any(target_os = "android", test))]
+#[cfg(any(target_os = "android", target_os = "ios", test))]
 pub(crate) fn tap_on_focus(
     frame: &fenestra_core::Frame,
     focus: Option<fenestra_core::WidgetId>,
@@ -1953,11 +1962,11 @@ where
         state,
         cursor: Point::ORIGIN,
         touch: crate::touch::Touch::new(crate::touch::GESTURES),
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         keyboard_shown: false,
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         keyboard_tap: false,
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         touch_down: None,
         #[cfg(all(target_os = "android", feature = "android-game-activity"))]
         ime: crate::ime_sync::ImeSync::default(),
@@ -2032,16 +2041,16 @@ struct AppRunner<A: App> {
     cursor: Point,
     /// The touch driving the pointer.
     touch: crate::touch::Touch,
-    /// Whether the soft keyboard was last asked to show (Android).
-    #[cfg(target_os = "android")]
+    /// Whether the soft keyboard was last asked to show (Android, iOS).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     keyboard_shown: bool,
     /// The focused field was tapped since the last frame: re-shows a
-    /// keyboard the user dismissed (Android).
-    #[cfg(target_os = "android")]
+    /// keyboard the user dismissed (Android, iOS).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     keyboard_tap: bool,
     /// Where the current touch went down (logical px), to tell a tap from a
     /// scroll when it lifts.
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     touch_down: Option<Point>,
     /// The focused field as the IME last knew it (GameActivity mirrors the
     /// field; a difference after a frame is sent back to it), and which of
@@ -2628,7 +2637,7 @@ impl<A: App> AppRunner<A> {
                 winit::dpi::LogicalSize::new(1.0, caret.height()),
             );
         }
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         self.sync_soft_keyboard();
         #[cfg(all(target_os = "android", feature = "android-game-activity"))]
         self.sync_ime_text();
@@ -2816,18 +2825,20 @@ impl<A: App> AppRunner<A> {
         changed
     }
 
-    /// Android types only through the soft keyboard, so it follows focus:
+    /// Phones type only through the soft keyboard, so it follows focus:
     /// shown while a text field holds the caret (again after a tap, in case
-    /// the user dismissed it), hidden when focus leaves.
-    #[cfg(target_os = "android")]
+    /// the user dismissed it), hidden when focus leaves. On iOS allowing the
+    /// IME makes the view first responder, which is what raises the
+    /// keyboard — enabling it at startup showed a keyboard over every app.
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     fn sync_soft_keyboard(&mut self) {
         let want = self.state.ime_caret().is_some();
         let tapped = std::mem::take(&mut self.keyboard_tap);
-        if want != self.keyboard_shown || (want && tapped) {
+        if let Some(allowed) = keyboard_change(want, self.keyboard_shown, tapped) {
             if let Some(w) = self.shell.window() {
-                w.set_ime_allowed(want);
+                w.set_ime_allowed(allowed);
             }
-            self.keyboard_shown = want;
+            self.keyboard_shown = allowed;
         }
     }
 
@@ -3440,14 +3451,14 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
             self.shell.fail(event_loop, e);
             return;
         }
-        // Android: the keyboard follows focus (`sync_soft_keyboard`); the
+        // Phones: the keyboard follows focus (`sync_soft_keyboard`); the
         // OS dropped it with the old surface, so the next frame re-shows it
         // if a field still holds focus.
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         if let Some(w) = self.shell.window() {
             w.set_ime_allowed(true);
         }
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             self.keyboard_shown = false;
         }
@@ -3721,7 +3732,7 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                     }
                     // Judged after dispatch, so a tap that moves focus to
                     // another field counts as a tap on it.
-                    #[cfg(target_os = "android")]
+                    #[cfg(any(target_os = "android", target_os = "ios"))]
                     match touch.phase {
                         TouchPhase::Started => self.touch_down = Some(at),
                         TouchPhase::Ended => {
@@ -4238,5 +4249,34 @@ mod frame_key_tests {
             size,
             (1206, 2622)
         ));
+    }
+}
+
+#[cfg(test)]
+mod soft_keyboard_tests {
+    use super::{keyboard_change, map_logical_key};
+    use fenestra_core::{InputEvent, Key, KeyInput};
+    use winit::keyboard::{Key as WKey, ModifiersState};
+
+    #[test]
+    fn the_keyboard_follows_the_caret() {
+        assert_eq!(keyboard_change(true, false, false), Some(true));
+        assert_eq!(keyboard_change(false, true, false), Some(false));
+        assert_eq!(keyboard_change(false, false, true), None);
+    }
+
+    #[test]
+    fn a_tap_reshows_a_dismissed_keyboard() {
+        assert_eq!(keyboard_change(true, true, true), Some(true));
+        assert_eq!(keyboard_change(true, true, false), None);
+    }
+
+    #[test]
+    fn a_newline_text_is_the_enter_key() {
+        // The iOS keyboard's return key arrives as the character "\n".
+        let enter = Some(InputEvent::Key(KeyInput::plain(Key::Enter)));
+        let none = ModifiersState::empty();
+        assert_eq!(map_logical_key(&WKey::Character("\n".into()), none), enter);
+        assert_eq!(map_logical_key(&WKey::Character("\r".into()), none), enter);
     }
 }
