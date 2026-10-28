@@ -2,8 +2,27 @@
 
 ## Unreleased
 
+### Added
+
+- **iOS (simulator) runs fenestra apps.** The main window opens full screen
+  and lays the app out inside the safe area, on a root painted with the
+  view's own background so the status bar and home indicator areas match;
+  the soft keyboard follows focus as on Android; iOS draws with the raster
+  backend by default. Known gaps: the keyboard does not resize the window
+  (it can cover a field), and Chinese input methods' composing text is not
+  supported yet.
+
 ### Fixed
 
+- **iOS: the window never showed** (winit reports no visibility there), **a
+  startup failure left a silent black screen** (iOS never returns from
+  `run_app`; the shell now panics with the error), and **the window opened
+  at the desktop size**.
+- **No GPU device on the iOS simulator.** The shell now creates devices and
+  surfaces itself, asking for the default limits capped at what the adapter
+  offers (the simulator has 15 inter-stage variables, not 16).
+- **vello on an adapter without indirect dispatch panicked.** A window that
+  asked for vello there draws with raster instead (when raster can run).
 - **Follow-ups from the touch, keyboard, reveal and motion reviews.**
   Next moves on from a roving item's scope and leaves an Enter it cannot
   act on to the window; an enter-key action no longer also clicks the old
