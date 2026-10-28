@@ -1,41 +1,96 @@
-//! The OS clipboard (arboard), injected into `FrameState` by the windowed
-//! runner. Headless rendering keeps core's in-memory clipboard.
-//!
-//! Android has no arboard backend: fall back to the in-memory clipboard so
-//! in-app copy/paste still works (system-clipboard bridge is a no-op).
+//! The OS clipboard, injected into `FrameState` by the windowed runner:
+//! arboard on desktops, `ClipboardManager` on Android and `UIPasteboard`
+//! on iOS (see `mobile_clipboard`). Headless rendering keeps core's
+//! in-memory clipboard.
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use fenestra_core::ClipImage;
 use fenestra_core::Clipboard;
 #[cfg(target_os = "android")]
 use fenestra_core::MemoryClipboard;
 
+/// Android: the system clipboard once the runner has the `AndroidApp`
+/// ([`OsClipboard::android`]); before that (or without one) core's
+/// in-memory text clipboard, so in-app copy and paste still work.
 #[cfg(target_os = "android")]
-#[derive(Default)]
-pub struct OsClipboard(MemoryClipboard);
+pub struct OsClipboard(AndroidInner);
 
 #[cfg(target_os = "android")]
+enum AndroidInner {
+    Memory(MemoryClipboard),
+    System(crate::mobile_clipboard::AndroidClipboard),
+}
+
+#[cfg(target_os = "android")]
+impl Default for OsClipboard {
+    fn default() -> Self {
+        Self(AndroidInner::Memory(MemoryClipboard::default()))
+    }
+}
+
+#[cfg(target_os = "android")]
+impl OsClipboard {
+    /// The system clipboard, reached through the app's activity.
+    #[must_use]
+    pub fn android(app: winit::platform::android::activity::AndroidApp) -> Self {
+        Self(AndroidInner::System(
+            crate::mobile_clipboard::AndroidClipboard::new(app),
+        ))
+    }
+
+    fn inner(&mut self) -> &mut dyn Clipboard {
+        match &mut self.0 {
+            AndroidInner::Memory(c) => c,
+            AndroidInner::System(c) => c,
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+impl Clipboard for OsClipboard {
+    fn get(&mut self) -> Option<String> {
+        self.inner().get()
+    }
+
+    fn set(&mut self, text: String) {
+        self.inner().set(text);
+    }
+
+    fn has_text(&mut self) -> bool {
+        self.inner().has_text()
+    }
+
+    // Text only: neither clipboard here carries pictures.
+}
+
+/// iOS: the general pasteboard. Text only.
+#[cfg(target_os = "ios")]
+#[derive(Default)]
+pub struct OsClipboard(crate::mobile_clipboard::IosPasteboard);
+
+#[cfg(target_os = "ios")]
 impl Clipboard for OsClipboard {
     fn get(&mut self) -> Option<String> {
         self.0.get()
     }
 
     fn set(&mut self, text: String) {
-        self.0.set(text)
+        self.0.set(text);
     }
 
-    // No pictures: the fallback here is core's in-memory *text* clipboard,
-    // and there is no Android arboard backend to hand one to.
+    fn has_text(&mut self) -> bool {
+        self.0.has_text()
+    }
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 /// Lazy arboard wrapper; failures (no display server) degrade to a no-op.
 #[derive(Default)]
 pub struct OsClipboard {
     inner: Option<arboard::Clipboard>,
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl OsClipboard {
     fn ensure(&mut self) -> Option<&mut arboard::Clipboard> {
         if self.inner.is_none() {
@@ -45,7 +100,7 @@ impl OsClipboard {
     }
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl Clipboard for OsClipboard {
     fn get(&mut self) -> Option<String> {
         self.ensure().and_then(|c| c.get_text().ok())

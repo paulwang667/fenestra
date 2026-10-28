@@ -31,6 +31,12 @@
 
 ### Fixed
 
+- **Android and iOS use the system clipboard.** Copy and paste reach
+  other apps: `ClipboardManager` through JNI on Android (when the runner
+  has the `AndroidApp`), `UIPasteboard` on iOS; arboard has neither.
+  `Clipboard::has_text` answers "is there text to paste" without reading
+  it (iOS shows a banner on every read). This is the workspace's second
+  `unsafe` module (`fenestra-shell/src/mobile_clipboard/`).
 - **Color emoji draw on iOS with the raster backend.** iOS's Apple Color
   Emoji stores its bitmaps as `emjc` (Apple's private compressed format),
   which vello_cpu cannot decode, so emoji were blank; the glyph atlas now

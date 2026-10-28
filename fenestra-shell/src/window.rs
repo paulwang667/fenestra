@@ -2017,7 +2017,7 @@ where
     fonts.set_locale(options.ui_locale().as_deref());
     let mut state = live_state();
     #[cfg(not(target_arch = "wasm32"))]
-    state.set_clipboard(Box::new(crate::OsClipboard::default()));
+    state.set_clipboard(Box::new(os_clipboard(&options)));
     // On the web, copy-out reaches the system clipboard; paste-in from
     // other apps stays in-app (see `WebClipboard`).
     #[cfg(target_arch = "wasm32")]
@@ -3146,7 +3146,7 @@ impl<A: App> AppRunner<A> {
                         w.request_redraw();
                     }
                     let mut state = live_state();
-                    state.set_clipboard(Box::new(crate::OsClipboard::default()));
+                    state.set_clipboard(Box::new(os_clipboard(&self.shell.options)));
                     self.secondary.insert(
                         desc.key.clone(),
                         SecondaryWindow {
@@ -4404,4 +4404,16 @@ mod soft_keyboard_tests {
         assert_eq!(map_logical_key(&WKey::Character("\n".into()), none), enter);
         assert_eq!(map_logical_key(&WKey::Character("\r".into()), none), enter);
     }
+}
+
+/// The system clipboard for a window: on Android it needs the app's
+/// activity, so without one it stays in-app.
+#[cfg(not(target_arch = "wasm32"))]
+fn os_clipboard(options: &WindowOptions) -> crate::OsClipboard {
+    #[cfg(target_os = "android")]
+    if let Some(app) = &options.android_app {
+        return crate::OsClipboard::android(app.clone());
+    }
+    let _ = options;
+    crate::OsClipboard::default()
 }

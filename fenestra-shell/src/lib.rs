@@ -30,6 +30,8 @@ mod headless;
     test
 ))]
 mod ime_sync;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+mod mobile_clipboard;
 #[cfg(not(target_arch = "wasm32"))]
 mod multi_pass;
 #[cfg(not(target_arch = "wasm32"))]

@@ -54,10 +54,18 @@ accesskit_winit.workspace = true
 image.workspace = true
 pollster.workspace = true
 
-# The clipboard bridge has no Android backend (arboard supports X11/
-# Wayland, macOS, and Windows), so it stays out of Android builds.
-[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
+# The clipboard bridge: arboard on X11/Wayland, macOS and Windows; it has
+# no Android or iOS backend, so those reach the system clipboard directly
+# (`mobile_clipboard`: JNI on Android, UIKit on iOS).
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android"), not(target_os = "ios")))'.dependencies]
 arboard.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni.workspace = true
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-foundation-uikit.workspace = true
+objc2-ui-kit.workspace = true
 
 # The native menu bar attaches on macOS (muda's safe path; see
 # ARCHITECTURE.md for the Windows/Linux story).

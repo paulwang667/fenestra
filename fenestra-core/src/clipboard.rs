@@ -18,6 +18,14 @@ pub trait Clipboard {
     /// Replaces the clipboard text.
     fn set(&mut self, text: String);
 
+    /// Whether there is text to paste, without reading it. iOS shows a
+    /// "pasted from" banner whenever the pasteboard is read, so deciding
+    /// whether to offer Paste must not read; system clipboards answer
+    /// from the platform's own query.
+    fn has_text(&mut self) -> bool {
+        self.get().is_some()
+    }
+
     /// The picture on the clipboard, if there is one.
     ///
     /// The counterpart of [`Clipboard::set_image`], and `None` by default for
@@ -73,5 +81,19 @@ impl Clipboard for MemoryClipboard {
     fn set_image(&mut self, image: &ClipImage) -> bool {
         self.image = Some(image.clone());
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Clipboard, MemoryClipboard};
+
+    /// `has_text` answers without reading: empty until text is set.
+    #[test]
+    fn has_text_follows_what_was_set() {
+        let mut clipboard = MemoryClipboard::default();
+        assert!(!clipboard.has_text());
+        clipboard.set("x".to_owned());
+        assert!(clipboard.has_text());
     }
 }

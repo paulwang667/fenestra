@@ -12,9 +12,11 @@ repository = "https://github.com/richer-richard/fenestra"
 keywords = ["gui", "ui", "graphics"]
 categories = ["gui"]
 
-# No crate in this workspace uses unsafe code, with one exception: the
-# CoreText calls in fenestra-raster/src/coretext.rs (iOS emoji), allowed
-# there and nowhere else. `deny`, not `forbid`, so that one module can.
+# No crate in this workspace uses unsafe code, with two exceptions, each
+# allowed in its one module and nowhere else: the CoreText calls in
+# fenestra-raster/src/coretext.rs (iOS emoji) and the system clipboard in
+# fenestra-shell/src/mobile_clipboard/ (JNI on Android, UIKit on iOS).
+# `deny`, not `forbid`, so those modules can.
 [workspace.lints.rust]
 unsafe_code = "deny"
 
@@ -77,6 +79,13 @@ skrifa = "0.42.1"
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFString", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage"] }
 objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFont", "objc2-core-graphics"] }
+# fenestra-shell's mobile clipboard. jni 0.22.4 is the version
+# android-activity already resolves; objc2-ui-kit 0.2.2 and its
+# objc2-foundation 0.2.2 are winit's (renamed here: the 0.3 line above is
+# a different major version).
+jni = "0.22.4"
+objc2-ui-kit = { version = "0.2.2", default-features = false, features = ["std", "UIPasteboard"] }
+objc2-foundation-uikit = { package = "objc2-foundation", version = "0.2.2", default-features = false, features = ["std", "NSString"] }
 wasm-bindgen-futures = "0.4.73"
 # `wayland` (the default Linux backend) pulls wayland-scanner -> quick-xml
 # 0.39, which RUSTSEC-2026-0194/0195 flag as high-severity; wayland-scanner's
