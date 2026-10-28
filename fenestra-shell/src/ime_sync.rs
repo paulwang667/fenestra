@@ -36,8 +36,9 @@ const IME_FLAG_NO_ENTER_ACTION: u32 = 0x4000_0000;
 
 /// The `EditorInfo` for a focused field: its keyboard (a password gets the
 /// password variation, no suggestions and nothing learned), its enter key
-/// as the action — a newline key keeps the enter key a line break — and,
-/// as GameActivity's default, no fullscreen editor.
+/// as the action — a newline key keeps the enter key a line break, and
+/// alone flags a multiline field multi-line — and, as GameActivity's
+/// default, no fullscreen editor.
 pub(crate) fn editor_info(field: &ImeTextState) -> EditorInfo {
     let numeric = matches!(
         field.keyboard,
@@ -53,7 +54,13 @@ pub(crate) fn editor_info(field: &ImeTextState) -> EditorInfo {
         (Keyboard::Url, false) => TYPE_CLASS_TEXT | TYPE_TEXT_VARIATION_URI,
         _ => TYPE_CLASS_TEXT,
     };
-    if field.multiline && input_type & 0xf == TYPE_CLASS_TEXT {
+    // Multi-line only with a newline key: Gboard shows a newline key on any
+    // multi-line field, whatever its action, so a composer with a Send key
+    // is not flagged (the editor wraps it all the same).
+    if field.multiline
+        && field.enter_key == EnterKey::Newline
+        && input_type & 0xf == TYPE_CLASS_TEXT
+    {
         input_type |= TYPE_TEXT_FLAG_MULTI_LINE;
     }
     let action = match field.enter_key {
@@ -251,7 +258,10 @@ mod tests {
         let composer = editor_info(&kind(Keyboard::Text, EnterKey::Send, true, false));
         assert_eq!(composer.action, 4);
         assert_eq!(composer.options & NO_ENTER_ACTION, 0, "the Send key shows");
-        assert_ne!(composer.input_type & MULTI_LINE, 0);
+        // Gboard shows a newline key on any multi-line field, whatever its
+        // action: a field with an action key is not flagged multi-line (the
+        // editor still wraps it).
+        assert_eq!(composer.input_type & MULTI_LINE, 0);
     }
 
     #[test]

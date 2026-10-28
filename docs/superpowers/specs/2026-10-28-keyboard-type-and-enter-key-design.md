@@ -48,7 +48,7 @@
 - 一个与平台无关、可在主机上测试的映射函数，把 `(keyboard, enter_key, multiline, masked)` 转成 EditorInfo 的三个数值：`inputType`、动作、`imeOptions`。规则：
   - 键盘类型：文本 → `TYPE_CLASS_TEXT`；整数 → `TYPE_CLASS_NUMBER`；小数 → `TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL`；电话 → `TYPE_CLASS_PHONE`；邮箱 → `TEXT | TYPE_TEXT_VARIATION_EMAIL_ADDRESS`；网址 → `TEXT | TYPE_TEXT_VARIATION_URI`。
   - 密码：文本类 → `TEXT | VARIATION_PASSWORD | FLAG_NO_SUGGESTIONS`；数字类 → `NUMBER | NUMBER_VARIATION_PASSWORD`；两者都加 `IME_FLAG_NO_PERSONALIZED_LEARNING`（保持现在密码字段的做法）。
-  - 多行字段（文本类）总是带 `TYPE_TEXT_FLAG_MULTI_LINE`。
+  - 多行字段（文本类）只在回车键是换行时带 `TYPE_TEXT_FLAG_MULTI_LINE`。（真机验证发现：Gboard 对带 MULTI_LINE 的字段总是显示换行键，不管动作是什么；所以设了动作键的多行字段不加这个标志，编辑器照样自己换行显示。）
   - 回车键：发送/搜索/前往/完成/下一项 → 对应的 `IME_ACTION_*`，不加 `IME_FLAG_NO_ENTER_ACTION`（输入法显示动作键；多行 + 发送的聊天输入框在手机上因此不能输入换行，和微信一样）；换行 → `IME_ACTION_NONE` 加 `IME_FLAG_NO_ENTER_ACTION`。
   - 所有情况都加 `IME_FLAG_NO_FULLSCREEN`（保持现状）。
 - `sync_ime_text` 现在只在"是否密码"变化时调用 `set_ime_editor_info`；改为在这四项（映射结果）与输入法当前持有的不同时调用。只在有差异时推送，避免打断正在进行的拼音组合（推送总是在 `set_text_input_state` 之前，和现在一样）。
@@ -77,7 +77,7 @@
 
 - 显式的完成/搜索/前往在回车没人处理时失焦（收起键盘）；发送和默认解析出的完成不失焦。
 - 显式回车键决定编辑器行为，`submit_on_enter` 只影响默认值。
-- 多行字段总带 MULTI_LINE；设了动作键的多行字段在手机上不能输入换行。
+- 只有回车键是换行的多行字段才带 MULTI_LINE；设了动作键的多行字段在手机上不能输入换行。
 - "下一项"在所有平台生效（不只是手机），但只对明确设置了它的字段。
 - iOS 暂不支持。
 - 默认值保持现在的行为（单行"完成"、多行换行）。
