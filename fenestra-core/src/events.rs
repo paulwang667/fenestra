@@ -191,10 +191,26 @@ impl KeyInput {
     }
 }
 
+/// Where pointer input comes from. Touch turns on the phone behaviors
+/// (long-press selection, selection handles, the edit menu); the mouse
+/// keeps the desktop ones. The runner sends
+/// [`InputEvent::PointerSource`] whenever it changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PointerSource {
+    /// A mouse, trackpad or pen driving the pointer.
+    #[default]
+    Mouse,
+    /// A finger on a touch screen.
+    Touch,
+}
+
 /// A logical input event, shared by the windowed runner and headless
 /// `SyntheticEvent` injection.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputEvent {
+    /// The pointer events that follow come from this source (sent when it
+    /// changes, before them).
+    PointerSource(PointerSource),
     /// Pointer moved to logical coordinates.
     PointerMove {
         /// Logical x.
@@ -350,6 +366,9 @@ pub struct Dispatch<Msg> {
     /// [`App::window_key`](crate::App::window_key). Printable characters
     /// arrive as the key they stand for. Set only when `msgs` is empty.
     pub unhandled: Option<KeyInput>,
+    /// A touch long press started a text selection (rather than reaching
+    /// an app's menu): the runner plays the long-press haptic for it too.
+    pub selection_started: bool,
 }
 
 impl<Msg> Default for Dispatch<Msg> {
@@ -359,6 +378,7 @@ impl<Msg> Default for Dispatch<Msg> {
             redraw: false,
             cursor: None,
             unhandled: None,
+            selection_started: false,
         }
     }
 }
@@ -730,6 +750,10 @@ pub fn dispatch<Msg: Clone>(
     fonts: &mut Fonts,
     event: InputEvent,
 ) -> Dispatch<Msg> {
+    if let InputEvent::PointerSource(source) = event {
+        state.pointer_source = source;
+        return Dispatch::default();
+    }
     let previous = state.focus;
     let pointer_down = matches!(event, InputEvent::PointerDown);
     let pointer_up = matches!(event, InputEvent::PointerUp);
@@ -782,6 +806,8 @@ fn dispatch_inner<Msg: Clone>(
     let mut out = Dispatch::default();
 
     match event {
+        // Taken by `dispatch` before it gets here.
+        InputEvent::PointerSource(_) => {}
         InputEvent::PointerMove { x, y } => {
             let point = Point::new(f64::from(x), f64::from(y));
             state.pointer = Some((x, y));

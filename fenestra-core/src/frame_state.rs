@@ -269,6 +269,8 @@ pub struct FrameState {
     /// Active static-text selection (one at a time, like a browser):
     /// element, parley selection, and whether a drag is extending it.
     pub(crate) static_sel: Option<(WidgetId, parley::Selection, bool)>,
+    /// Where pointer input is coming from (see [`InputEvent::PointerSource`](crate::InputEvent::PointerSource)).
+    pub(crate) pointer_source: crate::events::PointerSource,
     /// Focused-element type-ahead: target, buffer, last keystroke time.
     pub(crate) type_ahead: Option<(WidgetId, String, f64)>,
     /// Variable-height virtual lists: measured row heights per
@@ -337,6 +339,7 @@ impl Default for FrameState {
             last_press: None,
             mods: (false, false, false, false),
             static_sel: None,
+            pointer_source: crate::events::PointerSource::Mouse,
             type_ahead: None,
             virtual_heights: HashMap::new(),
             virtual_windows: HashMap::new(),
@@ -398,6 +401,11 @@ impl FrameState {
     /// Whether the id is pressed.
     pub fn is_active(&self, id: WidgetId) -> bool {
         self.active == Some(id)
+    }
+
+    /// Where pointer input is coming from: a finger or the mouse.
+    pub fn pointer_source(&self) -> crate::events::PointerSource {
+        self.pointer_source
     }
 
     /// The focused widget, if any.

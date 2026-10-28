@@ -30,7 +30,7 @@ use std::collections::HashMap;
 
 use fenestra_core::{
     AccessNode, App, Element, Frame, FrameState, GesturePhase, InputEvent, KeyInput, MAIN_WINDOW,
-    Proxy, Query, Theme, build_frame, dispatch,
+    PointerSource, Proxy, Query, Theme, build_frame, dispatch,
 };
 use image::RgbaImage;
 
@@ -85,6 +85,15 @@ pub struct Harness<A: App> {
     /// Subscription schedule against the deterministic clock: key →
     /// (period, next due in clock seconds).
     sub_due: HashMap<String, (std::time::Duration, f64)>,
+    /// The shell's touch translator, so touch verbs gesture as on a phone.
+    touch: crate::touch::Touch,
+    /// Where the finger is while one is down (touch verbs).
+    finger: Option<kurbo::Point>,
+    /// Inside a touch verb: its pointer events are the finger's, not the
+    /// mouse's.
+    touching: bool,
+    /// Haptics played so far, in order.
+    haptics: Vec<fenestra_core::Haptic>,
 }
 
 impl<A: App> Harness<A>
@@ -138,6 +147,10 @@ where
             system_fonts: false,
             effects: startup,
             sub_due: HashMap::new(),
+            touch: crate::touch::Touch::new(true),
+            finger: None,
+            touching: false,
+            haptics: Vec::new(),
         };
         harness.slots.insert(
             MAIN_WINDOW.to_owned(),
@@ -346,6 +359,15 @@ where
     /// current frame, logs and applies the emitted messages, and
     /// rebuilds (which also reconciles the window set).
     pub fn input(&mut self, event: InputEvent) {
+        if !self.touching && is_pointer_event(&event) {
+            self.set_source(PointerSource::Mouse);
+        }
+        self.dispatch_one(event);
+    }
+
+    /// Dispatches one event; returns whether it produced messages and
+    /// whether it started a touch selection.
+    fn dispatch_one(&mut self, event: InputEvent) -> (bool, bool) {
         let slot = self
             .slots
             .get_mut(&self.active)
@@ -359,12 +381,123 @@ where
         {
             msgs.push(msg);
         }
+        let consumed = !msgs.is_empty();
         for msg in msgs {
             self.msgs.push(msg.clone());
             let units = Self::apply(&mut self.app, msg);
             self.effects.extend(units);
         }
         self.rebuild();
+        (consumed, result.selection_started)
+    }
+
+    /// Tells core the pointer source when it changes, as the runner does.
+    fn set_source(&mut self, source: PointerSource) {
+        if self.slot().state.pointer_source() != source {
+            self.dispatch_one(InputEvent::PointerSource(source));
+        }
+    }
+
+    /// Where pointer input is coming from in the active window.
+    pub fn pointer_source(&self) -> PointerSource {
+        self.slot().state.pointer_source()
+    }
+
+    /// The haptics touch gestures have played, in order (the runner plays
+    /// them through the app's hook).
+    pub fn haptics(&self) -> &[fenestra_core::Haptic] {
+        &self.haptics
+    }
+
+    /// Feeds one touch phase at `at` through the shell's touch translator
+    /// and dispatches what it produces, playing the haptic it calls for.
+    fn touch_phase(&mut self, phase: winit::event::TouchPhase, at: kurbo::Point) {
+        let (owns_drag, moving) = if phase == winit::event::TouchPhase::Started {
+            let slot = self.slot();
+            (
+                fenestra_core::owns_touch_drag(&slot.view, &slot.frame, &slot.state, at),
+                fenestra_core::scroll_moving_at(&slot.frame, &slot.state, at),
+            )
+        } else {
+            (false, false)
+        };
+        let events = self
+            .touch
+            .event(0, phase, at, self.clock, owns_drag, moving)
+            .unwrap_or_default();
+        self.finger = match phase {
+            winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => None,
+            _ => Some(at),
+        };
+        self.touch_events(events);
+    }
+
+    fn touch_events(&mut self, events: Vec<InputEvent>) {
+        if events.is_empty() {
+            return;
+        }
+        self.touching = true;
+        self.set_source(PointerSource::Touch);
+        for event in events {
+            let long_press = event == InputEvent::RightDown;
+            let (consumed, selected) = self.dispatch_one(event);
+            if let Some(haptic) = crate::touch::touch_haptic(long_press, consumed || selected) {
+                self.haptics.push(haptic);
+            }
+        }
+        self.touching = false;
+    }
+
+    /// Puts a finger down at `at` (logical px). Held without moving for
+    /// half a second of [`Self::pump`], it long-presses.
+    pub fn touch_down_at(&mut self, at: (f32, f32)) {
+        self.touch_phase(winit::event::TouchPhase::Started, point(at));
+    }
+
+    /// Moves the finger that is down to `at`.
+    ///
+    /// # Panics
+    /// If no finger is down.
+    pub fn touch_move_to(&mut self, at: (f32, f32)) {
+        assert!(self.finger.is_some(), "touch_move_to without a finger down");
+        self.touch_phase(winit::event::TouchPhase::Moved, point(at));
+    }
+
+    /// Lifts the finger where it is.
+    ///
+    /// # Panics
+    /// If no finger is down.
+    pub fn touch_up(&mut self) {
+        let at = self.finger.expect("touch_up without a finger down");
+        self.touch_phase(winit::event::TouchPhase::Ended, at);
+    }
+
+    /// Taps a finger at `at`.
+    pub fn touch_tap_at(&mut self, at: (f32, f32)) {
+        self.touch_down_at(at);
+        self.touch_up();
+    }
+
+    /// Taps a finger on the matched node (checked to land on it).
+    ///
+    /// # Panics
+    /// As [`Self::click`].
+    pub fn touch_tap(&mut self, q: &Query) {
+        let at = self.press_point(q);
+        self.touch_tap_at(at);
+    }
+
+    /// Holds a finger still on the matched node for half a second, then
+    /// lifts it: the long press a phone makes (an app's right-click menu,
+    /// or a text selection).
+    ///
+    /// # Panics
+    /// As [`Self::click`].
+    pub fn long_press(&mut self, q: &Query) {
+        let at = self.press_point(q);
+        self.touch_down_at(at);
+        self.pump(f64::from(crate::touch::LONG_PRESS_MS));
+        self.touch_up();
     }
 
     fn center(&self, q: &Query) -> (f32, f32) {
@@ -596,6 +729,10 @@ where
         self.clock += ms / 1000.0;
         self.deliver_due_subs();
         self.rebuild();
+        // A finger held through it long-presses when due, as the runner's
+        // timer wakes for it.
+        let events = self.touch.tick(self.clock);
+        self.touch_events(events);
     }
 
     /// Reconciles the subscription schedule against
@@ -804,4 +941,21 @@ where
         }
         out
     }
+}
+
+/// A pointer event (the mouse's, unless a touch verb sends it).
+fn is_pointer_event(event: &InputEvent) -> bool {
+    matches!(
+        event,
+        InputEvent::PointerMove { .. }
+            | InputEvent::PointerDown
+            | InputEvent::PointerUp
+            | InputEvent::RightDown
+            | InputEvent::RightUp
+            | InputEvent::Wheel { .. }
+    )
+}
+
+fn point((x, y): (f32, f32)) -> kurbo::Point {
+    kurbo::Point::new(f64::from(x), f64::from(y))
 }

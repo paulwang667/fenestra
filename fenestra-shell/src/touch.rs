@@ -8,8 +8,11 @@ use winit::event::TouchPhase;
 /// How far a finger may travel (logical px) and still count as a tap.
 pub(crate) const TAP_SLOP: f64 = 10.0;
 
-/// How long a finger held still takes to long-press (seconds).
-pub(crate) const LONG_PRESS: f64 = 0.5;
+/// How long a finger held still takes to long-press (milliseconds).
+pub(crate) const LONG_PRESS_MS: u32 = 500;
+
+/// [`LONG_PRESS_MS`] in seconds.
+pub(crate) const LONG_PRESS: f64 = LONG_PRESS_MS as f64 / 1000.0;
 
 /// The stretch of travel a lift's velocity is measured over (seconds).
 const VELOCITY_WINDOW: f64 = 0.1;

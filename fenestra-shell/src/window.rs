@@ -2410,6 +2410,8 @@ fn build_menu<Msg: Clone>(
 struct InputOutcome {
     /// It produced messages for the app.
     consumed: bool,
+    /// A touch long press started a text selection.
+    selection_started: bool,
     /// A key nothing took: core left it unhandled and the app's
     /// `window_key` had nothing for it.
     #[cfg_attr(
@@ -3003,6 +3005,7 @@ impl<A: App> AppRunner<A> {
         }
         InputOutcome {
             consumed: had_msgs,
+            selection_started: result.selection_started,
             unhandled,
         }
     }
@@ -3042,10 +3045,23 @@ impl<A: App> AppRunner<A> {
     /// Routes an event a touch produced into the main window, and plays the
     /// haptic it calls for (a long press that acted).
     fn touch_input_main(&mut self, event_loop: &ActiveEventLoop, event: InputEvent) {
+        self.source_main(event_loop, fenestra_core::PointerSource::Touch);
         let long_press = event == InputEvent::RightDown;
-        let consumed = self.input_main_consumed(event_loop, event);
-        if let Some(haptic) = crate::touch::touch_haptic(long_press, consumed) {
+        let outcome = self.input(event);
+        if outcome.consumed {
+            self.after_update(event_loop);
+        }
+        if let Some(haptic) =
+            crate::touch::touch_haptic(long_press, outcome.consumed || outcome.selection_started)
+        {
             self.play_haptic(haptic);
+        }
+    }
+
+    /// Tells core where pointer input now comes from, when that changed.
+    fn source_main(&mut self, event_loop: &ActiveEventLoop, source: fenestra_core::PointerSource) {
+        if self.state.pointer_source() != source {
+            self.input_main(event_loop, InputEvent::PointerSource(source));
         }
     }
 
@@ -3065,6 +3081,24 @@ impl<A: App> AppRunner<A> {
         }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let _ = haptic;
+    }
+
+    /// Tells a secondary window's core where pointer input now comes from,
+    /// when that changed.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn source_secondary(
+        &mut self,
+        key: &str,
+        event_loop: &ActiveEventLoop,
+        source: fenestra_core::PointerSource,
+    ) {
+        if self
+            .secondary
+            .get(key)
+            .is_some_and(|b| b.state.pointer_source() != source)
+        {
+            self.secondary_input_main(key, event_loop, InputEvent::PointerSource(source));
+        }
     }
 
     /// Routes one input event into a secondary window, reconciling
@@ -3336,6 +3370,7 @@ impl<A: App> AppRunner<A> {
                     return;
                 };
                 bundle.cursor = at;
+                self.source_secondary(key, event_loop, fenestra_core::PointerSource::Touch);
                 for event in events {
                     self.secondary_input_main(key, event_loop, event);
                 }
@@ -3348,6 +3383,7 @@ impl<A: App> AppRunner<A> {
                 bundle.cursor = Point::new(position.x / scale, position.y / scale);
                 #[expect(clippy::cast_possible_truncation, reason = "positions fit in f32")]
                 let (x, y) = (bundle.cursor.x as f32, bundle.cursor.y as f32);
+                self.source_secondary(key, event_loop, fenestra_core::PointerSource::Mouse);
                 self.secondary_input_main(key, event_loop, InputEvent::PointerMove { x, y });
             }
             WindowEvent::MouseInput {
@@ -3355,6 +3391,7 @@ impl<A: App> AppRunner<A> {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
+                self.source_secondary(key, event_loop, fenestra_core::PointerSource::Mouse);
                 self.secondary_input_main(
                     key,
                     event_loop,
@@ -3369,6 +3406,7 @@ impl<A: App> AppRunner<A> {
                 button: winit::event::MouseButton::Right,
                 ..
             } => {
+                self.source_secondary(key, event_loop, fenestra_core::PointerSource::Mouse);
                 self.secondary_input_main(
                     key,
                     event_loop,
@@ -3870,6 +3908,7 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
+                self.source_main(event_loop, fenestra_core::PointerSource::Mouse);
                 let scale = self.shell.window().map_or(1.0, |w| w.scale_factor());
                 self.cursor = Point::new(position.x / scale, position.y / scale);
                 #[expect(clippy::cast_possible_truncation, reason = "positions fit in f32")]
@@ -3886,6 +3925,7 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
+                self.source_main(event_loop, fenestra_core::PointerSource::Mouse);
                 // Borderless drag regions: a press inside one starts the OS
                 // window-drag gesture instead of app input. Interactive
                 // children win — the region only claims presses nothing
@@ -3951,6 +3991,7 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                 button: winit::event::MouseButton::Right,
                 ..
             } => {
+                self.source_main(event_loop, fenestra_core::PointerSource::Mouse);
                 self.input_main(
                     event_loop,
                     match state {

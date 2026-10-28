@@ -58,8 +58,8 @@ pub use element::{
 };
 pub use events::{
     Dispatch, DragEvent, GesturePhase, Haptic, ImeTextState, InputEvent, Key, KeyInput, Mods,
-    PinchEvent, WheelEvent, WindowControl, click_msg_of, dispatch, owns_touch_drag, refresh_hover,
-    scroll_moving_at,
+    PinchEvent, PointerSource, WheelEvent, WindowControl, click_msg_of, dispatch, owns_touch_drag,
+    refresh_hover, scroll_moving_at,
 };
 #[doc(hidden)]
 pub use frame::adapted_glass_tint;
