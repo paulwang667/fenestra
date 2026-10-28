@@ -18,6 +18,8 @@ pub(crate) struct Anim {
     t0: f64,
     /// Frame stamp for garbage collection.
     pub(crate) seen: u64,
+    /// The next change snaps too (it settled at a keyboard-driven style).
+    pub(crate) snap_next: bool,
 }
 
 impl Anim {
@@ -42,6 +44,7 @@ impl Anim {
             to: target,
             t0: now,
             seen,
+            snap_next: false,
         }
     }
 

@@ -484,7 +484,9 @@ fn enter_from_is_inert_under_reduced_motion() {
     let f = build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
     let page = f.get(&by::id("page")).id;
     assert!(!f.animating);
-    assert_eq!(state.anim_seed(page), None);
+    // Kept settled at its own style (so turning reduced motion off does not
+    // replay it), never at the entrance's start.
+    assert_ne!(state.anim_seed(page), Some((0.0, 1.0, (40.0, 0.0))));
 }
 
 /// Keyboard focus snaps an element's state changes; it must not make the
@@ -519,4 +521,56 @@ fn keyboard_focus_does_not_replay_an_entrance() {
     let f = build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
     assert!(!f.animating, "no second entrance");
     assert_ne!(state.anim_seed(page), Some((0.0, 1.0, (40.0, 0.0))));
+}
+
+/// Reduced motion switched off while the app runs (an OS setting): what is
+/// on screen has entered already, and does not play its entrance now.
+#[test]
+fn turning_reduced_motion_off_does_not_replay_entrances() {
+    let theme = Theme::light();
+    let mut fonts = Fonts::embedded();
+    let mut state = FrameState::new();
+    state.reduced_motion = true;
+    let view = col::<()>().w(200.0).h(400.0).children([div::<()>()
+        .id("page")
+        .w(100.0)
+        .h(20.0)
+        .enter_from(0.0, 1.0, 40.0, 0.0)]);
+    build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
+    state.tick(1.0);
+    build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
+    state.reduced_motion = false;
+    state.tick(1.1);
+    let f = build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
+    assert!(!f.animating, "no entrance replay");
+}
+
+/// Keyboard-driven changes snap — leaving keyboard focus too: the control
+/// does not fade out of its focused look.
+#[test]
+fn leaving_keyboard_focus_snaps() {
+    let theme = Theme::light();
+    let mut fonts = Fonts::embedded();
+    let mut state = FrameState::new();
+    let view = col::<()>().w(200.0).h(400.0).children([
+        div::<()>()
+            .id("a")
+            .w(100.0)
+            .h(20.0)
+            .focusable(true)
+            .transition(Transition::colors().duration_ms(200.0))
+            .focus(|s| s.bg(fenestra_core::Color::from_rgb8(200, 0, 0))),
+        div::<()>().id("b").w(100.0).h(20.0).focusable(true),
+    ]);
+    let f = build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
+    let (a, b) = (f.get(&by::id("a")).id, f.get(&by::id("b")).id);
+    state.tick(1.0);
+    state.set_focus(Some(a));
+    build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
+    state.tick(1.1);
+    build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
+    state.set_focus(Some(b));
+    state.tick(1.2);
+    let f = build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
+    assert!(!f.animating, "a snaps out of its focused look");
 }

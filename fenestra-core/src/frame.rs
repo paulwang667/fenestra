@@ -639,16 +639,23 @@ fn resolve<Msg>(
     // focus ring and state layer instantly, since keyboard users move between
     // controls faster than a fade can keep up.
     let keyboard_driven = state.focus_visible && state.focused() == Some(id);
-    // A keyboard-focused element snaps, but keeps its retained animation
-    // alive (settled at the snapped style): dropped, it would be seeded
-    // anew when focus moves on, and an entrance would play again.
-    if transition.is_some() && !state.reduced_motion && keyboard_driven {
+    // A keyboard-focused element snaps, and so does its next change (focus
+    // leaving it), but it keeps its retained animation alive, settled at the
+    // snapped style: dropped, it would be seeded anew when focus moves on,
+    // and an entrance would play again. Under reduced motion an entering
+    // element keeps one the same way, so switching reduced motion off does
+    // not replay what is already on screen.
+    let keep_settled = transition.is_some()
+        && ((!state.reduced_motion && keyboard_driven)
+            || (state.reduced_motion && el.enter.is_some()));
+    if keep_settled {
         let (now, seen) = (state.now(), state.frame_no);
         let anim = state
             .anims
             .entry(id)
             .or_insert_with(|| crate::anim::Anim::new(style.clone(), now, seen));
         anim.settle(&style, now, seen);
+        anim.snap_next = keyboard_driven;
     }
     if let Some(transition) = transition
         && !state.reduced_motion
@@ -677,6 +684,11 @@ fn resolve<Msg>(
             };
             crate::anim::Anim::new(seed, now, seen)
         });
+        if anim.snap_next {
+            // Leaving a keyboard-driven style snaps, as reaching it did.
+            anim.snap_next = false;
+            anim.settle(&style, now, seen);
+        }
         let (animated, running) = anim.advance(&style, transition, now, seen);
         style = animated;
         animating = running;
