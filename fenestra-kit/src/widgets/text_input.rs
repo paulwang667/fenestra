@@ -15,7 +15,9 @@
 //!     .into();
 //! ```
 
-use fenestra_core::{Element, SP3, Theme, Transition, raw_input, row, stack};
+use fenestra_core::{
+    Element, EnterKey, Key, Keyboard, SP3, Theme, Transition, raw_input, row, stack,
+};
 
 use super::{ControlSize, Density};
 
@@ -31,7 +33,10 @@ pub struct TextInput<Msg> {
     read_only: bool,
     masked: bool,
     max_chars: Option<usize>,
+    keyboard: Keyboard,
+    enter_key: EnterKey,
     on_input: Option<std::rc::Rc<dyn Fn(String) -> Msg>>,
+    on_submit: Option<std::rc::Rc<dyn Fn() -> Msg>>,
     key: Option<String>,
     prefix: Option<Element<Msg>>,
     suffix: Option<Element<Msg>>,
@@ -50,7 +55,10 @@ pub fn text_input<Msg>(value: impl Into<String>) -> TextInput<Msg> {
         disabled: false,
         masked: false,
         max_chars: None,
+        keyboard: Keyboard::Text,
+        enter_key: EnterKey::Default,
         on_input: None,
+        on_submit: None,
         key: None,
         prefix: None,
         suffix: None,
@@ -132,6 +140,30 @@ impl<Msg> TextInput<Msg> {
         self
     }
 
+    /// The on-screen keyboard to offer (Android): see [`Keyboard`].
+    pub fn keyboard(mut self, keyboard: Keyboard) -> Self {
+        self.keyboard = keyboard;
+        self
+    }
+
+    /// The enter key — its label on an on-screen keyboard and what it does:
+    /// see [`EnterKey`].
+    pub fn enter_key(mut self, enter_key: EnterKey) -> Self {
+        self.enter_key = enter_key;
+        self
+    }
+
+    /// Emits `msg` on Enter — an on-screen keyboard's action key (Send,
+    /// Search, Go, Done) arrives as one. Taking the Enter, it keeps focus in
+    /// the field.
+    pub fn on_submit(mut self, msg: Msg) -> Self
+    where
+        Msg: Clone + 'static,
+    {
+        self.on_submit = Some(std::rc::Rc::new(move || msg.clone()));
+        self
+    }
+
     /// Maps every edit of the value to a message.
     pub fn on_input(mut self, f: impl Fn(String) -> Msg + 'static) -> Self {
         self.on_input = Some(std::rc::Rc::new(f));
@@ -210,7 +242,9 @@ impl<Msg: 'static> From<TextInput<Msg>> for Element<Msg> {
             .invalid(invalid)
             .read_only(t.read_only)
             .masked(t.masked)
-            .max_chars(t.max_chars);
+            .max_chars(t.max_chars)
+            .keyboard(t.keyboard)
+            .enter_key(t.enter_key);
         // Reserve room for adornments so the text clears them.
         if prefix.is_some() {
             el = el.pl(ADORN_SLOT);
@@ -251,6 +285,9 @@ impl<Msg: 'static> From<TextInput<Msg>> for Element<Msg> {
         }
         if let Some(f) = t.on_input {
             el = el.on_input(move |s| f(s.to_owned()));
+        }
+        if let Some(f) = t.on_submit {
+            el = el.on_key(move |k| (k.key == Key::Enter && !k.shift).then(|| f()));
         }
         if prefix.is_none() && suffix.is_none() {
             return el;

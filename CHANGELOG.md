@@ -14,6 +14,19 @@
 
 ### Added
 
+- **Inputs say what keyboard and enter key they want.** `Element::keyboard`
+  (`Keyboard::{Text, Number, Decimal, Phone, Email, Url}`) and
+  `Element::enter_key` (`EnterKey::{Default, Send, Search, Go, Done, Next,
+  Newline}`); kit `text_input` passes both on and adds `on_submit`. On
+  Android the IME shows that keyboard and labels its enter key (a chat
+  composer gets a Send key). The key also decides what Enter does
+  everywhere: only `Newline` breaks a line (an explicit key wins over
+  `submit_on_enter`); `Next` moves focus on as Tab does; an explicit
+  `Done`, `Search` or `Go` on a single line lets go of focus when nothing
+  takes the Enter (closing an on-screen keyboard). `Default` keeps what
+  fields did before: a newline in a multiline field without
+  `submit_on_enter`, Done otherwise. `ImeTextState` reports the keyboard,
+  the resolved enter key and whether the field is multiline.
 - **Touch scrolling glides, catches and bounces** (Android, iOS). A
   finger lifted mid-drag glides on and slows to a stop (about `v·0.325 s`,
   at most 8000 px/s); a finger landing on the gliding scroller stops it
@@ -53,6 +66,9 @@
 
 ### Breaking
 
+- **`InputData` and `ImeTextState` gained public fields** (`keyboard`,
+  `enter_key`; and `multiline` on `ImeTextState`). Struct literals must add
+  them (`..ImeTextState::default()` works for the latter).
 - **`InputEvent` gained `Pan`, `PanEnd` and `PanStop`**, which touch
   platforms now send for a dragging finger instead of `Wheel`. An
   exhaustive `match` on `InputEvent` must handle them; an `on_wheel`
