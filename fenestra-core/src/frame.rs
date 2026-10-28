@@ -1835,8 +1835,7 @@ pub fn build_frame<Msg>(
                 },
                 |known, available, _id, ctx, _style| match ctx {
                     Some(MeasureCtx::Text { text, style }) => {
-                        let (w, h) =
-                            measure_text(fonts, text, style, known.width, available.width);
+                        let (w, h) = measure_text(fonts, text, style, known.width, available.width);
                         Size {
                             width: known.width.unwrap_or(w),
                             height: known.height.unwrap_or(h),
@@ -4314,7 +4313,11 @@ mod tests {
         let one = test_frame(&col::<()>().child(text("a").id("t")), (400.0, 400.0));
         let line = one.get(&by::id("t")).rect.height();
         let squeezed = row::<()>().w(100.0).child(
-            col().child(col().w_full().child(text(format!("a b c d e f g h {long}")).id("t"))),
+            col().child(
+                col()
+                    .w_full()
+                    .child(text(format!("a b c d e f g h {long}")).id("t")),
+            ),
         );
         let frame = test_frame(&squeezed, (400.0, 400.0));
         let rect = frame.get(&by::id("t")).rect;
