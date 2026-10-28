@@ -11,14 +11,17 @@
 //! once per frame ([`refresh`]) for hit tests, painting and
 //! [`FrameState::touch_selection`].
 
-use kurbo::{Point, Rect, Vec2};
+use kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
+use peniko::Fill;
 
-use crate::WidgetId;
+use crate::draw::DrawTarget;
 use crate::frame::Frame;
 use crate::frame_state::FrameState;
-use crate::style::TextStyle;
-use crate::text::{Fonts, resolve_text};
-use crate::theme::Theme;
+use crate::style::{Shadow, TextStyle};
+use crate::text::{Fonts, ResolvedText, resolve_text};
+use crate::theme::{SelectionControls, Theme};
+use crate::tokens::ShadowToken;
+use crate::{Color, WidgetId};
 
 /// An edit menu action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -53,6 +56,9 @@ pub struct TouchSelection {
     pub labels: Vec<String>,
     /// The selection's line boxes (logical px), for anchoring.
     pub(crate) lines: Vec<Rect>,
+    /// What the magnifier centers on: the dragged point.
+    pub(crate) focus: Option<Point>,
+    pub(crate) look: Look,
 }
 
 /// What is being dragged.
@@ -373,13 +379,7 @@ pub(crate) fn refresh(
         }
         items.push(EditAction::SelectAll);
         let zh = fonts.locale().is_some_and(|l| l.language() == "zh");
-        let style = resolve_text(
-            &TextStyle {
-                size_px: Some(LABEL_PX),
-                ..TextStyle::default()
-            },
-            theme,
-        );
+        let style = Look::of(theme).label;
         let widths: Vec<f64> = items
             .iter()
             .map(|a| {
@@ -412,6 +412,7 @@ pub(crate) fn refresh(
         .drag
         .zip(sel.finger)
         .map(|(_, f)| magnifier_rect(f, theme));
+    let focus = sel.drag.zip(sel.finger).map(|(_, f)| f + sel.offset);
     state.touch_geom = Some(TouchSelection {
         target: sel.target,
         range,
@@ -421,6 +422,8 @@ pub(crate) fn refresh(
         magnifier,
         labels,
         lines,
+        focus,
+        look: Look::of(theme),
     });
     scrolling
 }
@@ -428,8 +431,8 @@ pub(crate) fn refresh(
 /// The magnifier's frame: centered over the finger, above it.
 pub(crate) fn magnifier_rect(finger: Point, theme: &Theme) -> Rect {
     let (w, h) = match theme.selection_controls {
-        crate::theme::SelectionControls::Material => (100.0, 48.0),
-        crate::theme::SelectionControls::Cupertino => (110.0, 44.0),
+        SelectionControls::Material => (100.0, 48.0),
+        SelectionControls::Cupertino => (110.0, 44.0),
     };
     let cy = finger.y - 40.0 - h / 2.0;
     Rect::new(
@@ -507,4 +510,266 @@ fn selection_lines(
         (range.start, range.end),
         boxes.into_iter().map(|b| b + origin).collect(),
     ))
+}
+
+/// What the controls look like, resolved from the theme when the frame is
+/// built (painting has no theme).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Look {
+    pub controls: SelectionControls,
+    pub accent: Color,
+    pub surface: Color,
+    pub bg: Color,
+    pub text: Color,
+    pub shadow: Vec<Shadow>,
+    pub label: ResolvedText,
+}
+
+impl Look {
+    fn of(theme: &Theme) -> Self {
+        Self {
+            controls: theme.selection_controls,
+            accent: theme.accent,
+            surface: theme.surface_raised,
+            bg: theme.bg,
+            text: theme.text,
+            shadow: theme.shadow(ShadowToken::Md),
+            label: resolve_text(
+                &TextStyle {
+                    size_px: Some(LABEL_PX),
+                    ..TextStyle::default()
+                },
+                theme,
+            ),
+        }
+    }
+}
+
+/// The magnifier's zoom.
+pub(crate) const ZOOM: f64 = 1.25;
+
+/// Draws the magnifier's frame and clips to it; the caller paints the
+/// content (zoomed by [`magnifier_transform`]) and then calls
+/// [`end_magnifier`].
+pub(crate) fn begin_magnifier<T: DrawTarget>(target: &mut T, geom: &TouchSelection, rect: Rect) {
+    let shape = magnifier_shape(geom, rect);
+    for s in shadows(&geom.look, ShadowToken::Sm) {
+        draw_shadow(target, &s, rect, radius(&shape));
+    }
+    target.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &shape);
+    target.fill(Fill::NonZero, Affine::IDENTITY, geom.look.bg, None, &rect);
+}
+
+/// Maps content around the dragged point into the magnifier, zoomed.
+pub(crate) fn magnifier_transform(rect: Rect, focus: Point) -> Affine {
+    Affine::translate(rect.center().to_vec2())
+        * Affine::scale(ZOOM)
+        * Affine::translate(-focus.to_vec2())
+}
+
+/// Ends [`begin_magnifier`] and outlines the frame.
+pub(crate) fn end_magnifier<T: DrawTarget>(target: &mut T, geom: &TouchSelection, rect: Rect) {
+    target.pop_layer();
+    let shape = magnifier_shape(geom, rect);
+    target.stroke(
+        &Stroke::new(0.5),
+        Affine::IDENTITY,
+        geom.look.text.with_alpha(0.2),
+        None,
+        &shape,
+    );
+}
+
+fn magnifier_shape(geom: &TouchSelection, rect: Rect) -> RoundedRect {
+    let r = match geom.look.controls {
+        SelectionControls::Material => 8.0,
+        SelectionControls::Cupertino => rect.height() / 2.0,
+    };
+    RoundedRect::from_rect(rect, r)
+}
+
+fn radius(shape: &RoundedRect) -> f64 {
+    shape.radii().top_left
+}
+
+/// The theme's shadow for `token` (the menu's is resolved at build time).
+fn shadows(look: &Look, token: ShadowToken) -> Vec<Shadow> {
+    match token {
+        ShadowToken::Md => look.shadow.clone(),
+        // A lighter one for the magnifier: the menu's, halved.
+        _ => look
+            .shadow
+            .iter()
+            .map(|s| Shadow {
+                blur: s.blur / 2.0,
+                dy: s.dy / 2.0,
+                ..*s
+            })
+            .collect(),
+    }
+}
+
+fn draw_shadow<T: DrawTarget>(target: &mut T, s: &Shadow, rect: Rect, radius: f64) {
+    let r = rect.inflate(f64::from(s.spread), f64::from(s.spread))
+        + kurbo::Vec2::new(f64::from(s.dx), f64::from(s.dy));
+    target.draw_blurred_rounded_rect(
+        Affine::IDENTITY,
+        r,
+        s.color,
+        radius,
+        f64::from(s.blur) / 2.0,
+    );
+}
+
+/// Paints the handles and the edit menu (above everything else).
+pub(crate) fn paint<T: DrawTarget>(target: &mut T, fonts: &mut Fonts, geom: &TouchSelection) {
+    let look = &geom.look;
+    let collapsed = geom.range.0 == geom.range.1;
+    let first = geom.lines.first().copied().unwrap_or_default();
+    let last = geom.lines.last().copied().unwrap_or_default();
+    match look.controls {
+        SelectionControls::Material => {
+            if let Some(h) = geom.start_handle {
+                teardrop(target, look.accent, anchor_of(h), Lean::Left);
+            }
+            if let Some(h) = geom.end_handle {
+                let lean = if collapsed { Lean::Center } else { Lean::Right };
+                teardrop(target, look.accent, anchor_of(h), lean);
+            }
+        }
+        SelectionControls::Cupertino => {
+            if geom.start_handle.is_some() {
+                lollipop(
+                    target,
+                    look.accent,
+                    Point::new(first.x0, first.y0),
+                    first.y1,
+                    true,
+                );
+            }
+            // iOS shows no handle on a bare caret.
+            if geom.end_handle.is_some() && !collapsed {
+                let x = last.x1;
+                lollipop(target, look.accent, Point::new(x, last.y0), last.y1, false);
+            }
+        }
+    }
+    paint_menu(target, fonts, geom);
+}
+
+/// Where a handle's touch area hangs from (see [`handle_rect`]).
+fn anchor_of(hit: Rect) -> Point {
+    Point::new(hit.center().x, hit.y0 + 4.0)
+}
+
+#[derive(Clone, Copy)]
+enum Lean {
+    Left,
+    Center,
+    Right,
+}
+
+/// Material's handle: a disc with one square corner pointing at the
+/// anchor (the start's leans left, the end's right; a bare caret's
+/// points straight up).
+fn teardrop<T: DrawTarget>(target: &mut T, color: Color, p: Point, lean: Lean) {
+    const R: f64 = 11.0;
+    let (center, corner) = match lean {
+        Lean::Left => (
+            Point::new(p.x - R, p.y + R),
+            Rect::new(p.x - R, p.y, p.x, p.y + R),
+        ),
+        Lean::Right => (
+            Point::new(p.x + R, p.y + R),
+            Rect::new(p.x, p.y, p.x + R, p.y + R),
+        ),
+        Lean::Center => {
+            let c = Point::new(p.x, p.y + R * std::f64::consts::SQRT_2);
+            let mut diamond = BezPath::new();
+            diamond.move_to(p);
+            let d = R * std::f64::consts::FRAC_1_SQRT_2;
+            diamond.line_to((c.x + d, c.y - d));
+            diamond.line_to((c.x - d, c.y - d));
+            diamond.close_path();
+            target.fill(Fill::NonZero, Affine::IDENTITY, color, None, &diamond);
+            target.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                color,
+                None,
+                &Circle::new(c, R),
+            );
+            return;
+        }
+    };
+    target.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        color,
+        None,
+        &Circle::new(center, R),
+    );
+    target.fill(Fill::NonZero, Affine::IDENTITY, color, None, &corner);
+}
+
+/// Cupertino's handle: a 2px bar down the line with a knob above (start)
+/// or below (end).
+fn lollipop<T: DrawTarget>(target: &mut T, color: Color, top: Point, bottom: f64, start: bool) {
+    let bar = Rect::new(top.x - 1.0, top.y, top.x + 1.0, bottom);
+    target.fill(Fill::NonZero, Affine::IDENTITY, color, None, &bar);
+    let knob = if start {
+        Point::new(top.x, top.y - 4.0)
+    } else {
+        Point::new(top.x, bottom + 4.0)
+    };
+    target.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        color,
+        None,
+        &Circle::new(knob, 4.0),
+    );
+}
+
+fn paint_menu<T: DrawTarget>(target: &mut T, fonts: &mut Fonts, geom: &TouchSelection) {
+    let (Some(first), Some(last)) = (geom.menu.first(), geom.menu.last()) else {
+        return;
+    };
+    let look = &geom.look;
+    let bar = Rect::new(first.1.x0, first.1.y0, last.1.x1, last.1.y1);
+    let (fill, ink) = match look.controls {
+        SelectionControls::Material => (look.surface, look.text),
+        SelectionControls::Cupertino => (
+            Color::from_rgb8(0x1c, 0x1c, 0x1e).with_alpha(0.92),
+            Color::WHITE,
+        ),
+    };
+    let shape = RoundedRect::from_rect(bar, 8.0);
+    for s in shadows(look, ShadowToken::Md) {
+        draw_shadow(target, &s, bar, 8.0);
+    }
+    target.fill(Fill::NonZero, Affine::IDENTITY, fill, None, &shape);
+    let mut label = look.label;
+    label.color = ink;
+    let line = f64::from(label.px * label.line_height);
+    for (i, ((_, item), text)) in geom.menu.iter().zip(&geom.labels).enumerate() {
+        if i > 0 && look.controls == SelectionControls::Cupertino {
+            let sep = Rect::new(
+                item.x0 - 0.25,
+                item.y0 + 10.0,
+                item.x0 + 0.25,
+                item.y1 - 10.0,
+            );
+            target.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                ink.with_alpha(0.25),
+                None,
+                &sep,
+            );
+        }
+        let y = item.y0 + (item.height() - line) / 2.0;
+        let rect = Rect::new(item.x0 + ITEM_PAD, y, item.x1 - ITEM_PAD + 1.0, y + line);
+        fonts.paint(target, text, &label, rect, None);
+    }
 }

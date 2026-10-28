@@ -2642,6 +2642,19 @@ impl Frame {
             }
         }
         self.paint_exits(target, fonts, state);
+        // Touch selection controls sit above everything. Every pass draws
+        // them: a frame without glass shows its backdrop pass as is.
+        if let Some(geom) = state.touch_geom.clone() {
+            if let (Some(rect), Some(focus)) = (geom.magnifier, geom.focus) {
+                crate::touch_select::begin_magnifier(target, &geom, rect);
+                target.push_transform(crate::touch_select::magnifier_transform(rect, focus));
+                // Plain paint: the zoomed copy records no glass passes.
+                self.paint_node(target, fonts, state, &self.root, &mut PaintMode::Full);
+                target.pop_transform();
+                crate::touch_select::end_magnifier(target, &geom, rect);
+            }
+            crate::touch_select::paint(target, fonts, &geom);
+        }
     }
 
     /// Paints every in-flight exit ghost on top of the frame. Each ghost
