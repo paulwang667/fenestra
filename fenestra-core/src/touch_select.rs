@@ -114,6 +114,17 @@ pub(crate) fn start(state: &mut FrameState, target: WidgetId, input: bool) {
         held: false,
     });
 }
+/// The edit menu item under a touch press, if any.
+pub(crate) fn menu_at(state: &FrameState, point: Point) -> Option<EditAction> {
+    state
+        .touch_geom
+        .as_ref()?
+        .menu
+        .iter()
+        .find(|(_, r)| r.contains(point))
+        .map(|(a, _)| *a)
+}
+
 /// The finger that started this selection by a long press is still down.
 pub(crate) fn hold(state: &mut FrameState) {
     if let Some(sel) = &mut state.touch_sel {

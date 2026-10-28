@@ -419,6 +419,23 @@ where
             .clipboard()
     }
 
+    /// The focused field as a platform input method sees it (what the
+    /// runner mirrors to Android's and iOS's IMEs).
+    pub fn ime_text_state(&self) -> Option<fenestra_core::ImeTextState> {
+        self.slot().state.ime_text_state()
+    }
+
+    /// Sets the active window's safe area (a phone's status bar, notch and
+    /// home indicator) and rebuilds.
+    pub fn set_safe_area(&mut self, insets: kurbo::Insets) {
+        self.slots
+            .get_mut(&self.active)
+            .expect("active slot exists")
+            .state
+            .safe_area = insets;
+        self.rebuild();
+    }
+
     /// The haptics touch gestures have played, in order (the runner plays
     /// them through the app's hook).
     pub fn haptics(&self) -> &[fenestra_core::Haptic] {

@@ -913,12 +913,17 @@ fn dispatch_inner<Msg: Clone>(
                 return out;
             };
             let point = Point::new(f64::from(px), f64::from(py));
-            // A touch on a selection handle drags it; nothing else is pressed.
-            if state.pointer_source == PointerSource::Touch
-                && crate::touch_select::press(state, point)
-            {
-                out.redraw = true;
-                return out;
+            // A touch on a selection handle drags it, and one on the edit
+            // menu waits for its release; nothing else is pressed.
+            if state.pointer_source == PointerSource::Touch {
+                if let Some(action) = crate::touch_select::menu_at(state, point) {
+                    state.menu_press = Some(action);
+                    return out;
+                }
+                if crate::touch_select::press(state, point) {
+                    out.redraw = true;
+                    return out;
+                }
             }
             let chain = frame.hit_chain(point);
             // Internal drag: the deepest drag source under the press.
@@ -1165,6 +1170,17 @@ fn dispatch_inner<Msg: Clone>(
         }
         InputEvent::RightUp => {}
         InputEvent::PointerUp => {
+            // An edit menu item released on: its action.
+            if let Some(action) = state.menu_press.take() {
+                if let Some((px, py)) = state.pointer
+                    && crate::touch_select::menu_at(state, Point::new(f64::from(px), f64::from(py)))
+                        == Some(action)
+                {
+                    touch_edit(&handlers, frame, state, fonts, action, &mut out);
+                }
+                out.redraw = true;
+                return out;
+            }
             // A handle (or caret) drag ends; the edit menu comes back.
             if crate::touch_select::release(state) {
                 state.active = None;
@@ -1833,6 +1849,85 @@ fn input_local<Msg>(
         rect.height() * 0.5
     };
     Some((point.x - rect.x0 - pad + scroll_x, y))
+}
+
+/// An edit menu action on the touch selection. A field edits as its
+/// keyboard shortcut does (one implementation; the app hears `on_input`);
+/// read-only text copies or selects all.
+fn touch_edit<Msg>(
+    handlers: &Handlers<'_, Msg>,
+    frame: &Frame,
+    state: &mut FrameState,
+    fonts: &mut Fonts,
+    action: crate::touch_select::EditAction,
+    out: &mut Dispatch<Msg>,
+) {
+    use crate::touch_select::EditAction;
+    let Some(sel) = state.touch_sel else {
+        return;
+    };
+    if sel.input {
+        let Some(el) = handlers.get(sel.target) else {
+            return;
+        };
+        let key = match action {
+            EditAction::Cut => 'x',
+            EditAction::Copy => 'c',
+            EditAction::Paste => 'v',
+            EditAction::SelectAll => 'a',
+        };
+        let key = KeyInput {
+            ctrl: true,
+            ..KeyInput::plain(Key::Char(key))
+        };
+        let now = state.now();
+        let st = &mut *state;
+        let Some(editor) = st.editors.get_mut(&sel.target) else {
+            return;
+        };
+        // An input method's half-composed text is not the user's: it goes
+        // before the paste replaces the selection.
+        if action == EditAction::Paste {
+            input::cancel_compose(editor, fonts);
+        }
+        let outcome = input::handle_key(editor, fonts, st.clipboard.as_mut(), &key);
+        editor.last_activity = now;
+        if outcome.changed
+            && let Some(f) = &el.on_input
+        {
+            out.msgs.push(f(editor.editor.raw_text()));
+        }
+    } else if let Some((sid, psel, _)) = state.static_sel
+        && sid == sel.target
+        && let Some((text, style)) = frame.static_text_of(sel.target)
+        && let Some(rect) = frame.rect_of(sel.target)
+    {
+        let full = text.to_text();
+        match action {
+            EditAction::Copy => {
+                let range = psel.text_range();
+                if let Some(slice) = full.get(range) {
+                    state.clipboard.set(slice.to_owned());
+                }
+            }
+            EditAction::SelectAll => {
+                #[expect(clippy::cast_possible_truncation, reason = "widths fit in f32")]
+                let all =
+                    fonts.static_range(&text, style, Some(rect.width() as f32), 0, full.len());
+                state.static_sel = Some((sid, all, false));
+                return;
+            }
+            EditAction::Cut | EditAction::Paste => return,
+        }
+    }
+    // Select All keeps the menu up; anything else is done with it.
+    if action == EditAction::SelectAll {
+        return;
+    }
+    crate::touch_select::clear(state);
+    if !sel.input {
+        state.static_sel = None;
+    }
 }
 
 /// A touch long press that no app menu took: selects the word under the

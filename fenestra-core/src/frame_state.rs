@@ -277,6 +277,8 @@ pub struct FrameState {
     /// A touch press on a field that left its bare caret where it was:
     /// released as a tap, it opens the edit menu there.
     pub(crate) caret_tap: Option<WidgetId>,
+    /// A touch press on an edit menu item, acted on when released there.
+    pub(crate) menu_press: Option<crate::touch_select::EditAction>,
     /// Focused-element type-ahead: target, buffer, last keystroke time.
     pub(crate) type_ahead: Option<(WidgetId, String, f64)>,
     /// Variable-height virtual lists: measured row heights per
@@ -349,6 +351,7 @@ impl Default for FrameState {
             touch_sel: None,
             touch_geom: None,
             caret_tap: None,
+            menu_press: None,
             type_ahead: None,
             virtual_heights: HashMap::new(),
             virtual_windows: HashMap::new(),
