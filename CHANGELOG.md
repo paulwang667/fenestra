@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **Follow-ups from the touch, keyboard, reveal and motion reviews.**
+  Next moves on from a roving item's scope and leaves an Enter it cannot
+  act on to the window; an enter-key action no longer also clicks the old
+  focus, and letting go clears the focus ring; kit `on_submit` fires only
+  on a plain Enter. A reveal during a touch's stretch lands where it would
+  without it, waits for a focused element that is not in the tree yet, and
+  skips `display: none` subtrees. A finger on a gliding list catches it even
+  over a text field or slider. Keyboard focus no longer makes an element
+  replay its entrance when focus moves on. `FrameState::focus_visible`
+  reads the focus ring.
 - **The raster backend re-rasterized glyphs on every frame while text
   scrolled** on high-density screens. A full glyph atlas page evicted every
   glyph the frame had not used yet before growing, so text moving by
