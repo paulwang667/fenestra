@@ -19,6 +19,9 @@
 - **`Element::select_all_on(token)`**: selects a text's whole content
   with handles and the menu when the token is new (as `focus_on` moves
   focus), for an app's own "Select text" command.
+- **`Element::copy_text_on(token)`**: copies a text element's content to
+  the clipboard when the token is new, for an app's own "Copy" command
+  (apps have no other way to write the clipboard).
 - **`InputEvent::PointerSource` / `FrameState::pointer_source`**: core
   knows whether pointer input comes from a finger or the mouse; the
   runner sends it when it changes. `FrameState::touch_selection` reports

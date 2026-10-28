@@ -83,3 +83,38 @@ fn select_all_on_a_non_selectable_text_does_nothing() {
     );
     assert!(h.touch_selection().is_none());
 }
+
+/// `copy_text_on`: a new token copies the text's content to the clipboard
+/// (an app's own "Copy" command), once.
+#[derive(Default)]
+struct Copier {
+    token: u64,
+}
+
+impl App for Copier {
+    type Msg = ();
+    fn update(&mut self, _msg: ()) {}
+    fn view(&self) -> Element<()> {
+        let mut line = text("copy me");
+        if self.token > 0 {
+            line = line.copy_text_on(self.token);
+        }
+        col().children([line])
+    }
+}
+
+#[test]
+fn copy_text_on_copies_once_per_token() {
+    let mut h = Harness::new(Copier::default(), Theme::light(), (200, 100));
+    assert_eq!(h.clipboard().get(), None);
+    h.app_mut().token = 1;
+    h.rebuild();
+    assert_eq!(h.clipboard().get().as_deref(), Some("copy me"));
+    h.clipboard().set("other".to_owned());
+    h.rebuild();
+    assert_eq!(
+        h.clipboard().get().as_deref(),
+        Some("other"),
+        "the same token copies once"
+    );
+}

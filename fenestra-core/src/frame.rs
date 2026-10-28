@@ -826,6 +826,18 @@ fn build<Msg>(
     {
         state.request_focus(id, request);
     }
+    if let Some(request) = el.copy_request
+        && state.copy_requests.insert(id, request) != Some(request)
+    {
+        let text = match &el.kind {
+            Kind::Text(s) => Some(s.clone()),
+            Kind::Rich(spans) => Some(spans.iter().map(|s| s.text.as_str()).collect()),
+            _ => None,
+        };
+        if let Some(text) = text {
+            state.clipboard.set(text);
+        }
+    }
     if let Some(request) = el.select_request
         && !el.disabled
         && (matches!(el.kind, Kind::Input(_))

@@ -283,6 +283,8 @@ pub struct FrameState {
     /// asks for a select-all this frame.
     pub(crate) select_requests: HashMap<WidgetId, u64>,
     pub(crate) pending_select: Option<WidgetId>,
+    /// `copy_text_on` tokens last honored.
+    pub(crate) copy_requests: HashMap<WidgetId, u64>,
     /// Focused-element type-ahead: target, buffer, last keystroke time.
     pub(crate) type_ahead: Option<(WidgetId, String, f64)>,
     /// Variable-height virtual lists: measured row heights per
@@ -358,6 +360,7 @@ impl Default for FrameState {
             menu_press: None,
             select_requests: HashMap::new(),
             pending_select: None,
+            copy_requests: HashMap::new(),
             type_ahead: None,
             virtual_heights: HashMap::new(),
             virtual_windows: HashMap::new(),

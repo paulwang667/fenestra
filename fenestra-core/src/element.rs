@@ -818,6 +818,9 @@ pub struct Element<Msg> {
     /// Selects all of this text, with touch handles and the edit menu,
     /// when the token is new (see [`Element::select_all_on`]).
     pub(crate) select_request: Option<u64>,
+    /// Copies this text to the clipboard when the token is new (see
+    /// [`Element::copy_text_on`]).
+    pub(crate) copy_request: Option<u64>,
     /// Scroll containers only: keep pinned to the bottom while content
     /// grows (chat/log pattern).
     pub(crate) stick_bottom: bool,
@@ -951,6 +954,7 @@ impl<Msg> Element<Msg> {
             scroll_request: None,
             focus_request: None,
             select_request: None,
+            copy_request: None,
             stick_bottom: false,
             hide_scrollbar: false,
             cursor: None,
@@ -1793,6 +1797,15 @@ impl<Msg> Element<Msg> {
     /// does nothing.
     pub fn select_all_on(mut self, request: u64) -> Self {
         self.select_request = Some(request);
+        self
+    }
+
+    /// Copies this text element's content to the clipboard when it carries
+    /// a token it did not carry last time: an app's own "Copy" command (a
+    /// message menu's), in the same request style as [`Self::focus_on`].
+    /// Text and rich text only.
+    pub fn copy_text_on(mut self, request: u64) -> Self {
+        self.copy_request = Some(request);
         self
     }
 
@@ -2843,6 +2856,7 @@ impl<Msg: 'static> Element<Msg> {
             scroll_request: self.scroll_request,
             focus_request: self.focus_request,
             select_request: self.select_request,
+            copy_request: self.copy_request,
             stick_bottom: self.stick_bottom,
             hide_scrollbar: self.hide_scrollbar,
             cursor: self.cursor,
