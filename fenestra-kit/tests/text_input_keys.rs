@@ -69,3 +69,28 @@ fn an_explicit_search_without_submit_lets_go() {
     h.key(KeyInput::plain(Key::Char('b')));
     assert_eq!(h.app().query, "a", "focus left with the Search key");
 }
+
+/// Ctrl/Cmd/Alt+Enter is a chord of its own, not a submit.
+#[test]
+fn on_submit_ignores_modified_enter() {
+    let mut h = Harness::new(Search::default(), fenestra_core::Theme::light(), (320, 120));
+    h.click(&by::role(Semantics::TextInput { multiline: false }));
+    h.key(KeyInput::plain(Key::Char('a')));
+    for chord in [
+        KeyInput {
+            ctrl: true,
+            ..KeyInput::plain(Key::Enter)
+        },
+        KeyInput {
+            meta: true,
+            ..KeyInput::plain(Key::Enter)
+        },
+        KeyInput {
+            alt: true,
+            ..KeyInput::plain(Key::Enter)
+        },
+    ] {
+        h.key(chord);
+    }
+    assert!(h.app().submitted.is_empty(), "{:?}", h.app().submitted);
+}

@@ -531,6 +531,12 @@ impl FrameState {
         s.motion_y.moving() || s.motion_x.moving()
     }
 
+    /// Whether focus is shown (a keyboard focus ring): set when the keyboard
+    /// or code moves focus, cleared by a press or when focus leaves.
+    pub fn focus_visible(&self) -> bool {
+        self.focus_visible
+    }
+
     /// The persisted scroll offset for an id (0 when never scrolled).
     pub fn scroll_offset(&self, id: WidgetId) -> f32 {
         self.scroll.get(&id).map_or(0.0, |s| s.offset_y)

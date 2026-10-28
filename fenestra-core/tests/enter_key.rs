@@ -237,3 +237,76 @@ fn enter_while_composing_neither_moves_nor_blurs() {
         assert_eq!(f.focused(), Some(a), "{key:?}: composing");
     }
 }
+
+/// Inside a roving scope (a list whose items are not in the Tab order), Next
+/// moves on from the scope, as Tab does.
+#[test]
+fn next_inside_a_roving_scope_moves_on() {
+    let mut f = Fixture::new(|v| {
+        col().children([
+            col()
+                .id("scope")
+                // The scope's container is its single tab stop.
+                .focusable(true)
+                .roving(fenestra_core::RovingAxis::Vertical)
+                .children([field("a", v).enter_key(EnterKey::Next), field("c", "")]),
+            field("b", ""),
+        ])
+    });
+    let (a, b) = (f.id("a"), f.id("b"));
+    f.state.set_focus(Some(a));
+    f.enter();
+    assert_eq!(f.focused(), Some(b));
+}
+
+/// A Next field with nowhere to go (not in the Tab order) leaves the Enter
+/// unhandled, for the window's own key handling.
+#[test]
+fn next_that_cannot_move_leaves_enter_to_the_window() {
+    let mut f = Fixture::new(|v| {
+        col().children([field("a", v).enter_key(EnterKey::Next).focusable(false)])
+    });
+    let a = f.id("a");
+    f.state.set_focus(Some(a));
+    let (v, frame) = f.frame();
+    let out = fenestra_core::dispatch(
+        &v,
+        &frame,
+        &mut f.state,
+        &mut f.fonts,
+        InputEvent::Key(KeyInput::plain(Key::Enter)),
+    );
+    assert!(out.unhandled.is_some(), "the window sees the Enter");
+}
+
+#[test]
+fn an_enter_key_action_clears_focus_visible() {
+    let mut f = Fixture::new(|v| col().children([field("a", v).enter_key(EnterKey::Search)]));
+    assert!(f.state.focus_visible(), "Tab made focus visible");
+    f.enter();
+    assert_eq!(f.focused(), None);
+    assert!(!f.state.focus_visible());
+}
+
+/// The enter key's own action is the Enter's whole effect: the field's
+/// click handler does not fire too.
+#[test]
+fn an_enter_key_action_does_not_also_click() {
+    for key in [EnterKey::Search, EnterKey::Next] {
+        let mut f = Fixture::new(match key {
+            EnterKey::Search => |v| {
+                col().children([
+                    field("a", v).enter_key(EnterKey::Search).on_click(Msg::Key),
+                    field("b", ""),
+                ])
+            },
+            _ => |v| {
+                col().children([
+                    field("a", v).enter_key(EnterKey::Next).on_click(Msg::Key),
+                    field("b", ""),
+                ])
+            },
+        });
+        assert!(!f.enter().contains(&Msg::Key), "{key:?}");
+    }
+}

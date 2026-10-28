@@ -32,9 +32,6 @@ pub(crate) struct EditorState {
     pub seen: u64,
     /// Multiline mode: wraps, accepts newlines, moves by line.
     pub multiline: bool,
-    /// Leave a plain Enter to the app; Shift+Enter is the newline. Set from
-    /// the element every frame, beside `multiline`.
-    pub submit_on_enter: bool,
     /// Read-only mode: selection and copy stay live, every mutation is a
     /// no-op (HTML `<input readonly>`).
     pub read_only: bool,
@@ -131,7 +128,6 @@ impl EditorState {
             last_activity: now,
             seen: 0,
             multiline,
-            submit_on_enter: false,
             read_only: false,
             max_chars: None,
             masked: false,

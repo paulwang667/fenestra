@@ -1411,6 +1411,9 @@ fn dispatch_inner<Msg: Clone>(
                 // lets go of it (an on-screen keyboard closes).
                 let plain_enter =
                     key.key == Key::Enter && !key.shift && !key.ctrl && !key.alt && !key.meta;
+                // Whether the enter key's action took the Enter: then it is
+                // the Enter's whole effect (no click on the old focus too).
+                let mut enter_acted = false;
                 if !key_handled
                     && plain_enter
                     && !state.composing_in(focus)
@@ -1422,21 +1425,29 @@ fn dispatch_inner<Msg: Clone>(
                             crate::EnterKey::Done | crate::EnterKey::Search | crate::EnterKey::Go
                         );
                     if editor.enter_key == crate::EnterKey::Next {
+                        // From the scope a roving item stands in for, as Tab.
+                        let from = frame.roving_scope_container(focus).unwrap_or(focus);
                         let order = frame.focusables();
-                        if let Some(i) = order.iter().position(|id| *id == focus) {
-                            state.focus = Some(order[(i + 1) % order.len()]);
-                            state.focus_visible = true;
+                        if let Some(i) = order.iter().position(|id| *id == from) {
+                            let next = order[(i + 1) % order.len()];
+                            if next != focus {
+                                state.focus = Some(next);
+                                state.focus_visible = true;
+                                enter_acted = true;
+                            }
                         }
-                        out.redraw = true;
-                        took = true;
                     } else if explicit_leave {
                         state.focus = None;
-                        out.redraw = true;
-                        took = true;
+                        state.focus_visible = false;
+                        enter_acted = true;
                     }
                 }
+                if enter_acted {
+                    out.redraw = true;
+                    took = true;
+                }
                 // Enter/Space activate clickables and toggle anchored menus.
-                if matches!(key.key, Key::Enter | Key::Space) {
+                if !enter_acted && matches!(key.key, Key::Enter | Key::Space) {
                     if let Some(msg) = &el.on_click {
                         out.msgs.push(msg.clone());
                         out.redraw = true;

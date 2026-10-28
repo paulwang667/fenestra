@@ -153,9 +153,12 @@ impl<Msg> TextInput<Msg> {
         self
     }
 
-    /// Emits `msg` on Enter — an on-screen keyboard's action key (Send,
-    /// Search, Go, Done) arrives as one. Taking the Enter, it keeps focus in
-    /// the field.
+    /// Emits `msg` on a plain Enter — an on-screen keyboard's action key
+    /// (Send, Search, Go, Done) arrives as one; Ctrl/Cmd/Alt+Enter and
+    /// Shift+Enter do not submit. It takes the Enter, so focus stays in the
+    /// field: a [`EnterKey::Next`] field does not move on and an explicit
+    /// Done / Search / Go does not let go. It is the field's `on_key`, so an
+    /// `.on_key(..)` added to the converted element replaces it.
     pub fn on_submit(mut self, msg: Msg) -> Self
     where
         Msg: Clone + 'static,
@@ -287,7 +290,10 @@ impl<Msg: 'static> From<TextInput<Msg>> for Element<Msg> {
             el = el.on_input(move |s| f(s.to_owned()));
         }
         if let Some(f) = t.on_submit {
-            el = el.on_key(move |k| (k.key == Key::Enter && !k.shift).then(|| f()));
+            el = el.on_key(move |k| {
+                let plain = !k.shift && !k.ctrl && !k.alt && !k.meta;
+                (k.key == Key::Enter && plain).then(|| f())
+            });
         }
         if prefix.is_none() && suffix.is_none() {
             return el;
