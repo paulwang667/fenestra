@@ -821,6 +821,13 @@ fn dispatch_inner<Msg: Clone>(
         InputEvent::PointerMove { x, y } => {
             let point = Point::new(f64::from(x), f64::from(y));
             state.pointer = Some((x, y));
+            // A touch selection's end (or caret) follows the finger.
+            if state.pointer_source == PointerSource::Touch
+                && crate::touch_select::drag_to(frame, state, fonts, point)
+            {
+                out.redraw = true;
+                return out;
+            }
 
             if let Some(active) = state.active {
                 // Active capture: the pressed element keeps receiving events.
@@ -906,6 +913,13 @@ fn dispatch_inner<Msg: Clone>(
                 return out;
             };
             let point = Point::new(f64::from(px), f64::from(py));
+            // A touch on a selection handle drags it; nothing else is pressed.
+            if state.pointer_source == PointerSource::Touch
+                && crate::touch_select::press(state, point)
+            {
+                out.redraw = true;
+                return out;
+            }
             let chain = frame.hit_chain(point);
             // Internal drag: the deepest drag source under the press.
             state.dragging = chain.iter().rev().find_map(|id| {
@@ -1151,6 +1165,12 @@ fn dispatch_inner<Msg: Clone>(
         }
         InputEvent::RightUp => {}
         InputEvent::PointerUp => {
+            // A handle (or caret) drag ends; the edit menu comes back.
+            if crate::touch_select::release(state) {
+                state.active = None;
+                out.redraw = true;
+                return out;
+            }
             if let Some((sid, sel, true)) = state.static_sel {
                 state.static_sel = Some((sid, sel, false));
             }
@@ -1846,6 +1866,7 @@ fn touch_long_press<Msg>(
         editor.last_activity = now;
         state.focus = Some(id);
         crate::touch_select::start(state, id, true);
+        crate::touch_select::hold(state);
         return true;
     }
     let (Some((text, style)), Some(rect), Some(local)) = (
@@ -1874,6 +1895,7 @@ fn touch_long_press<Msg>(
     }
     state.static_sel = Some((id, sel, false));
     crate::touch_select::start(state, id, false);
+    crate::touch_select::hold(state);
     true
 }
 
@@ -2262,4 +2284,3 @@ mod blur_tests {
         assert_eq!(msgs, vec!["abcde"]);
     }
 }
-

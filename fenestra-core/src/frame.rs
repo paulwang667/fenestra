@@ -2135,7 +2135,7 @@ pub fn build_frame<Msg>(
         }
     }
 
-    let frame = Frame {
+    let mut frame = Frame {
         root: root_node,
         overlays,
         overlay_anchors,
@@ -2147,7 +2147,9 @@ pub fn build_frame<Msg>(
         selection_color: theme.accent.with_alpha(0.25),
         animating,
     };
-    crate::touch_select::refresh(&frame, state, fonts, theme);
+    if crate::touch_select::refresh(&frame, state, fonts, theme) {
+        frame.animating = true;
+    }
     // Every element in a frame must own a unique WidgetId: it keys every
     // FrameState map (scroll/focus/editor/anim/hover). A collision — almost always
     // a non-unique `.id("…")` or a duplicate keyed-list key — makes two elements

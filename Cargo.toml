@@ -73,6 +73,8 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 # Default features: the u8 pipeline, text, and png (bitmap emoji are PNGs).
 vello_cpu = "0.2.0"
 skrifa = "0.42.1"
+# Grapheme boundaries for touch selection ends (already in the tree).
+unicode-segmentation = "1.13.3"
 # iOS's Apple Color Emoji stores its bitmaps as `emjc` (Apple's private
 # compressed format), which vello_cpu cannot decode; fenestra-raster draws
 # those glyphs with CoreText. 0.3.2 is the version fontique already resolves.

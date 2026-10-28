@@ -820,6 +820,31 @@ pub(crate) fn pointer_down(
     }
 }
 
+/// The value's byte offset nearest a pointer position (a cluster
+/// boundary), in coordinates local to the text origin.
+pub(crate) fn byte_at(state: &mut EditorState, fonts: &mut Fonts, x: f64, y: f64) -> usize {
+    if state.masked {
+        return masked_point(state, fonts, x, y).unwrap_or(0);
+    }
+    let (font_cx, layout_cx) = fonts.editor_contexts();
+    let layout = state.editor.layout(font_cx, layout_cx);
+    #[expect(clippy::cast_possible_truncation, reason = "text coords fit in f32")]
+    parley::Cursor::from_point(layout, x as f32, y as f32).index()
+}
+
+/// Selects a byte range (anchor, focus), as touch handles set it.
+pub(crate) fn select_range(
+    state: &mut EditorState,
+    fonts: &mut Fonts,
+    anchor: usize,
+    focus: usize,
+) {
+    state.undo.break_run();
+    let (font_cx, layout_cx) = fonts.editor_contexts();
+    let mut drv = state.editor.driver(font_cx, layout_cx);
+    drv.select_byte_range(anchor, focus);
+}
+
 /// Selects the word at a pointer position (double-click).
 pub(crate) fn select_word_at(state: &mut EditorState, fonts: &mut Fonts, x: f64, y: f64) {
     state.undo.break_run();

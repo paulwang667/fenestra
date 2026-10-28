@@ -901,6 +901,35 @@ impl Fonts {
         }
     }
 
+    /// The byte offset nearest a local point (a cluster boundary).
+    pub(crate) fn static_index_at(
+        &mut self,
+        text: &crate::frame::StaticText<'_>,
+        style: &ResolvedText,
+        max_advance: Option<f32>,
+        x: f32,
+        y: f32,
+    ) -> usize {
+        let layout = self.static_layout(text, style, max_advance);
+        parley::Cursor::from_point(layout.as_ref(), x, y).index()
+    }
+
+    /// A static selection over a byte range (anchor at `anchor`, focus at
+    /// `focus`).
+    pub(crate) fn static_range(
+        &mut self,
+        text: &crate::frame::StaticText<'_>,
+        style: &ResolvedText,
+        max_advance: Option<f32>,
+        anchor: usize,
+        focus: usize,
+    ) -> parley::Selection {
+        let layout = self.static_layout(text, style, max_advance);
+        let at =
+            |i| parley::Cursor::from_byte_index(layout.as_ref(), i, parley::Affinity::Downstream);
+        parley::Selection::new(at(anchor), at(focus))
+    }
+
     /// Extends a static selection to a local point (drag).
     pub(crate) fn static_extend(
         &mut self,

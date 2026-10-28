@@ -11,7 +11,7 @@
 //! once per frame ([`refresh`]) for hit tests, painting and
 //! [`FrameState::touch_selection`].
 
-use kurbo::{Point, Rect};
+use kurbo::{Point, Rect, Vec2};
 
 use crate::WidgetId;
 use crate::frame::Frame;
@@ -57,7 +57,6 @@ pub struct TouchSelection {
 
 /// What is being dragged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(dead_code, reason = "constructed by handle and caret drags, the next step")]
 pub(crate) enum Drag {
     Start,
     End,
@@ -78,6 +77,13 @@ pub(crate) struct TouchSel {
     pub drag: Option<Drag>,
     /// The finger while dragging, for the magnifier.
     pub finger: Option<Point>,
+    /// The end that stays put while a handle drags the other.
+    pub fixed: usize,
+    /// From the finger to the selection end it drags (the handle hangs
+    /// below the text, the finger on the handle).
+    pub offset: Vec2,
+    /// The finger that long-pressed is still down: moving it drags.
+    pub held: bool,
 }
 
 /// A handle's touch area: at least 44 logical px square, hanging below
@@ -103,7 +109,188 @@ pub(crate) fn start(state: &mut FrameState, target: WidgetId, input: bool) {
         paste,
         drag: None,
         finger: None,
+        fixed: 0,
+        offset: Vec2::ZERO,
+        held: false,
     });
+}
+/// The finger that started this selection by a long press is still down.
+pub(crate) fn hold(state: &mut FrameState) {
+    if let Some(sel) = &mut state.touch_sel {
+        sel.held = true;
+    }
+}
+
+/// A touch press: on a handle it starts dragging that end (and takes the
+/// press). Whether it took it.
+pub(crate) fn press(state: &mut FrameState, point: Point) -> bool {
+    let (Some(sel), Some(geom)) = (&mut state.touch_sel, &state.touch_geom) else {
+        return false;
+    };
+    let (start, end) = geom.range;
+    let hit = |h: Option<Rect>| h.is_some_and(|h| h.contains(point));
+    let (drag, fixed, anchor) = if hit(geom.end_handle) {
+        let last = geom.lines.last().copied().unwrap_or_default();
+        let x = if start == end { last.x0 } else { last.x1 };
+        (Drag::End, start, Point::new(x, (last.y0 + last.y1) / 2.0))
+    } else if hit(geom.start_handle) {
+        let first = geom.lines.first().copied().unwrap_or_default();
+        (
+            Drag::Start,
+            end,
+            Point::new(first.x0, (first.y0 + first.y1) / 2.0),
+        )
+    } else {
+        return false;
+    };
+    sel.drag = Some(if start == end { Drag::Caret } else { drag });
+    sel.fixed = fixed;
+    sel.offset = anchor - point;
+    sel.finger = Some(point);
+    true
+}
+
+/// A touch move: drags the end being dragged (or, after a long press, the
+/// caret in a field or the selection's end in text) to the finger.
+/// Whether it was a drag.
+pub(crate) fn drag_to(
+    frame: &Frame,
+    state: &mut FrameState,
+    fonts: &mut Fonts,
+    finger: Point,
+) -> bool {
+    let geom_range = state.touch_geom.as_ref().map_or((0, 0), |g| g.range);
+    let Some(sel) = state.touch_sel.as_mut() else {
+        return false;
+    };
+    if sel.drag.is_none() {
+        if !sel.held {
+            return false;
+        }
+        // Moving the finger that long-pressed: a field's caret follows it;
+        // text extends the selection's end.
+        sel.drag = Some(if sel.input { Drag::Caret } else { Drag::End });
+        sel.fixed = geom_range.0;
+        sel.offset = Vec2::ZERO;
+    }
+    sel.finger = Some(finger);
+    let sel = *sel;
+    let point = finger + sel.offset;
+    let Some(rect) = frame.rect_of(sel.target) else {
+        return true;
+    };
+    if sel.input {
+        let now = state.now();
+        let (Some(data), Some(editor)) = (
+            frame.input_paint_of(sel.target),
+            state.editors.get_mut(&sel.target),
+        ) else {
+            return true;
+        };
+        let origin = crate::input::text_origin(editor, fonts, data, rect);
+        let local = point - origin.to_vec2();
+        let at = crate::input::byte_at(editor, fonts, local.x, local.y);
+        let at = grapheme_floor(editor.editor.raw_text(), at);
+        let anchor = if sel.drag == Some(Drag::Caret) {
+            at
+        } else {
+            sel.fixed
+        };
+        crate::input::select_range(editor, fonts, anchor, at);
+        editor.last_activity = now;
+    } else if let Some((text, style)) = frame.static_text_of(sel.target)
+        && let Some(local) = frame.to_layout_point(sel.target, point)
+    {
+        #[expect(clippy::cast_possible_truncation, reason = "text coords fit in f32")]
+        let width = Some(rect.width() as f32);
+        #[expect(clippy::cast_possible_truncation, reason = "text coords fit in f32")]
+        let at = fonts.static_index_at(
+            &text,
+            style,
+            width,
+            (local.x - rect.x0) as f32,
+            (local.y - rect.y0) as f32,
+        );
+        let at = grapheme_floor(&text.to_text(), at);
+        // Read-only text keeps at least one character selected: dragged
+        // onto the other end, the selection stays as it was.
+        if at != sel.fixed {
+            let range = fonts.static_range(&text, style, width, sel.fixed, at);
+            state.static_sel = Some((sel.target, range, false));
+        }
+    }
+    true
+}
+
+/// The finger lifted: a drag ends and the menu comes back. Whether one
+/// was dragging.
+pub(crate) fn release(state: &mut FrameState) -> bool {
+    let Some(sel) = &mut state.touch_sel else {
+        return false;
+    };
+    sel.held = false;
+    sel.finger = None;
+    sel.drag.take().is_some()
+}
+
+/// The grapheme boundary at or before `index`: a selection end never
+/// splits a user-perceived character (an emoji with its skin tone, a
+/// letter with its accents), whatever clusters the font shaped.
+fn grapheme_floor(text: &str, index: usize) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    if index >= text.len() {
+        return text.len();
+    }
+    text.grapheme_indices(true)
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= index)
+        .last()
+        .unwrap_or(0)
+}
+
+/// The edge band a dragged end autoscrolls in (logical px).
+const EDGE: f64 = 24.0;
+
+/// While an end is dragged into the edge band of the scroller it is in,
+/// scrolls that scroller a step (more the deeper) and drags the end along.
+/// Whether it scrolled (the frame keeps animating while it does).
+fn autoscroll(frame: &Frame, state: &mut FrameState, fonts: &mut Fonts) -> bool {
+    let Some(sel) = state.touch_sel else {
+        return false;
+    };
+    let (Some(_), Some(finger), Some(rect)) = (sel.drag, sel.finger, frame.rect_of(sel.target))
+    else {
+        return false;
+    };
+    let Some(scroller) = frame
+        .scrollable_y_at(finger)
+        .or_else(|| frame.scrollable_y_at(rect.center()))
+    else {
+        return false;
+    };
+    let Some(bounds) = frame.rect_of(scroller) else {
+        return false;
+    };
+    let view = frame
+        .clip_of(scroller)
+        .flatten()
+        .map_or(bounds, |c| c.intersect(bounds));
+    let step = if finger.y > view.y1 - EDGE {
+        (EDGE - (view.y1 - finger.y).max(0.0)).min(EDGE) * 0.5
+    } else if finger.y < view.y0 + EDGE {
+        -(EDGE - (finger.y - view.y0).max(0.0)).min(EDGE) * 0.5
+    } else {
+        return false;
+    };
+    let offset = state.scroll_offset(scroller);
+    #[expect(clippy::cast_possible_truncation, reason = "offsets fit in f32")]
+    let next = (offset + step as f32).max(0.0);
+    if (next - offset).abs() < f32::EPSILON {
+        return false;
+    }
+    state.scroll_to(scroller, next);
+    drag_to(frame, state, fonts, finger);
+    true
 }
 
 /// Ends the touch selection (the range itself is left to its owner).
@@ -124,23 +311,28 @@ pub(crate) fn handle_rect(anchor: Point) -> Rect {
 
 /// Resolves the touch selection's geometry against a freshly built frame,
 /// dropping it when its target or range no longer exists.
-pub(crate) fn refresh(frame: &Frame, state: &mut FrameState, fonts: &mut Fonts, theme: &Theme) {
+/// Returns whether the frame should keep animating (an autoscroll).
+pub(crate) fn refresh(
+    frame: &Frame,
+    state: &mut FrameState,
+    fonts: &mut Fonts,
+    theme: &Theme,
+) -> bool {
+    let scrolling = autoscroll(frame, state, fonts);
     let Some(sel) = state.touch_sel else {
         state.touch_geom = None;
-        return;
+        return false;
     };
     let Some((range, lines)) = selection_lines(frame, state, fonts, sel) else {
-        if sel.input {
-            clear(state);
-        } else {
-            clear(state);
+        clear(state);
+        if !sel.input {
             state.static_sel = None;
         }
-        return;
+        return false;
     };
     let Some(first) = lines.first().copied() else {
         clear(state);
-        return;
+        return false;
     };
     let last = *lines.last().expect("not empty");
     let clip = frame.clip_of(sel.target).flatten();
@@ -219,6 +411,7 @@ pub(crate) fn refresh(frame: &Frame, state: &mut FrameState, fonts: &mut Fonts, 
         labels,
         lines,
     });
+    scrolling
 }
 
 /// The magnifier's frame: centered over the finger, above it.

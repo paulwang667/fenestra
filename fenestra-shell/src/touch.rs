@@ -245,8 +245,10 @@ impl Touch {
                 }
                 // Undecided, the pointer stays where the finger landed: a
                 // wiggle must not drag a text selection or a hover along.
-                Mode::Pending | Mode::LongPressed | Mode::Caught => {}
-                Mode::Pointer => events.push(pointer_at(at)),
+                Mode::Pending | Mode::Caught => {}
+                // After a long press the finger drives the pointer (a touch
+                // selection's caret or end follows it).
+                Mode::Pointer | Mode::LongPressed => events.push(pointer_at(at)),
                 Mode::Scrolling => {
                     events.extend(scroll_step(finger.down, finger.last, at, finger.lock));
                 }
@@ -631,17 +633,17 @@ mod tests {
         assert_eq!(t.deadline(), None);
     }
 
-    /// After a long press the finger is spent: moving does nothing, and the
-    /// lift leaves before it releases, so it clicks nothing.
+    /// After a long press the finger moves the pointer (a touch selection's
+    /// caret or end follows it), and the lift leaves before it releases,
+    /// so it clicks nothing.
     #[test]
     fn after_a_long_press_the_lift_clicks_nothing() {
         let mut t = Touch::new(true);
         t.event(0, Started, p(50., 60.), 0.0, false, false);
         t.tick(0.6);
-        assert!(
-            t.event(0, Moved, p(80., 90.), 0.7, false, false)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            t.event(0, Moved, p(80., 90.), 0.7, false, false).unwrap(),
+            vec![InputEvent::PointerMove { x: 80.0, y: 90.0 }]
         );
         assert_eq!(
             t.event(0, Ended, p(80., 90.), 0.8, false, false).unwrap(),
