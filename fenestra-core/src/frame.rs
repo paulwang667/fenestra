@@ -2029,13 +2029,19 @@ pub fn build_frame<Msg>(
 
     // ---- the focused element into view: once, when the keyboard or code
     // moves focus to it (a press is where the pointer already is, and may be
-    // a drag starting), or the window changes size while it shows (an
-    // on-screen keyboard opening) — so later scrolling is the user's.
+    // a drag starting), or the area the app lays out in changes size while
+    // it shows (an on-screen keyboard opening: Android shrinks the window,
+    // iOS grows the safe area) — so later scrolling is the user's.
     let focus = state.focused();
+    #[expect(clippy::cast_possible_truncation, reason = "window sizes fit in f32")]
+    let area = (
+        size.0 - (state.safe_area.x0 + state.safe_area.x1) as f32,
+        size.1 - (state.safe_area.y0 + state.safe_area.y1) as f32,
+    );
     if let Some(id) = focus {
         let moved_to = state.revealed_focus != focus && state.focus_visible;
         let resized_under =
-            state.revealed_focus == focus && state.revealed_size != size && state.revealed_shown;
+            state.revealed_focus == focus && state.revealed_size != area && state.revealed_shown;
         if moved_to || resized_under {
             let moved = reveal(&root_node, id, state)
                 || overlays.iter().any(|o| reveal(&o.node, id, state));
@@ -2058,7 +2064,7 @@ pub fn build_frame<Msg>(
     if present {
         state.revealed_focus = focus;
     }
-    state.revealed_size = size;
+    state.revealed_size = area;
 
     // ---- motion completion: FLIP layout slides, then exit-ghost lifecycle ----
     let now = state.now();

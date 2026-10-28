@@ -558,3 +558,50 @@ fn revealing_in_a_sticky_feed_keeps_it_pinned_at_the_bottom() {
         "still follows new rows"
     );
 }
+
+/// The iOS keyboard does not resize the window: it grows the safe area,
+/// which the shell lays the app out inside. That too reveals the field the
+/// user tapped.
+#[test]
+fn a_growing_safe_area_reveals_the_focused_field() {
+    fn full(_: ()) -> Element<()> {
+        col().w(400.0).h_full().child(
+            col()
+                .id("list")
+                .w(300.0)
+                .h_full()
+                .scroll_y()
+                .hide_scrollbar()
+                .children(fields(20)),
+        )
+    }
+    // The shell's safe-area wrapper (`safe_area::inset_root`, always there
+    // on iOS), without and with a 150-tall keyboard.
+    fn no_keyboard(_: ()) -> Element<()> {
+        col().w_full().h_full().pb(0.0).child(full(()))
+    }
+    fn under_keyboard(_: ()) -> Element<()> {
+        col().w_full().h_full().pb(150.0).child(full(()))
+    }
+    let mut f = Fixture::new(no_keyboard);
+    let at = f.rect("f4").center();
+    for event in [
+        InputEvent::PointerMove {
+            x: at.x as f32,
+            y: at.y as f32,
+        },
+        InputEvent::PointerDown,
+        InputEvent::PointerUp,
+    ] {
+        let _ =
+            fenestra_core::dispatch(&no_keyboard(()), &f.frame, &mut f.state, &mut f.fonts, event);
+    }
+    f.build();
+    assert_eq!(f.state.focused(), Some(f.id("f4")));
+    f.view = under_keyboard;
+    f.state.safe_area = kurbo::Insets::new(0.0, 0.0, 0.0, 150.0);
+    f.build();
+    f.build();
+    let (_, view) = f.scroller(Point::new(50.0, 50.0));
+    assert_inside(f.rect("f4"), view, MARGIN);
+}
