@@ -2041,11 +2041,10 @@ where
         keyboard_tap: false,
         #[cfg(any(target_os = "android", target_os = "ios"))]
         touch_down: None,
-        #[cfg(any(
-            all(target_os = "android", feature = "android-game-activity"),
-            all(target_os = "ios", feature = "ios-text-input")
-        ))]
+        #[cfg(all(target_os = "android", feature = "android-game-activity"))]
         ime: crate::ime_sync::ImeSync::default(),
+        #[cfg(all(target_os = "ios", feature = "ios-text-input"))]
+        ime: crate::ime_sync::ImeSync::synchronous(),
         #[cfg(all(target_os = "ios", feature = "ios-text-input"))]
         ios_traits: None,
         started: Instant::now(),
@@ -2722,12 +2721,14 @@ impl<A: App> AppRunner<A> {
                 winit::dpi::LogicalSize::new(1.0, caret.height()),
             );
         }
+        // iOS: the field and its traits reach the view before the keyboard
+        // rises, so it comes up as the field's (Send key, layout), not as a
+        // default keyboard reloaded a moment later.
+        #[cfg(all(target_os = "ios", feature = "ios-text-input"))]
+        self.sync_ime_text();
         #[cfg(any(target_os = "android", target_os = "ios"))]
         self.sync_soft_keyboard();
-        #[cfg(any(
-            all(target_os = "android", feature = "android-game-activity"),
-            all(target_os = "ios", feature = "ios-text-input")
-        ))]
+        #[cfg(all(target_os = "android", feature = "android-game-activity"))]
         self.sync_ime_text();
         #[cfg(not(target_arch = "wasm32"))]
         self.push_access_tree();

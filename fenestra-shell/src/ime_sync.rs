@@ -176,9 +176,20 @@ pub(crate) struct ImeSync {
     /// takes the push, and such a report is dropped. Any other report ends
     /// the switch.
     switching: Option<(String, f64)>,
+    /// The IME takes a push before it reports again (iOS: the push lands
+    /// in the view's mirror synchronously), so there is no echo to guard.
+    synchronous: bool,
 }
 
 impl ImeSync {
+    /// For an IME that takes each push synchronously (iOS).
+    pub(crate) fn synchronous() -> Self {
+        Self {
+            synchronous: true,
+            ..Self::default()
+        }
+    }
+
     /// The state the IME holds, as far as the runner knows.
     pub(crate) fn synced(&self) -> Option<&ImeTextState> {
         self.synced.as_ref()
@@ -192,7 +203,9 @@ impl ImeSync {
     /// Records that `state` was pushed to the IME at `now` (seconds).
     pub(crate) fn pushed(&mut self, state: Option<ImeTextState>, now: f64) {
         self.switching = match (&state, &self.held) {
-            (Some(s), Some(old)) if old.field != s.field => Some((old.text.clone(), now)),
+            (Some(s), Some(old)) if old.field != s.field && !self.synchronous => {
+                Some((old.text.clone(), now))
+            }
             _ => None,
         };
         if state.is_some() {
@@ -405,6 +418,18 @@ mod tests {
         // A report from the IME keeps the field's kind.
         let echoed = recv(&mut sync, "a", 0.1).expect("a report");
         assert_eq!(editor_info(&echoed), editor_info(&email));
+    }
+
+    /// iOS takes a push synchronously, so nothing of the old field comes
+    /// back: a report right after a switch that matches the old text (a
+    /// backspace emptying the new field when the old one was empty) is the
+    /// user's edit.
+    #[test]
+    fn a_synchronous_ime_believes_a_report_right_after_a_switch() {
+        let mut sync = ImeSync::synchronous();
+        sync.pushed(Some(state("", 1)), 0.0);
+        sync.pushed(Some(state("x", 2)), 1.0);
+        assert_eq!(recv(&mut sync, "", 1.1), Some(state("", 2)));
     }
 
     fn recv(sync: &mut ImeSync, text: &str, now: f64) -> Option<ImeTextState> {
