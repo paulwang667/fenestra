@@ -425,6 +425,12 @@ struct WindowShell {
     /// (web only; the web is single-threaded so `Rc<RefCell>` suffices).
     #[cfg(target_arch = "wasm32")]
     ready: WasmReady,
+    /// The surface kept across a suspend (iOS). Every new surface on a
+    /// UIKit view adds a CAMetalLayer sublayer that dropping the surface
+    /// never removes, and iOS suspends on every Control Center pull or app
+    /// switch — rebuilding would stack a full-screen layer each time.
+    #[cfg(target_os = "ios")]
+    parked: Option<Box<GpuSurface<'static>>>,
 }
 
 /// A reusable read-back target: the texture the backdrop is rendered into and
@@ -571,6 +577,8 @@ impl WindowShell {
             vello_glass: crate::vello_glass::VelloGlass::default(),
             #[cfg(target_arch = "wasm32")]
             ready: WasmReady::default(),
+            #[cfg(target_os = "ios")]
+            parked: None,
         }
     }
 
@@ -734,13 +742,27 @@ impl WindowShell {
     #[cfg(not(target_arch = "wasm32"))]
     fn activate(&mut self, window: Arc<Window>) -> Result<(), ShellError> {
         let size = crate::safe_area::surface_size(&window);
-        let mut surface = pollster::block_on(self.context.create_surface(
-            window.clone(),
-            size.width.max(1),
-            size.height.max(1),
-            wgpu::PresentMode::AutoVsync,
-        ))
-        .map_err(ShellError::Surface)?;
+        #[cfg(target_os = "ios")]
+        let parked = self.parked.take().map(|mut surface| {
+            self.context
+                .resize_surface(&mut surface, size.width.max(1), size.height.max(1));
+            if std::env::var("FENESTRA_DEBUG_INPUT").is_ok() {
+                eprintln!("[fenestra-window] resumed on the parked surface");
+            }
+            *surface
+        });
+        #[cfg(not(target_os = "ios"))]
+        let parked = None;
+        let mut surface = match parked {
+            Some(surface) => surface,
+            None => pollster::block_on(self.context.create_surface(
+                window.clone(),
+                size.width.max(1),
+                size.height.max(1),
+                wgpu::PresentMode::AutoVsync,
+            ))
+            .map_err(ShellError::Surface)?,
+        };
         self.composite_with_alpha(&mut surface);
 
         let requested = crate::backend::backend_from_env();
@@ -901,7 +923,14 @@ impl WindowShell {
 
     fn suspended(&mut self) {
         if let RenderState::Active { window, .. } = &self.state {
-            self.state = RenderState::Suspended(Some(window.clone()));
+            let window = window.clone();
+            let state = std::mem::replace(&mut self.state, RenderState::Suspended(Some(window)));
+            #[cfg(target_os = "ios")]
+            if let RenderState::Active { surface, .. } = state {
+                self.parked = Some(surface);
+            }
+            #[cfg(not(target_os = "ios"))]
+            drop(state);
         }
     }
 
