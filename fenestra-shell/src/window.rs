@@ -2535,8 +2535,9 @@ impl<A: App> AppRunner<A> {
         self.state.tick(self.started.elapsed().as_secs_f64());
         #[expect(clippy::cast_possible_truncation, reason = "window sizes fit in f32")]
         let logical = (lw as f32, lh as f32);
-        // The app lays out inside the safe area; the frame still covers the
-        // whole screen (see `safe_area`).
+        // The app lays out inside the safe area, and so do its overlays; the
+        // frame still covers the whole screen (see `safe_area`).
+        self.state.safe_area = insets.into();
         let view = crate::safe_area::inset_root(
             self.app
                 .view_at(fenestra_core::MAIN_WINDOW, insets.inside(logical)),

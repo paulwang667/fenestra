@@ -28,6 +28,17 @@ impl Insets {
     }
 }
 
+impl From<Insets> for kurbo::Insets {
+    fn from(i: Insets) -> Self {
+        Self::new(
+            f64::from(i.left),
+            f64::from(i.top),
+            f64::from(i.right),
+            f64::from(i.bottom),
+        )
+    }
+}
+
 /// The insets of a safe area at physical `inner_pos` sized `inner`, inside a
 /// physical `outer` screen, in logical pixels at `scale`.
 #[expect(clippy::cast_possible_truncation, reason = "screen sizes fit in f32")]
@@ -145,6 +156,14 @@ mod tests {
 
     fn pixel(img: &image::RgbaImage, x: u32, y: u32) -> [u8; 4] {
         img.get_pixel(x, y).0
+    }
+
+    #[test]
+    fn insets_carry_over_to_the_frame_state() {
+        assert_eq!(
+            kurbo::Insets::from(NOTCHED),
+            kurbo::Insets::new(0.0, 62.0, 0.0, 34.0)
+        );
     }
 
     #[test]

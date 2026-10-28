@@ -1715,7 +1715,11 @@ pub fn build_frame<Msg>(
     };
     let mut root_node = realize.realize(node, Point::ORIGIN, None, None, &mut all_rects);
     let mut animating = realize.animating || transitions_running;
-    let canvas = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
+    let window = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
+    // Overlays are laid out and placed inside the safe area (zero but on
+    // iOS), clear of the status bar and home indicator; paint covers the
+    // whole window.
+    let canvas = window - state.safe_area;
 
     // ---- overlay passes: openness, layout against the canvas, placement.
     let mut overlay_anchors = std::collections::HashMap::new();
@@ -2089,7 +2093,7 @@ pub fn build_frame<Msg>(
     // FLIP magnitudes are unaffected. Paint, hit-testing, and the access tree all
     // read these mirrored rects, so they agree.
     if theme.is_rtl() {
-        let w = canvas.x1;
+        let w = window.x1;
         mirror_rtl(&mut root_node, w);
         for overlay in &mut overlays {
             mirror_rtl(&mut overlay.node, w);
@@ -2100,7 +2104,7 @@ pub fn build_frame<Msg>(
         root: root_node,
         overlays,
         overlay_anchors,
-        canvas,
+        canvas: window,
         scale,
         thumb_color: theme.text_subtle,
         ring_color: theme.accent.with_alpha(FOCUS_RING.alpha),
@@ -4265,6 +4269,40 @@ mod tests {
             image.data.id(),
             "the CPU path bakes a new image"
         );
+    }
+
+    /// A frame of `root` with a corner overlay, built with `safe_area`.
+    fn corner_overlay_frame(safe_area: kurbo::Insets) -> Frame {
+        use crate::element::{col, div};
+        let toast = div::<()>().id("toast").w(100.0).h(40.0);
+        let root = col().w_full().h_full().child(div::<()>().id("anchor").child(
+            toast.overlay(Overlay {
+                mode: OverlayMode::Open,
+                placement: OverlayPlacement::TopRight { margin: 8.0 },
+                backdrop: false,
+                trap_focus: false,
+                enter: false,
+                match_anchor_width: false,
+            }),
+        ));
+        let mut fonts = Fonts::embedded();
+        let mut state = FrameState::new();
+        state.safe_area = safe_area;
+        build_frame(&root, &Theme::light(), &mut fonts, &mut state, (402.0, 874.0), 1.0)
+    }
+
+    /// Overlays are placed inside the safe area (iOS): a corner toast clears
+    /// the status bar instead of sitting under it.
+    #[test]
+    fn overlays_are_placed_inside_the_safe_area() {
+        let frame = corner_overlay_frame(kurbo::Insets::new(0.0, 62.0, 0.0, 34.0));
+        assert_eq!(frame.overlays[0].node.rect.y0, 70.0);
+    }
+
+    #[test]
+    fn no_safe_area_places_overlays_against_the_window() {
+        let frame = corner_overlay_frame(kurbo::Insets::ZERO);
+        assert_eq!(frame.overlays[0].node.rect.y0, 8.0);
     }
 
     fn test_frame(root: &crate::element::Element<()>, size: (f32, f32)) -> Frame {

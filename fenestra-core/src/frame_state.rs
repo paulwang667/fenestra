@@ -202,6 +202,10 @@ pub struct FrameState {
     scroll: HashMap<WidgetId, Scroll>,
     /// Snaps every animation to its final value. Headless rendering sets it.
     pub reduced_motion: bool,
+    /// The window's edges the system draws over (the iOS status bar and home
+    /// indicator), in logical px. Overlays are placed inside it; the shell
+    /// sets it, and it is zero everywhere but iOS.
+    pub safe_area: kurbo::Insets,
     /// The focus and the window size the last frame was built with: a
     /// change in either scrolls the focused element into view.
     pub(crate) revealed_focus: Option<WidgetId>,
@@ -308,6 +312,7 @@ impl Default for FrameState {
             now: 0.0,
             scroll: HashMap::new(),
             reduced_motion: false,
+            safe_area: kurbo::Insets::ZERO,
             revealed_focus: None,
             revealed_size: (0.0, 0.0),
             revealed_shown: false,
