@@ -14,12 +14,12 @@ pub enum Backend {
 }
 
 /// Env var choosing the [`Backend`]: `vello` or `raster` (any case);
-/// anything else means the platform default — raster on Android, vello
-/// elsewhere.
+/// anything else means the platform default — raster on Android and iOS,
+/// vello elsewhere.
 pub const RENDERER_ENV: &str = "FENESTRA_RENDERER";
 
 /// The platform's default backend.
-const PLATFORM_DEFAULT: Backend = if cfg!(target_os = "android") {
+const PLATFORM_DEFAULT: Backend = if cfg!(any(target_os = "android", target_os = "ios")) {
     Backend::Raster
 } else {
     Backend::Vello
@@ -60,6 +60,38 @@ pub(crate) fn effective_backend(requested: Backend, adapter: wgpu::Backend) -> B
     match requested {
         Backend::Raster if !raster_supported(adapter) => Backend::Vello,
         b => b,
+    }
+}
+
+/// The backend a window draws with: [`effective_backend`], and then raster
+/// instead of vello when the adapter cannot run vello's compute pipeline
+/// (`indirect`: it lacks indirect dispatch, as the iOS simulator does) but
+/// can run raster. vello's CPU mode (`cpu`) needs no indirect dispatch, and
+/// when neither backend fits (GL without indirect dispatch) vello stays.
+///
+/// Windows only: headless rendering keeps an explicit backend, so a vello
+/// golden test never quietly renders with raster on a weak adapter.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn window_backend(
+    requested: Backend,
+    adapter: wgpu::Backend,
+    indirect: bool,
+    cpu: bool,
+) -> Backend {
+    match effective_backend(requested, adapter) {
+        Backend::Vello if !indirect && !cpu && raster_supported(adapter) => Backend::Raster,
+        b => b,
+    }
+}
+
+/// Prints once that vello was asked for on an adapter that cannot run it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn warn_vello_fallback() {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "fenestra: this adapter cannot run vello's compute pipeline (no indirect dispatch); rendering with raster"
+        );
     }
 }
 
@@ -129,6 +161,39 @@ mod tests {
             Backend::Vello
         );
         assert_eq!(effective_backend(Backend::Vello, Api::Gl), Backend::Vello);
+    }
+
+    #[test]
+    fn vello_without_indirect_dispatch_falls_back_to_raster() {
+        assert_eq!(
+            window_backend(Backend::Vello, wgpu::Backend::Metal, false, false),
+            Backend::Raster
+        );
+    }
+
+    #[test]
+    fn vello_keeps_vello_when_it_can_run() {
+        assert_eq!(
+            window_backend(Backend::Vello, wgpu::Backend::Metal, true, false),
+            Backend::Vello
+        );
+        // CPU mode needs no indirect dispatch.
+        assert_eq!(
+            window_backend(Backend::Vello, wgpu::Backend::Metal, false, true),
+            Backend::Vello
+        );
+    }
+
+    #[test]
+    fn neither_backend_fitting_keeps_vello() {
+        assert_eq!(
+            window_backend(Backend::Vello, wgpu::Backend::Gl, false, false),
+            Backend::Vello
+        );
+        assert_eq!(
+            window_backend(Backend::Raster, wgpu::Backend::Gl, true, false),
+            Backend::Vello
+        );
     }
 
     #[test]

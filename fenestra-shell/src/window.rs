@@ -679,13 +679,26 @@ impl WindowShell {
         self.composite_with_alpha(&mut surface);
 
         let requested = crate::backend::backend_from_env();
-        let adapter = self.context.devices[surface.dev_id]
-            .adapter()
-            .get_info()
-            .backend;
-        let backend = crate::backend::effective_backend(requested, adapter);
-        if backend != requested {
-            crate::backend::warn_raster_fallback(adapter);
+        let device = self.context.devices[surface.dev_id].adapter();
+        let adapter = device.get_info().backend;
+        let indirect = device
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
+        let backend = crate::backend::window_backend(
+            requested,
+            adapter,
+            indirect,
+            crate::headless::cpu_compute_requested(),
+        );
+        match (requested, backend) {
+            (crate::Backend::Raster, crate::Backend::Vello) => {
+                crate::backend::warn_raster_fallback(adapter);
+            }
+            (crate::Backend::Vello, crate::Backend::Raster) => {
+                crate::backend::warn_vello_fallback();
+            }
+            _ => {}
         }
         if backend == crate::Backend::Raster
             && self
