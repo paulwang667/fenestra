@@ -458,6 +458,10 @@ struct RasterTarget {
 /// A width and height in physical pixels.
 type PxSize = (u32, u32);
 
+/// What a painted main-window frame depends on besides the app: logical
+/// width, height, scale, and the safe area.
+type FrameKey = (f64, f64, f64, crate::safe_area::Insets);
+
 /// Whether the raster target must be (re)built for a `surface`-sized frame.
 fn needs_new_target(current: Option<(u32, u32)>, surface: (u32, u32)) -> bool {
     current != Some(surface)
@@ -507,10 +511,10 @@ fn window_geometry(options: &WindowOptions, mobile: bool) -> Geometry {
 /// of repainted: nothing changed since it was rendered for `rendered` (the
 /// logical size and scale), and the target still holds it at the
 /// surface's size (a renderer rebuilt for a new device has no target).
-fn reuses_raster_frame(
+fn reuses_raster_frame<K: PartialEq>(
     dirty: bool,
-    rendered: Option<(f64, f64, f64)>,
-    now: (f64, f64, f64),
+    rendered: Option<K>,
+    now: K,
     target: Option<(u32, u32)>,
     surface: (u32, u32),
 ) -> bool {
@@ -720,7 +724,7 @@ impl WindowShell {
     /// and enters the active state.
     #[cfg(not(target_arch = "wasm32"))]
     fn activate(&mut self, window: Arc<Window>) -> Result<(), ShellError> {
-        let size = window.inner_size();
+        let size = crate::safe_area::surface_size(&window);
         let mut surface = pollster::block_on(self.context.create_surface(
             window.clone(),
             size.width.max(1),
@@ -2051,11 +2055,11 @@ struct AppRunner<A: App> {
     /// (expose, un-occlude) re-present the cached scene when clean —
     /// the whole build/layout/paint pipeline is skipped.
     dirty: bool,
-    /// The last painted scene with its (logical w, h, scale) key.
-    cached_scene: Option<(Scene, (f64, f64, f64))>,
-    /// The (logical w, h, scale) of the frame in the raster target, when the
-    /// window draws through the raster backend.
-    raster_key: Option<(f64, f64, f64)>,
+    /// The last painted scene with its (logical w, h, scale, safe area) key.
+    cached_scene: Option<(Scene, FrameKey)>,
+    /// The (logical w, h, scale, safe area) of the frame in the raster
+    /// target, when the window draws through the raster backend.
+    raster_key: Option<FrameKey>,
     modifiers: winit::keyboard::ModifiersState,
     /// The AccessKit adapter, created before the window first shows.
     #[cfg(not(target_arch = "wasm32"))]
@@ -2462,16 +2466,15 @@ impl<A: App> AppRunner<A> {
         let Some((lw, lh, scale)) = self.shell.logical_size() else {
             return;
         };
+        let insets = self
+            .shell
+            .window()
+            .map_or_else(Default::default, |w| crate::safe_area::window_insets(w));
+        let key = (lw, lh, scale, insets);
         // Clean frame at the same size: present the last frame again and
         // skip build/layout/paint entirely (expose/un-occlude redraws).
         if self.shell.raster_sizes().is_some_and(|(target, surface)| {
-            reuses_raster_frame(
-                self.dirty,
-                self.raster_key,
-                (lw, lh, scale),
-                target,
-                surface,
-            )
+            reuses_raster_frame(self.dirty, self.raster_key, key, target, surface)
         }) {
             if let Err(e) = self.shell.raster_present() {
                 self.shell.fail(event_loop, e);
@@ -2479,8 +2482,8 @@ impl<A: App> AppRunner<A> {
             return;
         }
         if !self.dirty
-            && let Some((scene, key)) = &self.cached_scene
-            && *key == (lw, lh, scale)
+            && let Some((scene, cached)) = &self.cached_scene
+            && *cached == key
         {
             if let Err(e) = self.shell.present_physical(scene) {
                 self.shell.fail(event_loop, e);
@@ -2494,7 +2497,14 @@ impl<A: App> AppRunner<A> {
         self.state.tick(self.started.elapsed().as_secs_f64());
         #[expect(clippy::cast_possible_truncation, reason = "window sizes fit in f32")]
         let logical = (lw as f32, lh as f32);
-        let view = self.app.view_at(fenestra_core::MAIN_WINDOW, logical);
+        // The app lays out inside the safe area; the frame still covers the
+        // whole screen (see `safe_area`).
+        let view = crate::safe_area::inset_root(
+            self.app
+                .view_at(fenestra_core::MAIN_WINDOW, insets.inside(logical)),
+            insets,
+            theme.bg,
+        );
         let frame = build_frame(
             &view,
             &theme,
@@ -2508,7 +2518,7 @@ impl<A: App> AppRunner<A> {
             if !self.present_raster_frame(event_loop, &frame, scale) {
                 return;
             }
-            self.raster_key = Some((lw, lh, scale));
+            self.raster_key = Some(key);
             self.dirty = frame.animating;
         } else {
             let t = Instant::now();
@@ -2576,7 +2586,7 @@ impl<A: App> AppRunner<A> {
             crate::frame_stats::frame_end();
             // The frame is clean until something changes it; animation and
             // hover refresh keep it dirty so the pipeline runs again.
-            self.cached_scene = Some((scene, (lw, lh, scale)));
+            self.cached_scene = Some((scene, key));
             self.dirty = frame.animating;
         }
         // Content may have moved under a stationary pointer (scroll,
@@ -4182,7 +4192,13 @@ mod mobile_window_tests {
             .fullscreen();
         let g = window_geometry(&o, true);
         assert_eq!(
-            (g.inner_size, g.min_size, g.position, g.maximized, g.fullscreen),
+            (
+                g.inner_size,
+                g.min_size,
+                g.position,
+                g.maximized,
+                g.fullscreen
+            ),
             (None, None, None, false, false)
         );
         let d = window_geometry(&o, false);
@@ -4190,5 +4206,37 @@ mod mobile_window_tests {
         assert_eq!(d.min_size, Some((960.0, 640.0)));
         assert_eq!(d.position, Some((10.0, 20.0)));
         assert!(d.fullscreen);
+    }
+}
+
+#[cfg(test)]
+mod frame_key_tests {
+    use super::reuses_raster_frame;
+    use crate::safe_area::Insets;
+
+    #[test]
+    fn changed_insets_rebuild_the_frame() {
+        let none = Insets::default();
+        let notched = Insets {
+            top: 62.0,
+            right: 0.0,
+            bottom: 34.0,
+            left: 0.0,
+        };
+        let size = Some((1206, 2622));
+        assert!(reuses_raster_frame(
+            false,
+            Some((402.0, 874.0, 3.0, none)),
+            (402.0, 874.0, 3.0, none),
+            size,
+            (1206, 2622)
+        ));
+        assert!(!reuses_raster_frame(
+            false,
+            Some((402.0, 874.0, 3.0, none)),
+            (402.0, 874.0, 3.0, notched),
+            size,
+            (1206, 2622)
+        ));
     }
 }

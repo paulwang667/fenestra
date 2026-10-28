@@ -32,6 +32,7 @@ mod multi_pass;
 mod os_clipboard;
 #[cfg(not(target_arch = "wasm32"))]
 mod reduce_motion;
+mod safe_area;
 #[cfg(not(target_arch = "wasm32"))]
 mod scenario;
 #[cfg(not(target_arch = "wasm32"))]
