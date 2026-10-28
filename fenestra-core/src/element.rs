@@ -815,6 +815,9 @@ pub struct Element<Msg> {
     pub(crate) autofocus: bool,
     pub(crate) scroll_request: Option<(u64, f32)>,
     pub(crate) focus_request: Option<u64>,
+    /// Selects all of this text, with touch handles and the edit menu,
+    /// when the token is new (see [`Element::select_all_on`]).
+    pub(crate) select_request: Option<u64>,
     /// Scroll containers only: keep pinned to the bottom while content
     /// grows (chat/log pattern).
     pub(crate) stick_bottom: bool,
@@ -947,6 +950,7 @@ impl<Msg> Element<Msg> {
             autofocus: false,
             scroll_request: None,
             focus_request: None,
+            select_request: None,
             stick_bottom: false,
             hide_scrollbar: false,
             cursor: None,
@@ -1778,6 +1782,17 @@ impl<Msg> Element<Msg> {
     pub fn focus_on(mut self, request: u64) -> Self {
         self.focus_request = Some(request);
         self.focusable = true;
+        self
+    }
+
+    /// Selects all of this element's text, with the touch selection handles
+    /// and edit menu, when it carries a token it did not carry last time —
+    /// the selection sibling of [`Self::focus_on`] (a message's "Select
+    /// text" menu item hands its text a new token). For
+    /// [`selectable`](Self::selectable) text and text fields; elsewhere it
+    /// does nothing.
+    pub fn select_all_on(mut self, request: u64) -> Self {
+        self.select_request = Some(request);
         self
     }
 
@@ -2827,6 +2842,7 @@ impl<Msg: 'static> Element<Msg> {
             autofocus: self.autofocus,
             scroll_request: self.scroll_request,
             focus_request: self.focus_request,
+            select_request: self.select_request,
             stick_bottom: self.stick_bottom,
             hide_scrollbar: self.hide_scrollbar,
             cursor: self.cursor,

@@ -120,6 +120,32 @@ pub(crate) fn start(state: &mut FrameState, target: WidgetId, input: bool) {
         held: false,
     });
 }
+/// Honors a `select_all_on` token that came new this frame: everything in
+/// that text or field is selected, with handles and the menu.
+fn select_requested(frame: &Frame, state: &mut FrameState, fonts: &mut Fonts) {
+    let Some(id) = state.pending_select.take() else {
+        return;
+    };
+    let Some(rect) = frame.rect_of(id) else {
+        return;
+    };
+    if let Some((text, style)) = frame.static_text_of(id) {
+        let len = text.to_text().len();
+        if len == 0 {
+            return;
+        }
+        #[expect(clippy::cast_possible_truncation, reason = "widths fit in f32")]
+        let all = fonts.static_range(&text, style, Some(rect.width() as f32), 0, len);
+        state.static_sel = Some((id, all, false));
+        start(state, id, false);
+    } else if let Some(editor) = state.editors.get_mut(&id) {
+        let len = editor.editor.raw_text().len();
+        crate::input::select_range(editor, fonts, 0, len);
+        state.focus = Some(id);
+        start(state, id, true);
+    }
+}
+
 /// The edit menu item under a touch press, if any.
 pub(crate) fn menu_at(state: &FrameState, point: Point) -> Option<EditAction> {
     state
@@ -335,6 +361,7 @@ pub(crate) fn refresh(
     fonts: &mut Fonts,
     theme: &Theme,
 ) -> bool {
+    select_requested(frame, state, fonts);
     let scrolling = autoscroll(frame, state, fonts);
     let Some(sel) = state.touch_sel else {
         state.touch_geom = None;

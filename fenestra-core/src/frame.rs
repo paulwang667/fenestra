@@ -826,6 +826,14 @@ fn build<Msg>(
     {
         state.request_focus(id, request);
     }
+    if let Some(request) = el.select_request
+        && !el.disabled
+        && (matches!(el.kind, Kind::Input(_))
+            || (el.selectable && matches!(el.kind, Kind::Text(_) | Kind::Rich(_))))
+        && state.select_requests.insert(id, request) != Some(request)
+    {
+        state.pending_select = Some(id);
+    }
     let (mut style, anim) = resolve(el, theme, state, id);
     *animating |= anim;
     // Resolve any `ch`-based reading measure now that font metrics are

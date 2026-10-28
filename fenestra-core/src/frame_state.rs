@@ -279,6 +279,10 @@ pub struct FrameState {
     pub(crate) caret_tap: Option<WidgetId>,
     /// A touch press on an edit menu item, acted on when released there.
     pub(crate) menu_press: Option<crate::touch_select::EditAction>,
+    /// `select_all_on` tokens last honored, and an element whose new token
+    /// asks for a select-all this frame.
+    pub(crate) select_requests: HashMap<WidgetId, u64>,
+    pub(crate) pending_select: Option<WidgetId>,
     /// Focused-element type-ahead: target, buffer, last keystroke time.
     pub(crate) type_ahead: Option<(WidgetId, String, f64)>,
     /// Variable-height virtual lists: measured row heights per
@@ -352,6 +356,8 @@ impl Default for FrameState {
             touch_geom: None,
             caret_tap: None,
             menu_press: None,
+            select_requests: HashMap::new(),
+            pending_select: None,
             type_ahead: None,
             virtual_heights: HashMap::new(),
             virtual_windows: HashMap::new(),

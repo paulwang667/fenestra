@@ -4,6 +4,29 @@
 
 ### Added
 
+- **Touch text selection.** On touch screens a long press selects a word
+  in `selectable()` text or a field (an app's right-click menu on it or an
+  ancestor wins), double tap selects a word in a field, and a tap on a
+  field's caret opens the edit menu. The selection gets two handles to
+  drag (they cross, snap to grapheme boundaries, autoscroll at a
+  scroller's edge and hide when scrolled away), a magnifier while
+  dragging, and an edit menu (Cut / Copy / Paste / Select All, as the
+  target allows; 中文 labels under a `zh` locale) that does what the
+  keyboard shortcuts do. `Theme::selection_controls`
+  (`SelectionControls::Material` / `Cupertino`, the platform's by
+  default) picks the look. Mouse input keeps the desktop behavior; on
+  touch, a drag across a field now scrolls instead of selecting.
+- **`Element::select_all_on(token)`**: selects a text's whole content
+  with handles and the menu when the token is new (as `focus_on` moves
+  focus), for an app's own "Select text" command.
+- **`InputEvent::PointerSource` / `FrameState::pointer_source`**: core
+  knows whether pointer input comes from a finger or the mouse; the
+  runner sends it when it changes. `FrameState::touch_selection` reports
+  the selection, its handles, menu and magnifier.
+- **Harness touch verbs**: `long_press`, `touch_tap`, `touch_tap_at`,
+  `touch_down_at` / `touch_move_to` / `touch_up` drive the shell's own
+  touch translator; `haptics()`, `touch_selection()`, `clipboard()`,
+  `ime_text_state()` and `set_safe_area()` observe and set up.
 - **iOS text input (`ios-text-input`, with the winit fork).** Input methods
   compose on iOS (Chinese pinyin and others): the focused field is mirrored
   into the view's `UITextInput` and each edit comes back as
