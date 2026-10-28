@@ -486,3 +486,37 @@ fn enter_from_is_inert_under_reduced_motion() {
     assert!(!f.animating);
     assert_eq!(state.anim_seed(page), None);
 }
+
+/// Keyboard focus snaps an element's state changes; it must not make the
+/// element forget it has entered, or its entrance plays again when focus
+/// moves on.
+#[test]
+fn keyboard_focus_does_not_replay_an_entrance() {
+    let theme = Theme::light();
+    let mut fonts = Fonts::embedded();
+    let mut state = FrameState::new();
+    let view = col::<()>().w(200.0).h(400.0).children([
+        div::<()>()
+            .id("page")
+            .w(100.0)
+            .h(20.0)
+            .focusable(true)
+            .enter_from(0.0, 1.0, 40.0, 0.0),
+        div::<()>().id("other").w(100.0).h(20.0).focusable(true),
+    ]);
+    let f = build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
+    let (page, other) = (f.get(&by::id("page")).id, f.get(&by::id("other")).id);
+    state.tick(3.0);
+    build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
+    // Tab onto it (keyboard focus), a few frames, then away.
+    state.set_focus(Some(page));
+    for t in [3.1, 3.2, 3.3] {
+        state.tick(t);
+        build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
+    }
+    state.set_focus(Some(other));
+    state.tick(3.4);
+    let f = build_frame(&view, &theme, &mut fonts, &mut state, SIZE, 1.0);
+    assert!(!f.animating, "no second entrance");
+    assert_ne!(state.anim_seed(page), Some((0.0, 1.0, (40.0, 0.0))));
+}

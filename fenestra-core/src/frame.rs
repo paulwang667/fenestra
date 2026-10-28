@@ -639,6 +639,17 @@ fn resolve<Msg>(
     // focus ring and state layer instantly, since keyboard users move between
     // controls faster than a fade can keep up.
     let keyboard_driven = state.focus_visible && state.focused() == Some(id);
+    // A keyboard-focused element snaps, but keeps its retained animation
+    // alive (settled at the snapped style): dropped, it would be seeded
+    // anew when focus moves on, and an entrance would play again.
+    if transition.is_some() && !state.reduced_motion && keyboard_driven {
+        let (now, seen) = (state.now(), state.frame_no);
+        let anim = state
+            .anims
+            .entry(id)
+            .or_insert_with(|| crate::anim::Anim::new(style.clone(), now, seen));
+        anim.settle(&style, now, seen);
+    }
     if let Some(transition) = transition
         && !state.reduced_motion
         && !keyboard_driven

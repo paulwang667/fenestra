@@ -187,10 +187,14 @@ impl Touch {
         moving: bool,
     ) -> Option<Vec<InputEvent>> {
         if phase == TouchPhase::Started && self.finger.is_none() {
-            let mode = if !self.gestures || owns_drag {
+            // A moving scroller is caught first, even under a field or a
+            // slider: the list moving under the finger is what it stops.
+            let mode = if !self.gestures {
                 Mode::Pointer
             } else if moving {
                 Mode::Caught
+            } else if owns_drag {
+                Mode::Pointer
             } else {
                 Mode::Pending
             };
@@ -308,10 +312,11 @@ impl Touch {
 }
 
 /// The haptic an event a touch produced calls for, once dispatched with
-/// `consumed` (whether it produced messages): a long press — the right click
-/// a held finger becomes — that did something. Nothing else asks for one.
-pub(crate) fn touch_haptic(event: &InputEvent, consumed: bool) -> Option<fenestra_core::Haptic> {
-    (consumed && *event == InputEvent::RightDown).then_some(fenestra_core::Haptic::LongPress)
+/// `consumed` (whether it produced messages): a `long_press` — the right
+/// click a held finger becomes — that did something. Nothing else asks for
+/// one.
+pub(crate) fn touch_haptic(long_press: bool, consumed: bool) -> Option<fenestra_core::Haptic> {
+    (consumed && long_press).then_some(fenestra_core::Haptic::LongPress)
 }
 
 /// One scroll step of a finger that landed at `down`: the pointer goes to
@@ -364,13 +369,9 @@ mod tests {
     #[test]
     fn a_long_press_that_acts_asks_for_a_haptic() {
         use fenestra_core::Haptic;
-        assert_eq!(
-            touch_haptic(&InputEvent::RightDown, true),
-            Some(Haptic::LongPress)
-        );
-        assert_eq!(touch_haptic(&InputEvent::RightDown, false), None);
-        assert_eq!(touch_haptic(&InputEvent::PointerDown, true), None);
-        assert_eq!(touch_haptic(&InputEvent::RightUp, true), None);
+        assert_eq!(touch_haptic(true, true), Some(Haptic::LongPress));
+        assert_eq!(touch_haptic(true, false), None);
+        assert_eq!(touch_haptic(false, true), None);
     }
 
     /// A lift with no speed: a stretch springs back, nothing glides.
@@ -491,6 +492,17 @@ mod tests {
         assert_eq!(
             t.event(0, Ended, p(50., 60.), 1.1, false, false).unwrap(),
             vec![mv(50., 60.), still(), InputEvent::PointerLeave]
+        );
+    }
+
+    /// A finger landing on a gliding list catches it even over a field or a
+    /// slider: the list moving under it is what the finger stops.
+    #[test]
+    fn a_touch_on_a_moving_scroller_catches_even_over_a_field() {
+        let mut t = Touch::new(true);
+        assert_eq!(
+            t.event(0, Started, p(50., 60.), 0.0, true, true).unwrap(),
+            vec![mv(50., 60.), InputEvent::PanStop, InputEvent::PointerLeave]
         );
     }
 

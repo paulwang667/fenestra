@@ -2838,8 +2838,9 @@ impl<A: App> AppRunner<A> {
     /// Routes an event a touch produced into the main window, and plays the
     /// haptic it calls for (a long press that acted).
     fn touch_input_main(&mut self, event_loop: &ActiveEventLoop, event: InputEvent) {
-        let consumed = self.input_main_consumed(event_loop, event.clone());
-        if let Some(haptic) = crate::touch::touch_haptic(&event, consumed) {
+        let long_press = event == InputEvent::RightDown;
+        let consumed = self.input_main_consumed(event_loop, event);
+        if let Some(haptic) = crate::touch::touch_haptic(long_press, consumed) {
             self.play_haptic(haptic);
         }
     }

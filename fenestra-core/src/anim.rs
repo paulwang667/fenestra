@@ -21,6 +21,15 @@ pub(crate) struct Anim {
 }
 
 impl Anim {
+    /// Jumps to `target` with nothing left to play, kept alive this frame
+    /// (`seen`) — a snapped change that must not seed anew later.
+    pub(crate) fn settle(&mut self, target: &Style, now: f64, seen: u64) {
+        self.from = target.clone();
+        self.to = target.clone();
+        self.t0 = now;
+        self.seen = seen;
+    }
+
     /// Where the current segment started (an entrance's seed, until the
     /// target changes).
     pub(crate) fn start(&self) -> &Style {

@@ -1639,9 +1639,13 @@ impl<Msg> Element<Msg> {
     /// slides a page in from the right as it fades in. Timing is the
     /// standard entrance (decelerate-eased
     /// [`MotionDuration::Base`](crate::tokens::MotionDuration::Base)) unless
-    /// [`Self::enter`] or [`Self::transition`] sets one. Plays when the
-    /// element first appears (give it a stable [`Self::id`]); inert under
-    /// reduced motion.
+    /// [`Self::enter`] or [`Self::transition`] sets one — and a
+    /// [`Self::transition`] also replaces which properties animate, so one
+    /// without `opacity` snaps the fade while the slide plays. `opacity`
+    /// and `scale` are where the entrance starts (absolute, not relative to
+    /// the element's own); `(dx, dy)` is added to its own translate. Plays
+    /// when the element first appears (give it a stable [`Self::id`]);
+    /// inert under reduced motion.
     pub fn enter_from(mut self, opacity: f32, scale: f32, dx: f32, dy: f32) -> Self {
         let timing = self.enter.unwrap_or_else(|| {
             crate::style::Transition::all()
