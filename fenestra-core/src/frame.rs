@@ -1989,7 +1989,19 @@ pub fn build_frame<Msg>(
     }
     state.revealed_shown = focus
         .is_some_and(|id| shown(&root_node, id) || overlays.iter().any(|o| shown(&o.node, id)));
-    state.revealed_focus = focus;
+    // A focused element not in the tree yet (a row realized later) is not
+    // done with: it is revealed once it appears.
+    let present = focus.is_none_or(|id| {
+        let mut chain = Vec::new();
+        chain_to(&root_node, id, &mut chain)
+            || overlays.iter().any(|o| {
+                chain.clear();
+                chain_to(&o.node, id, &mut chain)
+            })
+    });
+    if present {
+        state.revealed_focus = focus;
+    }
     state.revealed_size = size;
 
     // ---- motion completion: FLIP layout slides, then exit-ghost lifecycle ----
@@ -2151,6 +2163,10 @@ fn shown(node: &FrameNode, id: WidgetId) -> bool {
 /// Pushes the nodes from `node` down to `id` onto `chain` (both included);
 /// whether `id` is under `node`.
 fn chain_to<'a>(node: &'a FrameNode, id: WidgetId, chain: &mut Vec<&'a FrameNode>) -> bool {
+    // A hidden subtree has nothing to show (and no real position).
+    if node.style.display == Display::None {
+        return false;
+    }
     chain.push(node);
     if node.id == id || node.children.iter().any(|c| chain_to(c, id, chain)) {
         return true;
@@ -2202,14 +2218,17 @@ fn reveal(node: &FrameNode, id: WidgetId, state: &mut FrameState) -> bool {
         } else {
             0.0
         };
+        // The target is where it is painted, a touch's stretch included;
+        // scrolling ends the stretch, so the new offset takes it in.
+        let (stretch_x, stretch_y) = state.scroll_stretch(anc.id);
         #[expect(clippy::cast_possible_truncation, reason = "logical px")]
         {
             if dy.abs() > 0.5 {
-                state.scroll_to(anc.id, scroll.offset_y + dy as f32);
+                state.scroll_to(anc.id, scroll.offset_y + stretch_y + dy as f32);
                 moved = true;
             }
             if dx.abs() > 0.5 {
-                state.scroll_to_x(anc.id, scroll.offset_x + dx as f32);
+                state.scroll_to_x(anc.id, scroll.offset_x + stretch_x + dx as f32);
                 moved = true;
             }
         }

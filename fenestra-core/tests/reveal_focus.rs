@@ -392,3 +392,169 @@ fn a_resize_leaves_a_scrolled_away_field_alone() {
     f.build();
     assert_eq!(f.state.scroll_offset(list_id), 500.0);
 }
+
+/// A field scrolled into view while the list is stretched past its end
+/// lands where it would without the stretch: the stretch is part of where
+/// it is painted, and it goes as the list scrolls.
+#[test]
+fn a_reveal_during_a_bounce_lands_fully_in_view() {
+    let mut f = Fixture::new(list);
+    let (list_id, view) = f.scroller(Point::new(50.0, 50.0));
+    f.state.scroll_to(list_id, 1.0e6);
+    f.build();
+    let max = f.state.scroll_offset(list_id);
+    // A finger pulls the bottom up past the end, and holds.
+    for event in [
+        InputEvent::PointerMove { x: 50.0, y: 100.0 },
+        InputEvent::Pan { dx: 0.0, dy: -80.0 },
+    ] {
+        let _ = fenestra_core::dispatch(&list(()), &f.frame, &mut f.state, &mut f.fonts, event);
+        f.build();
+    }
+    assert!(f.state.scroll_stretch(list_id).1 > 10.0, "stretched");
+    assert_eq!(f.state.scroll_offset(list_id), max);
+    f.focus("f3");
+    let top = f.rect("f3").y0;
+    assert!(
+        (top - (view.y0 + MARGIN)).abs() < 0.5,
+        "field top at {top}, view top + margin {}",
+        view.y0 + MARGIN
+    );
+}
+
+#[test]
+fn a_focused_element_that_appears_later_is_revealed() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static SHOW: AtomicBool = AtomicBool::new(true);
+    fn late(_: ()) -> Element<()> {
+        let mut kids = fields(20);
+        if !SHOW.load(Ordering::Relaxed) {
+            kids.pop();
+        }
+        col().w(400.0).h_full().child(
+            col()
+                .id("list")
+                .w(300.0)
+                .h(200.0)
+                .scroll_y()
+                .hide_scrollbar()
+                .children(kids),
+        )
+    }
+    let mut f = Fixture::new(late);
+    let last = f.id("f19");
+    SHOW.store(false, Ordering::Relaxed);
+    f.build();
+    f.state.set_focus(Some(last));
+    f.build();
+    f.build();
+    SHOW.store(true, Ordering::Relaxed);
+    f.build();
+    f.build();
+    let (_, view) = f.scroller(Point::new(50.0, 50.0));
+    // The last row: the list ends at it, so no margin is left below.
+    assert_inside(f.rect("f19"), view, 0.0);
+}
+
+#[test]
+fn a_hidden_focused_element_does_not_scroll() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static HIDE: AtomicBool = AtomicBool::new(false);
+    fn view(_: ()) -> Element<()> {
+        let hide = HIDE.load(Ordering::Relaxed);
+        let section = col()
+            .id("section")
+            .themed(move |_, mut s| {
+                if hide {
+                    s.display = fenestra_core::Display::None;
+                }
+                s
+            })
+            .child(raw_input(String::new(), "").id("ghost").h(48.0).shrink0());
+        col().w(400.0).h_full().child(
+            col()
+                .id("list")
+                .w(300.0)
+                .h(200.0)
+                .scroll_y()
+                .hide_scrollbar()
+                .children(fields(20))
+                .child(section),
+        )
+    }
+    let mut f = Fixture::new(view);
+    let ghost = f.id("ghost");
+    HIDE.store(true, Ordering::Relaxed);
+    let (list_id, _) = f.scroller(Point::new(50.0, 50.0));
+    f.state.scroll_to(list_id, 300.0);
+    f.build();
+    f.state.set_focus(Some(ghost));
+    f.build();
+    f.build();
+    assert_eq!(
+        f.state.scroll_offset(list_id),
+        300.0,
+        "no jump to a hidden field"
+    );
+}
+
+#[test]
+fn a_field_in_a_horizontal_scroller_is_revealed() {
+    fn strip(_: ()) -> Element<()> {
+        col().w(400.0).h_full().child(
+            fenestra_core::row()
+                .id("strip")
+                .w(300.0)
+                .h(60.0)
+                .scroll_x()
+                .hide_scrollbar()
+                .children((0..12).map(|i| {
+                    raw_input(String::new(), "")
+                        .id(&format!("h{i}"))
+                        .w(100.0)
+                        .h(48.0)
+                        .shrink0()
+                })),
+        )
+    }
+    let mut f = Fixture::new(strip);
+    f.focus("h8");
+    let (_, view) = f.scroller(Point::new(50.0, 30.0));
+    let field = f.rect("h8");
+    assert!(
+        field.x0 >= view.x0 + MARGIN - 0.5 && field.x1 <= view.x1 - MARGIN + 0.5,
+        "{field:?} in {view:?}"
+    );
+}
+
+/// A field revealed at the bottom of a stick-to-bottom feed leaves it
+/// pinned: new rows still bring it along.
+#[test]
+fn revealing_in_a_sticky_feed_keeps_it_pinned_at_the_bottom() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static ROWS: AtomicUsize = AtomicUsize::new(20);
+    fn feed(_: ()) -> Element<()> {
+        col().w(400.0).h_full().child(
+            col()
+                .id("feed")
+                .w(300.0)
+                .h(200.0)
+                .scroll_y()
+                .stick_to_bottom()
+                .hide_scrollbar()
+                .children(fields(ROWS.load(Ordering::Relaxed))),
+        )
+    }
+    let mut f = Fixture::new(feed);
+    let (feed_id, _) = f.scroller(Point::new(50.0, 50.0));
+    let bottom = f.state.scroll_offset(feed_id);
+    f.focus("f19");
+    assert_eq!(f.state.scroll_offset(feed_id), bottom, "already in view");
+    ROWS.store(22, Ordering::Relaxed);
+    f.build();
+    assert_eq!(
+        f.state.scroll_offset(feed_id),
+        bottom + 96.0,
+        "still follows new rows"
+    );
+}
