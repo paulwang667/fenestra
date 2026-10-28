@@ -593,8 +593,13 @@ fn a_growing_safe_area_reveals_the_focused_field() {
         InputEvent::PointerDown,
         InputEvent::PointerUp,
     ] {
-        let _ =
-            fenestra_core::dispatch(&no_keyboard(()), &f.frame, &mut f.state, &mut f.fonts, event);
+        let _ = fenestra_core::dispatch(
+            &no_keyboard(()),
+            &f.frame,
+            &mut f.state,
+            &mut f.fonts,
+            event,
+        );
     }
     f.build();
     assert_eq!(f.state.focused(), Some(f.id("f4")));

@@ -3,7 +3,10 @@
 //! to believe.
 #![cfg_attr(
     not(test),
-    allow(dead_code, reason = "Android uses the EditorInfo half, iOS the traits half")
+    allow(
+        dead_code,
+        reason = "Android uses the EditorInfo half, iOS the traits half"
+    )
 )]
 
 use fenestra_core::{EnterKey, ImeTextState, Keyboard};
@@ -364,7 +367,11 @@ mod tests {
         // field's is a newline, which iOS shows as its plain return key.
         assert_eq!(ret(EnterKey::Default, false), IosReturn::Done);
         assert_eq!(ret(EnterKey::Default, true), IosReturn::Default);
-        assert_eq!(ret(EnterKey::Send, true), IosReturn::Send, "a composer's Send key");
+        assert_eq!(
+            ret(EnterKey::Send, true),
+            IosReturn::Send,
+            "a composer's Send key"
+        );
     }
 
     #[test]
@@ -373,7 +380,12 @@ mod tests {
         assert!(!plain.secure && plain.autocorrect && plain.autocapitalize);
         let secret = text_input_traits(&kind(Keyboard::Text, EnterKey::Default, false, true));
         assert!(secret.secure && !secret.autocorrect && !secret.autocapitalize);
-        for k in [Keyboard::Email, Keyboard::Url, Keyboard::Number, Keyboard::Phone] {
+        for k in [
+            Keyboard::Email,
+            Keyboard::Url,
+            Keyboard::Number,
+            Keyboard::Phone,
+        ] {
             let t = text_input_traits(&kind(k, EnterKey::Default, false, false));
             assert!(!t.autocorrect && !t.autocapitalize, "{k:?}");
         }
