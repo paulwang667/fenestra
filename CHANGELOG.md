@@ -14,6 +14,12 @@
 
 ### Added
 
+- **A long press that acts plays a haptic** (Android). When a held
+  finger's right click produces a message (a context menu opening), the
+  runner asks for `Haptic::LongPress` through
+  `WindowOptions::with_android_haptic(fn(&AndroidApp, Haptic))` — a JNI
+  call (`View.performHapticFeedback`) left to the app, as `with_android_back`
+  is. A long press that does nothing plays nothing.
 - **`Element::enter_from(opacity, scale, dx, dy)`**, the counterpart of
   `exit_to`: an element's entrance starts at that opacity, scale and offset
   and plays to its own style (standard decelerate timing unless `.enter()`

@@ -188,6 +188,13 @@ pub struct WindowOptions {
     /// ignores it.
     #[cfg(target_os = "android")]
     pub android_back: Option<fn(&winit::platform::android::activity::AndroidApp)>,
+    /// Android: plays a touch feedback — a long press that acted asks for
+    /// [`fenestra_core::Haptic::LongPress`] — normally through
+    /// `View.performHapticFeedback`, a JNI call this crate (no `unsafe`)
+    /// leaves to the app. `None` plays nothing.
+    #[cfg(target_os = "android")]
+    pub android_haptic:
+        Option<fn(&winit::platform::android::activity::AndroidApp, fenestra_core::Haptic)>,
 }
 
 impl WindowOptions {
@@ -211,6 +218,8 @@ impl WindowOptions {
             android_app: None,
             #[cfg(target_os = "android")]
             android_back: None,
+            #[cfg(target_os = "android")]
+            android_haptic: None,
         }
     }
 
@@ -345,6 +354,18 @@ impl WindowOptions {
         f: fn(&winit::platform::android::activity::AndroidApp),
     ) -> Self {
         self.android_back = Some(f);
+        self
+    }
+
+    /// Sets how a touch feedback plays (Android only; see
+    /// [`WindowOptions::android_haptic`]).
+    #[cfg(target_os = "android")]
+    #[must_use]
+    pub fn with_android_haptic(
+        mut self,
+        f: fn(&winit::platform::android::activity::AndroidApp, fenestra_core::Haptic),
+    ) -> Self {
+        self.android_haptic = Some(f);
         self
     }
 }
@@ -2251,7 +2272,7 @@ impl<A: App> AppRunner<A> {
     fn fire_long_presses(&mut self, event_loop: &ActiveEventLoop) {
         let now = self.started.elapsed().as_secs_f64();
         for event in self.touch.tick(now) {
-            self.input_main(event_loop, event);
+            self.touch_input_main(event_loop, event);
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -2802,9 +2823,39 @@ impl<A: App> AppRunner<A> {
     /// Routes one input event into the main window, reconciling windows
     /// afterwards if it produced messages.
     fn input_main(&mut self, event_loop: &ActiveEventLoop, event: InputEvent) {
-        if self.input(event).consumed {
+        self.input_main_consumed(event_loop, event);
+    }
+
+    /// [`Self::input_main`], returning whether the event produced messages.
+    fn input_main_consumed(&mut self, event_loop: &ActiveEventLoop, event: InputEvent) -> bool {
+        let consumed = self.input(event).consumed;
+        if consumed {
             self.after_update(event_loop);
         }
+        consumed
+    }
+
+    /// Routes an event a touch produced into the main window, and plays the
+    /// haptic it calls for (a long press that acted).
+    fn touch_input_main(&mut self, event_loop: &ActiveEventLoop, event: InputEvent) {
+        let consumed = self.input_main_consumed(event_loop, event.clone());
+        if let Some(haptic) = crate::touch::touch_haptic(&event, consumed) {
+            self.play_haptic(haptic);
+        }
+    }
+
+    /// Plays a touch feedback through the app's hook (Android); nothing
+    /// elsewhere.
+    fn play_haptic(&self, haptic: fenestra_core::Haptic) {
+        #[cfg(target_os = "android")]
+        if let (Some(play), Some(app)) = (
+            self.shell.options.android_haptic,
+            &self.shell.options.android_app,
+        ) {
+            play(app, haptic);
+        }
+        #[cfg(not(target_os = "android"))]
+        let _ = haptic;
     }
 
     /// Routes one input event into a secondary window, reconciling
@@ -3590,7 +3641,7 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                 {
                     self.cursor = at;
                     for event in events {
-                        self.input_main(event_loop, event);
+                        self.touch_input_main(event_loop, event);
                     }
                     // Judged after dispatch, so a tap that moves focus to
                     // another field counts as a tap on it.

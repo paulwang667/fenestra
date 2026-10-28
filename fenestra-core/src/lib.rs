@@ -57,8 +57,8 @@ pub use element::{
     responsive_hinted, rich_text, row, spacer, span, stack, text,
 };
 pub use events::{
-    Dispatch, DragEvent, GesturePhase, ImeTextState, InputEvent, Key, KeyInput, Mods, PinchEvent,
-    WheelEvent, WindowControl, click_msg_of, dispatch, owns_touch_drag, refresh_hover,
+    Dispatch, DragEvent, GesturePhase, Haptic, ImeTextState, InputEvent, Key, KeyInput, Mods,
+    PinchEvent, WheelEvent, WindowControl, click_msg_of, dispatch, owns_touch_drag, refresh_hover,
     scroll_moving_at,
 };
 #[doc(hidden)]

@@ -307,6 +307,13 @@ impl Touch {
     }
 }
 
+/// The haptic an event a touch produced calls for, once dispatched with
+/// `consumed` (whether it produced messages): a long press — the right click
+/// a held finger becomes — that did something. Nothing else asks for one.
+pub(crate) fn touch_haptic(event: &InputEvent, consumed: bool) -> Option<fenestra_core::Haptic> {
+    (consumed && *event == InputEvent::RightDown).then_some(fenestra_core::Haptic::LongPress)
+}
+
 /// One scroll step of a finger that landed at `down`: the pointer goes to
 /// the landing point only for the pan (so the same container scrolls) and
 /// leaves again before any frame paints a hover there.
@@ -349,6 +356,21 @@ mod tests {
 
     fn p(x: f64, y: f64) -> Point {
         Point::new(x, y)
+    }
+
+    /// A long press that did something (its right click produced messages)
+    /// asks for the long-press haptic; one that did nothing, and any other
+    /// event, asks for none.
+    #[test]
+    fn a_long_press_that_acts_asks_for_a_haptic() {
+        use fenestra_core::Haptic;
+        assert_eq!(
+            touch_haptic(&InputEvent::RightDown, true),
+            Some(Haptic::LongPress)
+        );
+        assert_eq!(touch_haptic(&InputEvent::RightDown, false), None);
+        assert_eq!(touch_haptic(&InputEvent::PointerDown, true), None);
+        assert_eq!(touch_haptic(&InputEvent::RightUp, true), None);
     }
 
     /// A lift with no speed: a stretch springs back, nothing glides.

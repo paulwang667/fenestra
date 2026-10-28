@@ -289,6 +289,16 @@ pub enum InputEvent {
     ImeState(ImeTextState),
 }
 
+/// A touch feedback the platform plays (Android, through
+/// `WindowOptions::with_android_haptic`): the runner asks for one when a
+/// gesture did something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Haptic {
+    /// A long press that acted (opened a menu, say).
+    LongPress,
+}
+
 /// A text field as a platform IME sees it: the buffer with any composition
 /// inline, and byte ranges into it. Sent in as [`InputEvent::ImeState`];
 /// read back with [`FrameState::ime_text_state`](crate::FrameState::ime_text_state)
