@@ -31,6 +31,11 @@ workspace = true
 default = ["android-native-activity"]
 android-native-activity = ["winit/android-native-activity"]
 android-game-activity = ["winit/android-game-activity"]
+# iOS text input through the winit fork (`paulwang667/winit`, branch
+# `fenestra/v0.30.13-ios-text-input`): input-method composing (Chinese,
+# Japanese), keyboard traits, the keyboard in the safe area. Needs that winit
+# patched in; without the feature iOS types through `KeyboardInput` only.
+ios-text-input = []
 
 [dependencies]
 fenestra-core.workspace = true

@@ -20,6 +20,7 @@ workspace = true
 default = ["android-native-activity"]
 android-native-activity = ["fenestra-shell/android-native-activity"]
 android-game-activity = ["fenestra-shell/android-game-activity"]
+ios-text-input = ["fenestra-shell/ios-text-input"]
 
 [dependencies]
 fenestra-core.workspace = true

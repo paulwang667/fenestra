@@ -24,7 +24,11 @@ mod gpu_glass_tests;
 mod harness;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
-#[cfg(any(all(target_os = "android", feature = "android-game-activity"), test))]
+#[cfg(any(
+    all(target_os = "android", feature = "android-game-activity"),
+    all(target_os = "ios", feature = "ios-text-input"),
+    test
+))]
 mod ime_sync;
 #[cfg(not(target_arch = "wasm32"))]
 mod multi_pass;

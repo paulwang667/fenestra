@@ -1,5 +1,10 @@
-//! The runner's side of a mirrored IME (Android GameActivity): which field the
-//! IME holds, and which of its state reports to believe.
+//! The runner's side of a mirrored IME (Android GameActivity, iOS with the
+//! winit fork): which field the IME holds, and which of its state reports
+//! to believe.
+#![cfg_attr(
+    not(test),
+    allow(dead_code, reason = "Android uses the EditorInfo half, iOS the traits half")
+)]
 
 use fenestra_core::{EnterKey, ImeTextState, Keyboard};
 
@@ -83,6 +88,69 @@ pub(crate) fn editor_info(field: &ImeTextState) -> EditorInfo {
         input_type,
         action,
         options,
+    }
+}
+
+/// The iOS keyboard layout a field asks for (winit fork's `KeyboardType`;
+/// fenestra's own type so the mapping is tested on any platform).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IosKeyboard {
+    Default,
+    NumberPad,
+    DecimalPad,
+    PhonePad,
+    EmailAddress,
+    Url,
+}
+
+/// The iOS return key a field asks for (winit fork's `ReturnKeyType`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IosReturn {
+    Default,
+    Send,
+    Search,
+    Go,
+    Done,
+    Next,
+}
+
+/// What the iOS keyboard is told a field is (`UITextInputTraits`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Traits {
+    pub keyboard: IosKeyboard,
+    pub return_key: IosReturn,
+    pub secure: bool,
+    pub autocorrect: bool,
+    pub autocapitalize: bool,
+}
+
+/// The iOS traits for a focused field, matching [`editor_info`]: its
+/// keyboard, its enter key (a newline key is iOS's plain return key), and
+/// for a password, an address or a number no suggestions or capitals.
+pub(crate) fn text_input_traits(field: &ImeTextState) -> Traits {
+    let keyboard = match field.keyboard {
+        Keyboard::Number => IosKeyboard::NumberPad,
+        Keyboard::Decimal => IosKeyboard::DecimalPad,
+        Keyboard::Phone => IosKeyboard::PhonePad,
+        Keyboard::Email => IosKeyboard::EmailAddress,
+        Keyboard::Url => IosKeyboard::Url,
+        _ => IosKeyboard::Default,
+    };
+    let return_key = match field.enter_key {
+        EnterKey::Newline => IosReturn::Default,
+        EnterKey::Send => IosReturn::Send,
+        EnterKey::Search => IosReturn::Search,
+        EnterKey::Go => IosReturn::Go,
+        EnterKey::Next => IosReturn::Next,
+        _ => IosReturn::Done,
+    };
+    let suggest = !field.masked && keyboard == IosKeyboard::Default;
+    Traits {
+        keyboard,
+        return_key,
+        secure: field.masked,
+        autocorrect: suggest,
+        autocapitalize: suggest,
     }
 }
 
@@ -269,6 +337,46 @@ mod tests {
         let pin = editor_info(&kind(Keyboard::Number, EnterKey::Default, false, true));
         assert_eq!(pin.input_type, 2 | 0x10);
         assert_ne!(pin.options & 0x0100_0000, 0, "nothing learned");
+    }
+
+    #[test]
+    fn ios_traits_map_each_keyboard() {
+        let kb = |k| text_input_traits(&kind(k, EnterKey::Default, false, false)).keyboard;
+        assert_eq!(kb(Keyboard::Text), IosKeyboard::Default);
+        assert_eq!(kb(Keyboard::Number), IosKeyboard::NumberPad);
+        assert_eq!(kb(Keyboard::Decimal), IosKeyboard::DecimalPad);
+        assert_eq!(kb(Keyboard::Phone), IosKeyboard::PhonePad);
+        assert_eq!(kb(Keyboard::Email), IosKeyboard::EmailAddress);
+        assert_eq!(kb(Keyboard::Url), IosKeyboard::Url);
+    }
+
+    #[test]
+    fn ios_traits_map_each_enter_key() {
+        let ret = |key, multiline| {
+            text_input_traits(&kind(Keyboard::Text, key, multiline, false)).return_key
+        };
+        assert_eq!(ret(EnterKey::Send, false), IosReturn::Send);
+        assert_eq!(ret(EnterKey::Search, false), IosReturn::Search);
+        assert_eq!(ret(EnterKey::Go, false), IosReturn::Go);
+        assert_eq!(ret(EnterKey::Next, false), IosReturn::Next);
+        assert_eq!(ret(EnterKey::Done, false), IosReturn::Done);
+        // A single-line field's default enter key is Done; a multiline
+        // field's is a newline, which iOS shows as its plain return key.
+        assert_eq!(ret(EnterKey::Default, false), IosReturn::Done);
+        assert_eq!(ret(EnterKey::Default, true), IosReturn::Default);
+        assert_eq!(ret(EnterKey::Send, true), IosReturn::Send, "a composer's Send key");
+    }
+
+    #[test]
+    fn a_password_turns_off_suggestions() {
+        let plain = text_input_traits(&kind(Keyboard::Text, EnterKey::Default, false, false));
+        assert!(!plain.secure && plain.autocorrect && plain.autocapitalize);
+        let secret = text_input_traits(&kind(Keyboard::Text, EnterKey::Default, false, true));
+        assert!(secret.secure && !secret.autocorrect && !secret.autocapitalize);
+        for k in [Keyboard::Email, Keyboard::Url, Keyboard::Number, Keyboard::Phone] {
+            let t = text_input_traits(&kind(k, EnterKey::Default, false, false));
+            assert!(!t.autocorrect && !t.autocapitalize, "{k:?}");
+        }
     }
 
     #[test]

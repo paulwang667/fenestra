@@ -59,6 +59,34 @@ pub(crate) fn gesture_phase(phase: TouchPhase) -> GesturePhase {
     }
 }
 
+/// [`crate::ime_sync::Traits`] as the winit fork's type.
+#[cfg(all(target_os = "ios", feature = "ios-text-input"))]
+fn ios_traits(t: crate::ime_sync::Traits) -> winit::platform::ios::TextInputTraits {
+    use crate::ime_sync::{IosKeyboard, IosReturn};
+    use winit::platform::ios::{KeyboardType, ReturnKeyType, TextInputTraits};
+    TextInputTraits {
+        keyboard: match t.keyboard {
+            IosKeyboard::Default => KeyboardType::Default,
+            IosKeyboard::NumberPad => KeyboardType::NumberPad,
+            IosKeyboard::DecimalPad => KeyboardType::DecimalPad,
+            IosKeyboard::PhonePad => KeyboardType::PhonePad,
+            IosKeyboard::EmailAddress => KeyboardType::EmailAddress,
+            IosKeyboard::Url => KeyboardType::Url,
+        },
+        return_key: match t.return_key {
+            IosReturn::Default => ReturnKeyType::Default,
+            IosReturn::Send => ReturnKeyType::Send,
+            IosReturn::Search => ReturnKeyType::Search,
+            IosReturn::Go => ReturnKeyType::Go,
+            IosReturn::Done => ReturnKeyType::Done,
+            IosReturn::Next => ReturnKeyType::Next,
+        },
+        secure: t.secure,
+        autocorrect: t.autocorrect,
+        autocapitalize: t.autocapitalize,
+    }
+}
+
 /// The `set_ime_allowed` call that keeps a soft keyboard in step with the
 /// caret: `want` (a field holds the caret), `shown` (what the keyboard was
 /// last asked to be), `tapped` (the focused field was tapped, which brings
@@ -1997,8 +2025,13 @@ where
         keyboard_tap: false,
         #[cfg(any(target_os = "android", target_os = "ios"))]
         touch_down: None,
-        #[cfg(all(target_os = "android", feature = "android-game-activity"))]
+        #[cfg(any(
+            all(target_os = "android", feature = "android-game-activity"),
+            all(target_os = "ios", feature = "ios-text-input")
+        ))]
         ime: crate::ime_sync::ImeSync::default(),
+        #[cfg(all(target_os = "ios", feature = "ios-text-input"))]
+        ios_traits: None,
         started: Instant::now(),
         last: None,
         dirty: true,
@@ -2084,8 +2117,14 @@ struct AppRunner<A: App> {
     /// The focused field as the IME last knew it (GameActivity mirrors the
     /// field; a difference after a frame is sent back to it), and which of
     /// its reports to believe while it moves to another field.
-    #[cfg(all(target_os = "android", feature = "android-game-activity"))]
+    #[cfg(any(
+        all(target_os = "android", feature = "android-game-activity"),
+        all(target_os = "ios", feature = "ios-text-input")
+    ))]
     ime: crate::ime_sync::ImeSync,
+    /// The traits the iOS keyboard was last given (it keeps them until told).
+    #[cfg(all(target_os = "ios", feature = "ios-text-input"))]
+    ios_traits: Option<crate::ime_sync::Traits>,
     started: Instant,
     /// View and frame from the last redraw, for input routing.
     last: Option<(Element<A::Msg>, fenestra_core::Frame)>,
@@ -2669,7 +2708,10 @@ impl<A: App> AppRunner<A> {
         }
         #[cfg(any(target_os = "android", target_os = "ios"))]
         self.sync_soft_keyboard();
-        #[cfg(all(target_os = "android", feature = "android-game-activity"))]
+        #[cfg(any(
+            all(target_os = "android", feature = "android-game-activity"),
+            all(target_os = "ios", feature = "ios-text-input")
+        ))]
         self.sync_ime_text();
         #[cfg(not(target_arch = "wasm32"))]
         self.push_access_tree();
@@ -2840,6 +2882,35 @@ impl<A: App> AppRunner<A> {
                     end: units(b),
                 }),
             });
+        }
+        self.ime.pushed(now, self.started.elapsed().as_secs_f64());
+    }
+
+    /// iOS's half of [`Self::sync_ime_text`] (winit fork, `ios-text-input`):
+    /// the view's `UITextInput` composes in a copy of the focused field and
+    /// reports each edit as `Ime::TextState`; this keeps that copy and the
+    /// keyboard's traits in step with the field. Byte offsets throughout —
+    /// the fork converts to UIKit's UTF-16.
+    #[cfg(all(target_os = "ios", feature = "ios-text-input"))]
+    fn sync_ime_text(&mut self) {
+        use winit::platform::ios::{TextInputState, WindowExtIOS};
+        let now = self.state.ime_text_state();
+        if now.as_ref() == self.ime.synced() {
+            return;
+        }
+        if let Some(w) = self.shell.window() {
+            if let Some(ime) = &now {
+                let traits = crate::ime_sync::text_input_traits(ime);
+                if self.ios_traits != Some(traits) {
+                    w.set_text_input_traits(ios_traits(traits));
+                    self.ios_traits = Some(traits);
+                }
+            }
+            w.set_text_input_state(now.as_ref().map(|ime| TextInputState {
+                text: ime.text.clone(),
+                selection: ime.selection,
+                compose: ime.compose,
+            }));
         }
         self.ime.pushed(now, self.started.elapsed().as_secs_f64());
     }
@@ -3926,7 +3997,10 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
                 winit::event::Ime::Commit(text) => {
                     self.input_main(event_loop, InputEvent::Text(text));
                 }
-                #[cfg(all(target_os = "android", feature = "android-game-activity"))]
+                #[cfg(any(
+                    all(target_os = "android", feature = "android-game-activity"),
+                    all(target_os = "ios", feature = "ios-text-input")
+                ))]
                 winit::event::Ime::TextState {
                     text,
                     selection,
