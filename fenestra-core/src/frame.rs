@@ -2147,6 +2147,7 @@ pub fn build_frame<Msg>(
         selection_color: theme.accent.with_alpha(0.25),
         animating,
     };
+    crate::touch_select::refresh(&frame, state, fonts, theme);
     // Every element in a frame must own a unique WidgetId: it keys every
     // FrameState map (scroll/focus/editor/anim/hover). A collision — almost always
     // a non-unique `.id("…")` or a duplicate keyed-list key — makes two elements
@@ -3662,6 +3663,35 @@ impl Frame {
         let mut seen = std::collections::HashSet::new();
         walk(&self.root, &mut seen)
             .or_else(|| self.overlays.iter().find_map(|o| walk(&o.node, &mut seen)))
+    }
+
+    /// The realized node with this id (the root's tree, then overlays).
+    fn node_of(&self, id: WidgetId) -> Option<&FrameNode> {
+        fn find(node: &FrameNode, id: WidgetId) -> Option<&FrameNode> {
+            if node.id == id {
+                return Some(node);
+            }
+            node.children.iter().find_map(|c| find(c, id))
+        }
+        find(&self.root, id).or_else(|| self.overlays.iter().find_map(|o| find(&o.node, id)))
+    }
+
+    /// The clip every ancestor puts on this element (`Some(None)`: none).
+    pub(crate) fn clip_of(&self, id: WidgetId) -> Option<Option<Rect>> {
+        self.node_of(id).map(|n| n.visible)
+    }
+
+    /// A field's paint data.
+    pub(crate) fn input_paint_of(&self, id: WidgetId) -> Option<&crate::input::InputPaint> {
+        match &self.node_of(id)?.kind {
+            PaintKind::Input(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    /// The window this frame was built for (logical px).
+    pub(crate) fn canvas(&self) -> Rect {
+        self.canvas
     }
 
     /// The absolute rect of the element with the given id.

@@ -636,14 +636,25 @@ pub fn scroll_moving_at(frame: &Frame, state: &FrameState, point: Point) -> bool
 
 /// Whether a touch landing at `point` (logical px) belongs to the element a
 /// press there would take rather than to scrolling: one with its own drag
-/// (`on_drag` / `on_drag_event`), a swipe, a drag source, or a text input,
-/// where a drag selects text.
+/// (`on_drag` / `on_drag_event`), a swipe, a drag source, or a touch
+/// selection's handle. Not a text field: a drag across one scrolls.
 pub fn owns_touch_drag<Msg>(
     root: &Element<Msg>,
     frame: &Frame,
     state: &FrameState,
     point: Point,
 ) -> bool {
+    // A touch selection's handle drags the selection end.
+    if state.touch_geom.as_ref().is_some_and(|g| {
+        [g.start_handle, g.end_handle]
+            .into_iter()
+            .flatten()
+            .any(|h| h.contains(point))
+    }) {
+        return true;
+    }
+    // A text field does not: on a touch screen a drag across one scrolls
+    // like any other content, and selection is made with the handles.
     let handlers = Handlers::collect(root, state, frame.canvas_height());
     press_target(&handlers, frame, &frame.hit_chain(point))
         .and_then(|id| handlers.get(id))
@@ -652,7 +663,6 @@ pub fn owns_touch_drag<Msg>(
                 || el.on_drag_event.is_some()
                 || el.on_swipe.is_some()
                 || el.drag_source.is_some()
-                || matches!(el.kind, Kind::Input(_))
         })
 }
 
@@ -962,8 +972,15 @@ fn dispatch_inner<Msg: Clone>(
             if state.static_sel.take().is_some() {
                 out.redraw = true;
             }
+            // ...and a touch selection's handles and menu.
+            if crate::touch_select::clear(state) {
+                out.redraw = true;
+            }
+            state.caret_tap = None;
+            let touch = state.pointer_source == PointerSource::Touch;
             let target = press_target(&handlers, frame, &chain);
             if let Some(id) = target {
+                let was_focused = state.focus == Some(id);
                 state.active = Some(id);
                 // Remember where/when the press began, for swipe recognition.
                 state.press_origin = state.pointer.map(|(x, y)| (x, y, state.now()));
@@ -994,12 +1011,27 @@ fn dispatch_inner<Msg: Clone>(
                         if let Some((lx, ly)) = input_local(frame, state, el, id, point)
                             && let Some(editor) = state.editors.get_mut(&id)
                         {
+                            let before = editor.editor.raw_selection().text_range();
                             match count {
                                 2 => input::select_word_at(editor, fonts, lx, ly),
                                 3 => input::select_line_at(editor, fonts, lx, ly),
                                 _ => input::pointer_down(editor, fonts, lx, ly, state.mods.0),
                             }
                             editor.last_activity = now;
+                            let after = editor.editor.raw_selection().text_range();
+                            if touch && count == 2 {
+                                // A double tap selects the word, with handles.
+                                crate::touch_select::start(state, id, true);
+                            } else if touch
+                                && count == 1
+                                && was_focused
+                                && before.is_empty()
+                                && after == before
+                            {
+                                // Pressed on its own bare caret: released as
+                                // a tap, that opens the edit menu.
+                                state.caret_tap = Some(id);
+                            }
                         }
                     } else if el.selectable && matches!(el.kind, Kind::Text(_) | Kind::Rich(_)) {
                         // Starting a selection in static text ends typing into
@@ -1109,6 +1141,11 @@ fn dispatch_inner<Msg: Clone>(
                 }) {
                     out.msgs.push(msg);
                     out.redraw = true;
+                } else if state.pointer_source == PointerSource::Touch
+                    && touch_long_press(&handlers, frame, state, fonts, &chain, point)
+                {
+                    out.selection_started = true;
+                    out.redraw = true;
                 }
             }
         }
@@ -1116,6 +1153,17 @@ fn dispatch_inner<Msg: Clone>(
         InputEvent::PointerUp => {
             if let Some((sid, sel, true)) = state.static_sel {
                 state.static_sel = Some((sid, sel, false));
+            }
+            // A tap on a field's own bare caret opens the edit menu there.
+            if let Some(id) = state.caret_tap.take()
+                && state.active == Some(id)
+                && let Some((px, py)) = state.pointer
+                && frame
+                    .hit_chain(Point::new(f64::from(px), f64::from(py)))
+                    .contains(&id)
+            {
+                crate::touch_select::start(state, id, true);
+                out.redraw = true;
             }
             // Internal drag completion: deliver the payload to the deepest
             // drop target under the release, if any.
@@ -1767,6 +1815,68 @@ fn input_local<Msg>(
     Some((point.x - rect.x0 - pad + scroll_x, y))
 }
 
+/// A touch long press that no app menu took: selects the word under the
+/// finger in the deepest field or selectable text on `chain`, and starts a
+/// touch selection there. Whether one started.
+fn touch_long_press<Msg>(
+    handlers: &Handlers<'_, Msg>,
+    frame: &Frame,
+    state: &mut FrameState,
+    fonts: &mut Fonts,
+    chain: &[WidgetId],
+    point: Point,
+) -> bool {
+    let Some((id, el)) = chain.iter().rev().find_map(|id| {
+        let el = handlers.get(*id).filter(|el| !el.disabled)?;
+        let selectable = matches!(el.kind, Kind::Input(_))
+            || (el.selectable && matches!(el.kind, Kind::Text(_) | Kind::Rich(_)));
+        selectable.then_some((*id, el))
+    }) else {
+        return false;
+    };
+    if matches!(el.kind, Kind::Input(_)) {
+        let Some((lx, ly)) = input_local(frame, state, el, id, point) else {
+            return false;
+        };
+        let now = state.now();
+        let Some(editor) = state.editors.get_mut(&id) else {
+            return false;
+        };
+        input::select_word_at(editor, fonts, lx, ly);
+        editor.last_activity = now;
+        state.focus = Some(id);
+        crate::touch_select::start(state, id, true);
+        return true;
+    }
+    let (Some((text, style)), Some(rect), Some(local)) = (
+        frame.static_text_of(id),
+        frame.rect_of(id),
+        frame.to_layout_point(id, point),
+    ) else {
+        return false;
+    };
+    #[expect(clippy::cast_possible_truncation, reason = "text coords fit in f32")]
+    let sel = fonts.static_select(
+        &text,
+        style,
+        Some(rect.width() as f32),
+        2,
+        (local.x - rect.x0) as f32,
+        (local.y - rect.y0) as f32,
+    );
+    if sel.text_range().is_empty() {
+        return false;
+    }
+    // As a press on static text does: typing into a field ends.
+    if state.focus.is_some_and(|f| state.editors.contains_key(&f)) {
+        state.focus = None;
+        state.focus_visible = false;
+    }
+    state.static_sel = Some((id, sel, false));
+    crate::touch_select::start(state, id, false);
+    true
+}
+
 #[cfg(test)]
 mod blur_tests {
     use super::*;
@@ -1820,10 +1930,11 @@ mod blur_tests {
         );
     }
 
-    /// A touch that lands on a draggable or a text field is theirs to drag;
-    /// anywhere else (a button, plain content) it may scroll.
+    /// A touch that lands on a draggable is its to drag; anywhere else (a
+    /// button, plain content, a text field — selection there is made with
+    /// the touch handles) it may scroll.
     #[test]
-    fn a_touch_on_a_draggable_or_a_text_field_owns_its_drag() {
+    fn a_touch_on_a_draggable_owns_its_drag_and_a_field_scrolls() {
         let root = crate::row().children([
             col()
                 .id("slider")
@@ -1845,7 +1956,7 @@ mod blur_tests {
         );
         let at = |id: &str| frame.get(&by::id(id)).rect.center();
         assert!(owns_touch_drag(&root, &frame, &state, at("slider")));
-        assert!(owns_touch_drag(&root, &frame, &state, at("field")));
+        assert!(!owns_touch_drag(&root, &frame, &state, at("field")));
         assert!(!owns_touch_drag(&root, &frame, &state, at("button")));
     }
 
@@ -2151,3 +2262,4 @@ mod blur_tests {
         assert_eq!(msgs, vec!["abcde"]);
     }
 }
+

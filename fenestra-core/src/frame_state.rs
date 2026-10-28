@@ -271,6 +271,12 @@ pub struct FrameState {
     pub(crate) static_sel: Option<(WidgetId, parley::Selection, bool)>,
     /// Where pointer input is coming from (see [`InputEvent::PointerSource`](crate::InputEvent::PointerSource)).
     pub(crate) pointer_source: crate::events::PointerSource,
+    /// The live touch selection, and its geometry as of the last frame.
+    pub(crate) touch_sel: Option<crate::touch_select::TouchSel>,
+    pub(crate) touch_geom: Option<crate::touch_select::TouchSelection>,
+    /// A touch press on a field that left its bare caret where it was:
+    /// released as a tap, it opens the edit menu there.
+    pub(crate) caret_tap: Option<WidgetId>,
     /// Focused-element type-ahead: target, buffer, last keystroke time.
     pub(crate) type_ahead: Option<(WidgetId, String, f64)>,
     /// Variable-height virtual lists: measured row heights per
@@ -340,6 +346,9 @@ impl Default for FrameState {
             mods: (false, false, false, false),
             static_sel: None,
             pointer_source: crate::events::PointerSource::Mouse,
+            touch_sel: None,
+            touch_geom: None,
+            caret_tap: None,
             type_ahead: None,
             virtual_heights: HashMap::new(),
             virtual_windows: HashMap::new(),
@@ -401,6 +410,17 @@ impl FrameState {
     /// Whether the id is pressed.
     pub fn is_active(&self, id: WidgetId) -> bool {
         self.active == Some(id)
+    }
+
+    /// The touch selection (handles and edit menu) as of the last built
+    /// frame; `None` when there is none.
+    pub fn touch_selection(&self) -> Option<&crate::touch_select::TouchSelection> {
+        self.touch_geom.as_ref()
+    }
+
+    /// The clipboard copy and paste use.
+    pub fn clipboard(&mut self) -> &mut dyn Clipboard {
+        self.clipboard.as_mut()
     }
 
     /// Where pointer input is coming from: a finger or the mouse.

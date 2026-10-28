@@ -927,6 +927,24 @@ fn masked_range(
     ))
 }
 
+/// Where [`paint`] puts the editor's layout origin inside `rect`, at the
+/// current follow-scroll: the inverse of `input_local` in events.
+pub(crate) fn text_origin(
+    state: &mut EditorState,
+    fonts: &mut Fonts,
+    data: &InputPaint,
+    rect: Rect,
+) -> kurbo::Point {
+    let (font_cx, layout_cx) = fonts.editor_contexts();
+    let height = f64::from(state.editor.layout(font_cx, layout_cx).height());
+    let y = if data.multiline {
+        rect.y0 + data.pad_y
+    } else {
+        rect.y0 + (rect.height() - height) * 0.5
+    };
+    kurbo::Point::new(rect.x0 + data.pad_x - state.scroll_x, y)
+}
+
 /// Everything the painter needs for one input, resolved at build time.
 pub(crate) struct InputPaint {
     pub placeholder: String,

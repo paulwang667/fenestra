@@ -137,6 +137,30 @@ impl WritingDir {
 /// `0.0` for exact circular corners via [`Theme::with_corner_smoothing`].
 pub const DEFAULT_CORNER_SMOOTHING: f32 = 0.6;
 
+/// The look of touch text selection controls, after the platforms'
+/// (Flutter's `MaterialTextSelectionControls` and
+/// `CupertinoTextSelectionControls`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SelectionControls {
+    /// Android: teardrop handles, a floating toolbar, a rounded magnifier.
+    #[default]
+    Material,
+    /// iOS: lollipop handles, a dark edit bar, a capsule magnifier.
+    Cupertino,
+}
+
+impl SelectionControls {
+    /// The platform's own: Cupertino on iOS, Material elsewhere.
+    #[must_use]
+    pub const fn platform() -> Self {
+        if cfg!(target_os = "ios") {
+            Self::Cupertino
+        } else {
+            Self::Material
+        }
+    }
+}
+
 /// Design tokens resolved for one color mode.
 #[derive(Debug, Clone)]
 pub struct Theme {
@@ -240,6 +264,11 @@ pub struct Theme {
     /// still override or opt out with [`Style::optical`](crate::Style) /
     /// `OpticalSizing::Default`.
     pub optical_sizing: OpticalSizing,
+
+    /// How touch text selection looks: the handles, the edit menu and the
+    /// magnifier. Defaults to the platform's ([`SelectionControls::Cupertino`]
+    /// on iOS, [`SelectionControls::Material`] elsewhere).
+    pub selection_controls: SelectionControls,
 
     /// How resting, same-plane cards convey separation — [`Elevation::Shadowed`]
     /// (stock: a subtle shadow) or [`Elevation::Flat`] (border + surface
@@ -471,6 +500,7 @@ impl Theme {
             radius: RadiusScale::default(),
             corner_smoothing: DEFAULT_CORNER_SMOOTHING,
             optical_sizing: OpticalSizing::Auto,
+            selection_controls: SelectionControls::platform(),
             elevation: Elevation::default(),
             material_style: crate::MaterialStyle::Solid,
             reduce_transparency: false,

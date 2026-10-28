@@ -41,6 +41,7 @@ mod surface;
 mod text;
 mod theme;
 mod tokens;
+mod touch_select;
 
 pub use apca::{lc, lc_abs, meets, required_lc, wcag2_passes, wcag2_ratio};
 pub use app::{App, CustomRender, MAIN_WINDOW, WindowDesc};
@@ -79,9 +80,11 @@ pub use surface::{
 pub use text::Fonts;
 pub use theme::{
     BaseField, Contrast, ContrastViolation, DEFAULT_CORNER_SMOOTHING, DeriveSpec, DuotoneSpec,
-    Mode, Ramp, StatusColors, Theme, ThemeSpec, Vibrancy, WritingDir, oklch, oklch_of,
+    Mode, Ramp, SelectionControls, StatusColors, Theme, ThemeSpec, Vibrancy, WritingDir, oklch,
+    oklch_of,
 };
 pub use tokens::*;
+pub use touch_select::{EditAction, TouchSelection};
 
 // Re-exported so dependents (kit, apps) never need a direct peniko dep.
 pub use peniko::Color;

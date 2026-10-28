@@ -403,6 +403,22 @@ where
         self.slot().state.pointer_source()
     }
 
+    /// The touch selection (handles and edit menu) in the active window,
+    /// as of the last rebuild.
+    pub fn touch_selection(&self) -> Option<&fenestra_core::TouchSelection> {
+        self.slot().state.touch_selection()
+    }
+
+    /// The active window's clipboard (in-memory under the harness), to put
+    /// text on it or read what was copied.
+    pub fn clipboard(&mut self) -> &mut dyn fenestra_core::Clipboard {
+        self.slots
+            .get_mut(&self.active)
+            .expect("active slot exists")
+            .state
+            .clipboard()
+    }
+
     /// The haptics touch gestures have played, in order (the runner plays
     /// them through the app's hook).
     pub fn haptics(&self) -> &[fenestra_core::Haptic] {
