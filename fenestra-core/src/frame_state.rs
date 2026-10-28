@@ -546,6 +546,9 @@ impl FrameState {
             compose: editor.raw_compose().as_ref().map(|c| (c.start, c.end)),
             field: Some(focus),
             masked: field.masked,
+            keyboard: field.keyboard,
+            enter_key: field.enter_key,
+            multiline: field.multiline,
         })
     }
 

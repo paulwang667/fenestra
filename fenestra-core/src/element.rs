@@ -133,6 +133,83 @@ pub struct InputData {
     /// text, so the app still owns the value and still receives every edit;
     /// the accessibility tree carries no value for a masked field.
     pub masked: bool,
+    /// The on-screen keyboard to offer (Android): letters, digits, a phone
+    /// pad, or one tuned for email or web addresses.
+    pub keyboard: Keyboard,
+    /// What the enter key is: its label on an on-screen keyboard (Android),
+    /// and what pressing it does (see [`EnterKey`]).
+    pub enter_key: EnterKey,
+}
+
+/// The on-screen keyboard a text field asks for (Android; ignored where
+/// there is none to choose).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum Keyboard {
+    /// Letters (the default).
+    #[default]
+    Text,
+    /// Whole numbers.
+    Number,
+    /// Numbers with a decimal point.
+    Decimal,
+    /// A phone pad.
+    Phone,
+    /// Letters with `@` and `.` at hand.
+    Email,
+    /// Letters with `/` and `.` at hand.
+    Url,
+}
+
+/// A text field's enter key: the label an on-screen keyboard shows on it
+/// (Android), and what pressing it does — on every platform, since the key
+/// arrives as Enter.
+///
+/// - [`Newline`](Self::Newline): a multiline field inserts a line break.
+/// - [`Next`](Self::Next): focus moves on, as with Tab, unless the field's
+///   `on_key` takes the Enter.
+/// - [`Done`](Self::Done), [`Search`](Self::Search), [`Go`](Self::Go), set
+///   explicitly on a single-line field: focus leaves it (an on-screen
+///   keyboard closes) unless `on_key` takes the Enter.
+/// - [`Send`](Self::Send): the Enter goes to the app; focus stays, for the
+///   next message.
+///
+/// Any key but `Newline` leaves a multiline field's Enter to the app
+/// (Shift+Enter still breaks the line). [`Default`](Self::Default) is
+/// `Newline` on a multiline field without
+/// [`Element::submit_on_enter`], `Done` otherwise — what fields did before
+/// they could say ([`resolve_enter_key`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum EnterKey {
+    /// Whatever the field is: see [`resolve_enter_key`].
+    #[default]
+    Default,
+    /// Send a message.
+    Send,
+    /// Search.
+    Search,
+    /// Go (to an address).
+    Go,
+    /// Done.
+    Done,
+    /// The next field.
+    Next,
+    /// A line break.
+    Newline,
+}
+
+/// The enter key a field `declared`, made concrete: `Default` is `Newline`
+/// on a `multiline` field that does not `submit_on_enter` and `Done`
+/// otherwise; `Newline` on a single line is `Done` (there is no line to
+/// break).
+pub fn resolve_enter_key(declared: EnterKey, multiline: bool, submit_on_enter: bool) -> EnterKey {
+    match declared {
+        EnterKey::Default if multiline && !submit_on_enter => EnterKey::Newline,
+        EnterKey::Default => EnterKey::Done,
+        EnterKey::Newline if !multiline => EnterKey::Done,
+        key => key,
+    }
 }
 
 /// Optical corrections for a [`Kind::Path`] (see [`crate::optical`]): geometric
@@ -1137,6 +1214,24 @@ impl<Msg> Element<Msg> {
     pub fn masked(mut self, masked: bool) -> Self {
         if let Kind::Input(data) = &mut self.kind {
             data.masked = masked;
+        }
+        self
+    }
+
+    /// The on-screen keyboard an input asks for (Android): see [`Keyboard`].
+    pub fn keyboard(mut self, keyboard: Keyboard) -> Self {
+        if let Kind::Input(data) = &mut self.kind {
+            data.keyboard = keyboard;
+        }
+        self
+    }
+
+    /// An input's enter key — its label on an on-screen keyboard and what
+    /// pressing it does: see [`EnterKey`]. An explicit key wins over
+    /// [`Self::submit_on_enter`].
+    pub fn enter_key(mut self, enter_key: EnterKey) -> Self {
+        if let Kind::Input(data) = &mut self.kind {
+            data.enter_key = enter_key;
         }
         self
     }
@@ -2532,6 +2627,8 @@ pub fn raw_input<Msg>(value: impl Into<String>, placeholder: impl Into<String>) 
         max_chars: None,
         submit_on_enter: false,
         masked: false,
+        keyboard: Keyboard::Text,
+        enter_key: EnterKey::Default,
     }))
     .focusable(true)
     .cursor(Cursor::Text)
@@ -2554,6 +2651,8 @@ pub fn raw_text_area<Msg>(
         max_chars: None,
         submit_on_enter: false,
         masked: false,
+        keyboard: Keyboard::Text,
+        enter_key: EnterKey::Default,
     }))
     .focusable(true)
     .cursor(Cursor::Text)

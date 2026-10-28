@@ -922,6 +922,13 @@ fn build<Msg>(
             editor.read_only = el.read_only;
             editor.max_chars = data.max_chars;
             editor.masked = data.masked;
+            editor.keyboard = data.keyboard;
+            editor.declared_enter = data.enter_key;
+            editor.enter_key = crate::element::resolve_enter_key(
+                data.enter_key,
+                data.multiline,
+                data.submit_on_enter,
+            );
             editor.seen = frame_no;
             let focused = state.focused() == Some(id);
             if focused && !state.reduced_motion {

@@ -45,6 +45,13 @@ pub(crate) struct EditorState {
     /// buffer still holds the real text — only the painting differs, so
     /// editing, undo, copy, and the app's value are untouched.
     pub masked: bool,
+    /// The on-screen keyboard the field asks for.
+    pub keyboard: crate::Keyboard,
+    /// The enter key as the element declared it.
+    pub declared_enter: crate::EnterKey,
+    /// The enter key resolved ([`crate::resolve_enter_key`]): `Newline`
+    /// alone makes Enter a line break.
+    pub enter_key: crate::EnterKey,
     /// The resolved text style, kept so the pointer handlers can lay out the
     /// bullets they hit-test against.
     pub style: ResolvedText,
@@ -128,6 +135,9 @@ impl EditorState {
             read_only: false,
             max_chars: None,
             masked: false,
+            keyboard: crate::Keyboard::Text,
+            declared_enter: crate::EnterKey::Default,
+            enter_key: crate::EnterKey::Default,
             style: *style,
             mask: String::new(),
             mask_count: 0,
@@ -364,7 +374,9 @@ fn handle_key_inner(
     key: &KeyInput,
 ) -> EditOutcome {
     let multiline = state.multiline;
-    let submit_on_enter = state.submit_on_enter;
+    // Only a newline key makes Enter a line break; any other leaves it to
+    // the app (`submit_on_enter` is folded into the resolved key).
+    let enter_to_app = state.enter_key != crate::EnterKey::Newline;
     let (font_cx, layout_cx) = fonts.editor_contexts();
     let mut drv = state.editor.driver(font_cx, layout_cx);
     let shortcut = key.meta || key.ctrl;
@@ -502,7 +514,7 @@ fn handle_key_inner(
         // composer's rule could be written and could not work.
         // Modified Enter is a form submission chord, never a paragraph.
         Key::Enter if multiline && (key.meta || key.ctrl) => IGNORED,
-        Key::Enter if multiline && submit_on_enter && !key.shift => IGNORED,
+        Key::Enter if multiline && enter_to_app && !key.shift => IGNORED,
         Key::Enter if multiline => {
             if state.read_only {
                 return IGNORED;

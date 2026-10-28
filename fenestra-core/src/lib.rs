@@ -50,11 +50,11 @@ pub use chrome::{ChromeElevation, ChromeText};
 pub use clipboard::{ClipImage, Clipboard, MemoryClipboard};
 pub use cmd::{Cmd, CmdFuture, CmdUnit, Sub, apply_cmd};
 pub use element::{
-    Cursor, DrawerSide, Element, ExitAnim, ImageData, InputData, Kind, MAX_TREE_DEPTH,
-    OpticalCorrection, Overlay, OverlayMode, OverlayPlacement, PathData, RovingAxis, Semantics,
-    Span, SwipeDir, VirtualData, col, div, divider, image_from_data, image_payload, image_rgba8,
-    path, raw_input, raw_text_area, responsive, responsive_hinted, rich_text, row, spacer, span,
-    stack, text,
+    Cursor, DrawerSide, Element, EnterKey, ExitAnim, ImageData, InputData, Keyboard, Kind,
+    MAX_TREE_DEPTH, OpticalCorrection, Overlay, OverlayMode, OverlayPlacement, PathData,
+    RovingAxis, Semantics, Span, SwipeDir, VirtualData, col, div, divider, image_from_data,
+    image_payload, image_rgba8, path, raw_input, raw_text_area, resolve_enter_key, responsive,
+    responsive_hinted, rich_text, row, spacer, span, stack, text,
 };
 pub use events::{
     Dispatch, DragEvent, GesturePhase, ImeTextState, InputEvent, Key, KeyInput, Mods, PinchEvent,

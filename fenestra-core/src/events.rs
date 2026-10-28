@@ -308,6 +308,12 @@ pub struct ImeTextState {
     /// Whether the field is a password: the runner tells the IME not to
     /// suggest or learn from it.
     pub masked: bool,
+    /// The on-screen keyboard the field asks for.
+    pub keyboard: crate::Keyboard,
+    /// The field's enter key, resolved ([`crate::resolve_enter_key`]).
+    pub enter_key: crate::EnterKey,
+    /// Whether the field is multiline.
+    pub multiline: bool,
 }
 
 /// The result of dispatching one event.
@@ -1389,6 +1395,36 @@ fn dispatch_inner<Msg: Clone>(
                         state.type_ahead = Some((focus, buffer, now));
                     }
                 }
+                // The enter key's own action, when nothing took the Enter
+                // and no input method is composing: Next moves focus on as
+                // Tab does; an explicit Done / Search / Go on a single line
+                // lets go of it (an on-screen keyboard closes).
+                let plain_enter =
+                    key.key == Key::Enter && !key.shift && !key.ctrl && !key.alt && !key.meta;
+                if !key_handled
+                    && plain_enter
+                    && !state.composing_in(focus)
+                    && let Some(editor) = state.editors.get(&focus)
+                {
+                    let explicit_leave = !editor.multiline
+                        && matches!(
+                            editor.declared_enter,
+                            crate::EnterKey::Done | crate::EnterKey::Search | crate::EnterKey::Go
+                        );
+                    if editor.enter_key == crate::EnterKey::Next {
+                        let order = frame.focusables();
+                        if let Some(i) = order.iter().position(|id| *id == focus) {
+                            state.focus = Some(order[(i + 1) % order.len()]);
+                            state.focus_visible = true;
+                        }
+                        out.redraw = true;
+                        took = true;
+                    } else if explicit_leave {
+                        state.focus = None;
+                        out.redraw = true;
+                        took = true;
+                    }
+                }
                 // Enter/Space activate clickables and toggle anchored menus.
                 if matches!(key.key, Key::Enter | Key::Space) {
                     if let Some(msg) = &el.on_click {
@@ -1938,6 +1974,9 @@ mod blur_tests {
                 compose,
                 field: Some(field),
                 masked: false,
+                // What a single-line field resolves its enter key to.
+                enter_key: crate::EnterKey::Done,
+                ..ImeTextState::default()
             };
             let msgs = dispatch(
                 &root,
@@ -1997,6 +2036,7 @@ mod blur_tests {
             compose: None,
             field: Some(field),
             masked: false,
+            ..ImeTextState::default()
         };
         dispatch(root, frame, state, fonts, InputEvent::ImeState(ime)).msgs
     }
