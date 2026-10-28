@@ -2682,22 +2682,15 @@ impl<A: App> AppRunner<A> {
         if let Some(ime) = &now
             && let Some(app) = &self.shell.options.android_app
         {
-            let was_masked = self.ime.held_masked();
-            if ime.masked != was_masked {
-                // GameActivity's own default: text, action Done, no fullscreen.
-                let options = ImeOptions::from_bits_retain(6) | ImeOptions::IME_FLAG_NO_FULLSCREEN;
-                let (input_type, options) = if ime.masked {
-                    // A password: no suggestions, nothing learned from it.
-                    (
-                        InputType::TYPE_CLASS_TEXT
-                            | InputType::TYPE_TEXT_VARIATION_PASSWORD
-                            | InputType::TYPE_TEXT_FLAG_NO_SUGGESTIONS,
-                        options | ImeOptions::IME_FLAG_NO_PERSONALIZED_LEARNING,
-                    )
-                } else {
-                    (InputType::TYPE_CLASS_TEXT, options)
-                };
-                app.set_ime_editor_info(input_type, TextInputAction::Done, options);
+            // The field's keyboard and enter key, when they are not what
+            // the IME already holds (GameActivity keeps them until told).
+            let info = crate::ime_sync::editor_info(ime);
+            if self.ime.held_editor_info() != Some(info) {
+                app.set_ime_editor_info(
+                    InputType::from_bits_retain(info.input_type),
+                    TextInputAction::from(info.action),
+                    ImeOptions::from_bits_retain(info.options),
+                );
             }
             // Java indexes UTF-16 code units.
             let units = |byte: usize| ime.text[..byte].encode_utf16().count();

@@ -1,7 +1,83 @@
 //! The runner's side of a mirrored IME (Android GameActivity): which field the
 //! IME holds, and which of its state reports to believe.
 
-use fenestra_core::ImeTextState;
+use fenestra_core::{EnterKey, ImeTextState, Keyboard};
+
+/// What an Android IME is told a field is (`EditorInfo`): its input type,
+/// its enter key's action, and its IME options — raw values, so the
+/// mapping is tested on any platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EditorInfo {
+    pub input_type: u32,
+    pub action: i32,
+    pub options: u32,
+}
+
+// android.text.InputType and android.view.inputmethod.EditorInfo.
+const TYPE_CLASS_TEXT: u32 = 0x1;
+const TYPE_CLASS_NUMBER: u32 = 0x2;
+const TYPE_CLASS_PHONE: u32 = 0x3;
+const TYPE_NUMBER_FLAG_DECIMAL: u32 = 0x2000;
+const TYPE_NUMBER_VARIATION_PASSWORD: u32 = 0x10;
+const TYPE_TEXT_VARIATION_URI: u32 = 0x10;
+const TYPE_TEXT_VARIATION_EMAIL_ADDRESS: u32 = 0x20;
+const TYPE_TEXT_VARIATION_PASSWORD: u32 = 0x80;
+const TYPE_TEXT_FLAG_MULTI_LINE: u32 = 0x2_0000;
+const TYPE_TEXT_FLAG_NO_SUGGESTIONS: u32 = 0x8_0000;
+const IME_ACTION_NONE: i32 = 1;
+const IME_ACTION_GO: i32 = 2;
+const IME_ACTION_SEARCH: i32 = 3;
+const IME_ACTION_SEND: i32 = 4;
+const IME_ACTION_NEXT: i32 = 5;
+const IME_ACTION_DONE: i32 = 6;
+const IME_FLAG_NO_PERSONALIZED_LEARNING: u32 = 0x0100_0000;
+const IME_FLAG_NO_FULLSCREEN: u32 = 0x0200_0000;
+const IME_FLAG_NO_ENTER_ACTION: u32 = 0x4000_0000;
+
+/// The `EditorInfo` for a focused field: its keyboard (a password gets the
+/// password variation, no suggestions and nothing learned), its enter key
+/// as the action — a newline key keeps the enter key a line break — and,
+/// as GameActivity's default, no fullscreen editor.
+pub(crate) fn editor_info(field: &ImeTextState) -> EditorInfo {
+    let numeric = matches!(
+        field.keyboard,
+        Keyboard::Number | Keyboard::Decimal | Keyboard::Phone
+    );
+    let mut input_type = match (field.keyboard, field.masked) {
+        (_, true) if numeric => TYPE_CLASS_NUMBER | TYPE_NUMBER_VARIATION_PASSWORD,
+        (_, true) => TYPE_CLASS_TEXT | TYPE_TEXT_VARIATION_PASSWORD | TYPE_TEXT_FLAG_NO_SUGGESTIONS,
+        (Keyboard::Number, false) => TYPE_CLASS_NUMBER,
+        (Keyboard::Decimal, false) => TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL,
+        (Keyboard::Phone, false) => TYPE_CLASS_PHONE,
+        (Keyboard::Email, false) => TYPE_CLASS_TEXT | TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+        (Keyboard::Url, false) => TYPE_CLASS_TEXT | TYPE_TEXT_VARIATION_URI,
+        _ => TYPE_CLASS_TEXT,
+    };
+    if field.multiline && input_type & 0xf == TYPE_CLASS_TEXT {
+        input_type |= TYPE_TEXT_FLAG_MULTI_LINE;
+    }
+    let action = match field.enter_key {
+        EnterKey::Newline => IME_ACTION_NONE,
+        EnterKey::Send => IME_ACTION_SEND,
+        EnterKey::Search => IME_ACTION_SEARCH,
+        EnterKey::Go => IME_ACTION_GO,
+        EnterKey::Next => IME_ACTION_NEXT,
+        _ => IME_ACTION_DONE,
+    };
+    #[expect(clippy::cast_sign_loss, reason = "IME actions are small and positive")]
+    let mut options = action as u32 | IME_FLAG_NO_FULLSCREEN;
+    if action == IME_ACTION_NONE {
+        options |= IME_FLAG_NO_ENTER_ACTION;
+    }
+    if field.masked {
+        options |= IME_FLAG_NO_PERSONALIZED_LEARNING;
+    }
+    EditorInfo {
+        input_type,
+        action,
+        options,
+    }
+}
 
 /// How long after a field switch the old field's buffer is distrusted
 /// (seconds); past it, reports are believed again so input never locks up.
@@ -30,9 +106,9 @@ impl ImeSync {
         self.synced.as_ref()
     }
 
-    /// Whether the IME's editor info is the password one.
-    pub(crate) fn held_masked(&self) -> bool {
-        self.held.as_ref().is_some_and(|s| s.masked)
+    /// The editor info the IME holds (of the last field it was given).
+    pub(crate) fn held_editor_info(&self) -> Option<EditorInfo> {
+        self.held.as_ref().map(editor_info)
     }
 
     /// Records that `state` was pushed to the IME at `now` (seconds).
@@ -63,6 +139,10 @@ impl ImeSync {
             compose,
             field: synced.and_then(|s| s.field),
             masked: synced.is_some_and(|s| s.masked),
+            // The field's kind is the field's, whatever the IME reports.
+            keyboard: synced.map_or(Keyboard::Text, |s| s.keyboard),
+            enter_key: synced.map_or(EnterKey::Done, |s| s.enter_key),
+            multiline: synced.is_some_and(|s| s.multiline),
         };
         if let Some((old, at)) = self.switching.take() {
             // Text the new field also has cannot be told apart: believe it.
@@ -92,7 +172,109 @@ mod tests {
             compose: None,
             field: Some(WidgetId(field)),
             masked: false,
+            ..ImeTextState::default()
         }
+    }
+
+    /// A focused field of this kind, as `ime_text_state` reports one.
+    fn kind(
+        keyboard: Keyboard,
+        enter_key: EnterKey,
+        multiline: bool,
+        masked: bool,
+    ) -> ImeTextState {
+        ImeTextState {
+            keyboard,
+            enter_key: fenestra_core::resolve_enter_key(enter_key, multiline, false),
+            multiline,
+            masked,
+            ..state("", 1)
+        }
+    }
+
+    const NO_ENTER_ACTION: u32 = 0x4000_0000;
+    const MULTI_LINE: u32 = 0x2_0000;
+
+    #[test]
+    fn the_default_field_maps_as_before() {
+        // What sync_ime_text pushed for every field: text, Done, no
+        // fullscreen.
+        let plain = editor_info(&kind(Keyboard::Text, EnterKey::Default, false, false));
+        assert_eq!(
+            plain,
+            EditorInfo {
+                input_type: 1,
+                action: 6,
+                options: 6 | 0x0200_0000
+            }
+        );
+        // And for a password: no suggestions, nothing learned.
+        let secret = editor_info(&kind(Keyboard::Text, EnterKey::Default, false, true));
+        assert_eq!(
+            secret,
+            EditorInfo {
+                input_type: 1 | 0x80 | 0x8_0000,
+                action: 6,
+                options: 6 | 0x0200_0000 | 0x0100_0000
+            }
+        );
+    }
+
+    #[test]
+    fn each_keyboard_maps_to_its_class() {
+        let class = |k| editor_info(&kind(k, EnterKey::Default, false, false)).input_type;
+        assert_eq!(class(Keyboard::Number), 2);
+        assert_eq!(class(Keyboard::Decimal), 2 | 0x2000);
+        assert_eq!(class(Keyboard::Phone), 3);
+        assert_eq!(class(Keyboard::Email), 1 | 0x20);
+        assert_eq!(class(Keyboard::Url), 1 | 0x10);
+    }
+
+    #[test]
+    fn actions_map_and_newline_keeps_enter() {
+        for (key, action) in [
+            (EnterKey::Send, 4),
+            (EnterKey::Search, 3),
+            (EnterKey::Go, 2),
+            (EnterKey::Next, 5),
+            (EnterKey::Done, 6),
+        ] {
+            let info = editor_info(&kind(Keyboard::Text, key, false, false));
+            assert_eq!(info.action, action, "{key:?}");
+            assert_eq!(info.options & 0xff, action as u32, "{key:?}");
+            assert_eq!(info.options & NO_ENTER_ACTION, 0, "{key:?}");
+        }
+        let newline = editor_info(&kind(Keyboard::Text, EnterKey::Default, true, false));
+        assert_eq!(newline.action, 1);
+        assert_ne!(newline.options & NO_ENTER_ACTION, 0);
+        assert_ne!(newline.input_type & MULTI_LINE, 0);
+        let composer = editor_info(&kind(Keyboard::Text, EnterKey::Send, true, false));
+        assert_eq!(composer.action, 4);
+        assert_eq!(composer.options & NO_ENTER_ACTION, 0, "the Send key shows");
+        assert_ne!(composer.input_type & MULTI_LINE, 0);
+    }
+
+    #[test]
+    fn a_masked_number_is_a_number_password() {
+        let pin = editor_info(&kind(Keyboard::Number, EnterKey::Default, false, true));
+        assert_eq!(pin.input_type, 2 | 0x10);
+        assert_ne!(pin.options & 0x0100_0000, 0, "nothing learned");
+    }
+
+    #[test]
+    fn a_field_switch_repushes_editor_info() {
+        let mut sync = ImeSync::default();
+        let email = kind(Keyboard::Email, EnterKey::Next, false, false);
+        sync.pushed(Some(email.clone()), 0.0);
+        assert_eq!(sync.held_editor_info(), Some(editor_info(&email)));
+        let number = ImeTextState {
+            field: Some(WidgetId(2)),
+            ..kind(Keyboard::Number, EnterKey::Done, false, false)
+        };
+        assert_ne!(Some(editor_info(&number)), sync.held_editor_info());
+        // A report from the IME keeps the field's kind.
+        let echoed = recv(&mut sync, "a", 0.1).expect("a report");
+        assert_eq!(editor_info(&echoed), editor_info(&email));
     }
 
     fn recv(sync: &mut ImeSync, text: &str, now: f64) -> Option<ImeTextState> {
@@ -158,11 +340,15 @@ mod tests {
         let mut sync = ImeSync::default();
         let mut secret = state("pw", 1);
         secret.masked = true;
-        sync.pushed(Some(secret), 0.0);
+        sync.pushed(Some(secret.clone()), 0.0);
         sync.pushed(None, 1.0);
-        assert!(sync.held_masked(), "the password editor info is still set");
+        assert_eq!(
+            sync.held_editor_info(),
+            Some(editor_info(&secret)),
+            "the password editor info is still set"
+        );
         sync.pushed(Some(state("", 2)), 2.0);
-        assert!(!sync.held_masked());
+        assert_eq!(sync.held_editor_info(), Some(editor_info(&state("", 2))));
         // GameActivity's echo of the old buffer after the switch is stale.
         assert_eq!(recv(&mut sync, "pw", 2.001), None);
         assert_eq!(recv(&mut sync, "", 2.03), Some(state("", 2)));
