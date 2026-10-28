@@ -148,6 +148,44 @@ fn emoji_is_drawn_in_color() {
     assert!(saturated, "the emoji keeps its colors");
 }
 
+/// The system emoji font whose `sbix` bitmaps are Apple's private `emjc`
+/// format, not PNG — iOS ships only that one (a simulator also sees the
+/// Mac's PNG font, so pick by format, not by family).
+#[cfg(target_os = "ios")]
+fn emjc_emoji_font() -> Option<FontData> {
+    use skrifa::raw::TableProvider;
+    let mut collection = fontique::Collection::new(fontique::CollectionOptions {
+        shared: false,
+        system_fonts: true,
+    });
+    let families: Vec<_> = collection
+        .generic_families(fontique::GenericFamily::Emoji)
+        .collect();
+    families.into_iter().find_map(|family| {
+        collection.family(family)?.fonts().iter().find_map(|font| {
+            let data = FontData::new(font.load(None)?, font.index());
+            let f = FontRef::from_index(data.data.data(), data.index).ok()?;
+            let gid = f.charmap().map('👍')?;
+            let strike = f.sbix().ok()?.strikes().iter().next()?.ok()?;
+            let tag = strike.glyph_data(gid).ok()??.graphic_type();
+            (tag == skrifa::raw::types::Tag::new(b"emjc")).then_some(data)
+        })
+    })
+}
+
+#[cfg(target_os = "ios")]
+#[test]
+fn an_emjc_emoji_is_drawn_in_color() {
+    let font = emjc_emoji_font().expect("iOS ships an emjc emoji font");
+    let text = Text::new(font, 32.0, &[("👍", (10.0, 40.0))]);
+    let (image, _) = render_raster(&mut renderer(), &text, (60, 60));
+    let saturated = image.pixels.as_chunks::<4>().0.iter().any(|p| {
+        let (max, min) = (p[..3].iter().max().unwrap(), p[..3].iter().min().unwrap());
+        *max > 0 && f32::from(max - min) / f32::from(*max) > 0.3
+    });
+    assert!(saturated, "the emoji keeps its colors");
+}
+
 #[test]
 fn synthetic_italic_is_skewed() {
     let mut text = Text::new(inter(), 20.0, &[("italic text", (12.0, 34.0))]);

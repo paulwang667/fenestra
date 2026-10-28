@@ -25,6 +25,12 @@
 
 ### Fixed
 
+- **Color emoji draw on iOS with the raster backend.** iOS's Apple Color
+  Emoji stores its bitmaps as `emjc` (Apple's private compressed format),
+  which vello_cpu cannot decode, so emoji were blank; the glyph atlas now
+  draws such glyphs with CoreText. This is the workspace's one `unsafe`
+  module (`fenestra-raster/src/coretext.rs`); `unsafe_code` goes from
+  `forbid` to `deny` so that module can allow it.
 - **A safe-area change now scrolls the focused field into view**, as a
   window resize does (the iOS keyboard grows the safe area instead of
   resizing the window).

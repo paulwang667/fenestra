@@ -244,7 +244,12 @@ impl Atlas {
             .collect();
         #[expect(clippy::cast_possible_truncation, reason = "font sizes fit in f32")]
         let size_f32 = size as f32;
-        let color = font.color_glyphs().get(gid).is_some()
+        #[cfg(target_vendor = "apple")]
+        let platform = crate::coretext::draws(&font, gid, Size::new(size_f32));
+        #[cfg(not(target_vendor = "apple"))]
+        let platform = false;
+        let color = platform
+            || font.color_glyphs().get(gid).is_some()
             || font
                 .bitmap_strikes()
                 .glyph_for_size(Size::new(size_f32), gid)
@@ -308,6 +313,56 @@ impl Atlas {
         let (wu, hu) = (w as u32, h as u32);
         let origin = (-left, -top);
         let shift = (f64::from(key.bin.0) / BINS, f64::from(key.bin.1) / BINS);
+        let pen = (origin.0 + shift.0, origin.1 + shift.1);
+        let rgba = if platform {
+            #[cfg(target_vendor = "apple")]
+            let drawn = crate::coretext::draw(&font, gid, size, (wu, hu), pen);
+            #[cfg(not(target_vendor = "apple"))]
+            let drawn = None;
+            drawn?
+        } else {
+            self.rasterize_vello(run, key, size_f32, (wu, hu), pen)
+        };
+        self.rasterized += 1;
+
+        let (page, alloc, (ax, ay)) = self.allocate(kind, wu + 2 * PAD, hu + 2 * PAD)?;
+        let bpp = if kind == Kind::Mask { 1 } else { 4 };
+        let (pw, ph) = (wu + 2 * PAD, hu + 2 * PAD);
+        let mut pixels = vec![0u8; (pw * ph * bpp) as usize];
+        for (i, p) in rgba.iter().enumerate() {
+            #[expect(clippy::cast_possible_truncation, reason = "cells are small")]
+            let (x, y) = (i as u32 % wu + PAD, i as u32 / wu + PAD);
+            let at = ((y * pw + x) * bpp) as usize;
+            match kind {
+                Kind::Mask => pixels[at] = p[3],
+                Kind::Color => pixels[at..at + 4].copy_from_slice(p),
+            }
+        }
+        self.uploads.push(Upload {
+            page,
+            rect: (ax, ay, pw, ph),
+            pixels,
+        });
+        Some(Cell {
+            page,
+            alloc,
+            rect: (ax + PAD, ay + PAD, wu, hu),
+            origin,
+            scale: 1.0,
+            last_used: self.frame,
+        })
+    }
+
+    /// Glyph `key` rasterized by vello_cpu at `size` pixels into a `w`×`h`
+    /// premultiplied RGBA image, its origin at `pen`.
+    fn rasterize_vello(
+        &mut self,
+        run: &GlyphRun<'_>,
+        key: &Key,
+        size_f32: f32,
+        (wu, hu): (u32, u32),
+        pen: (f64, f64),
+    ) -> Vec<[u8; 4]> {
         #[expect(
             clippy::cast_possible_truncation,
             reason = "cells are at most MAX_CELL"
@@ -315,7 +370,7 @@ impl Atlas {
         let mut ctx = vello_cpu::RenderContext::new(wu as u16, hu as u16);
         let resources = self.resources.get_or_insert_with(vello_cpu::Resources::new);
         ctx.set_paint(peniko::Color::WHITE);
-        ctx.set_transform(Affine::translate((origin.0 + shift.0, origin.1 + shift.1)));
+        ctx.set_transform(Affine::translate(pen));
         ctx.glyph_run(resources, run.font)
             .font_size(size_f32)
             .hint(key.hint)
@@ -339,34 +394,7 @@ impl Atlas {
         )]
         let mut pixmap = vello_cpu::Pixmap::new(wu as u16, hu as u16);
         ctx.render(&mut pixmap, resources);
-        self.rasterized += 1;
-
-        let (page, alloc, (ax, ay)) = self.allocate(kind, wu + 2 * PAD, hu + 2 * PAD)?;
-        let bpp = if kind == Kind::Mask { 1 } else { 4 };
-        let (pw, ph) = (wu + 2 * PAD, hu + 2 * PAD);
-        let mut pixels = vec![0u8; (pw * ph * bpp) as usize];
-        for (i, p) in pixmap.data().iter().enumerate() {
-            #[expect(clippy::cast_possible_truncation, reason = "cells are small")]
-            let (x, y) = (i as u32 % wu + PAD, i as u32 / wu + PAD);
-            let at = ((y * pw + x) * bpp) as usize;
-            match kind {
-                Kind::Mask => pixels[at] = p.a,
-                Kind::Color => pixels[at..at + 4].copy_from_slice(&[p.r, p.g, p.b, p.a]),
-            }
-        }
-        self.uploads.push(Upload {
-            page,
-            rect: (ax, ay, pw, ph),
-            pixels,
-        });
-        Some(Cell {
-            page,
-            alloc,
-            rect: (ax + PAD, ay + PAD, wu, hu),
-            origin,
-            scale: 1.0,
-            last_used: self.frame,
-        })
+        pixmap.data().iter().map(|p| [p.r, p.g, p.b, p.a]).collect()
     }
 
     /// Room for a `w`×`h` cell in a `kind` page: an existing page, then a

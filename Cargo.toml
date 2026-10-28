@@ -12,9 +12,11 @@ repository = "https://github.com/richer-richard/fenestra"
 keywords = ["gui", "ui", "graphics"]
 categories = ["gui"]
 
-# No crate in this workspace uses unsafe code; keep it that way.
+# No crate in this workspace uses unsafe code, with one exception: the
+# CoreText calls in fenestra-raster/src/coretext.rs (iOS emoji), allowed
+# there and nowhere else. `deny`, not `forbid`, so that one module can.
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [workspace.dependencies]
 # Versioned independently of the 0.39.0 workspace line: a standalone leaf
@@ -69,6 +71,12 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 # Default features: the u8 pipeline, text, and png (bitmap emoji are PNGs).
 vello_cpu = "0.2.0"
 skrifa = "0.42.1"
+# iOS's Apple Color Emoji stores its bitmaps as `emjc` (Apple's private
+# compressed format), which vello_cpu cannot decode; fenestra-raster draws
+# those glyphs with CoreText. 0.3.2 is the version fontique already resolves.
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFString", "CFCGTypes"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage"] }
+objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFont", "objc2-core-graphics"] }
 wasm-bindgen-futures = "0.4.73"
 # `wayland` (the default Linux backend) pulls wayland-scanner -> quick-xml
 # 0.39, which RUSTSEC-2026-0194/0195 flag as high-severity; wayland-scanner's

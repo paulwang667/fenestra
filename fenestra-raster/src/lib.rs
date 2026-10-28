@@ -8,6 +8,8 @@
 //! which implements [`DrawTarget`], and submitted with
 //! [`RasterFrame::render`].
 
+#[cfg(target_vendor = "apple")]
+mod coretext;
 mod geometry;
 pub mod glass;
 mod glyphs;
