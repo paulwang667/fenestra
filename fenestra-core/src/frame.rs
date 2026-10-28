@@ -1220,6 +1220,40 @@ fn wrap_width(known: Option<f32>, available: AvailableSpace) -> Option<f32> {
         .filter(|w| w.is_finite())
 }
 
+/// A text leaf's size for taffy. Its min-content size is the widest word
+/// and the height the text takes *at that width* — short words still share
+/// lines beside the long one. Wrapping at zero width instead gave one line
+/// per word, which is what a column squeezed below its longest word (code
+/// in a monospace font on a phone) then laid out at.
+fn measure_text(
+    fonts: &mut Fonts,
+    text: &str,
+    style: &ResolvedText,
+    known: Option<f32>,
+    available: AvailableSpace,
+) -> (f32, f32) {
+    if known.is_none() && available == AvailableSpace::MinContent {
+        let (min, _) = fonts.measure(text, style, Some(0.0));
+        return fonts.measure(text, style, Some(min));
+    }
+    fonts.measure(text, style, wrap_width(known, available))
+}
+
+/// [`measure_text`] for rich (multi-span) text.
+fn measure_rich_text(
+    fonts: &mut Fonts,
+    spans: &[crate::element::Span],
+    style: &ResolvedText,
+    known: Option<f32>,
+    available: AvailableSpace,
+) -> (f32, f32) {
+    if known.is_none() && available == AvailableSpace::MinContent {
+        let (min, _) = fonts.measure_rich(spans, style, Some(0.0));
+        return fonts.measure_rich(spans, style, Some(min));
+    }
+    fonts.measure_rich(spans, style, wrap_width(known, available))
+}
+
 /// The baseline of a child for `items_baseline` rows: true first-line
 /// baseline for text, bottom edge for boxes (CSS synthesized baseline).
 fn child_baseline(fonts: &mut Fonts, tree: &TaffyTree<MeasureCtx>, node: &BuiltNode) -> f64 {
@@ -1667,15 +1701,14 @@ pub fn build_frame<Msg>(
         },
         |known, available, _id, ctx, _style| match ctx {
             Some(MeasureCtx::Text { text, style }) => {
-                let (w, h) = fonts.measure(text, style, wrap_width(known.width, available.width));
+                let (w, h) = measure_text(fonts, text, style, known.width, available.width);
                 Size {
                     width: known.width.unwrap_or(w),
                     height: known.height.unwrap_or(h),
                 }
             }
             Some(MeasureCtx::Rich { spans, style }) => {
-                let (w, h) =
-                    fonts.measure_rich(spans, style, wrap_width(known.width, available.width));
+                let (w, h) = measure_rich_text(fonts, spans, style, known.width, available.width);
                 Size {
                     width: known.width.unwrap_or(w),
                     height: known.height.unwrap_or(h),
@@ -1803,18 +1836,15 @@ pub fn build_frame<Msg>(
                 |known, available, _id, ctx, _style| match ctx {
                     Some(MeasureCtx::Text { text, style }) => {
                         let (w, h) =
-                            fonts.measure(text, style, wrap_width(known.width, available.width));
+                            measure_text(fonts, text, style, known.width, available.width);
                         Size {
                             width: known.width.unwrap_or(w),
                             height: known.height.unwrap_or(h),
                         }
                     }
                     Some(MeasureCtx::Rich { spans, style }) => {
-                        let (w, h) = fonts.measure_rich(
-                            spans,
-                            style,
-                            wrap_width(known.width, available.width),
-                        );
+                        let (w, h) =
+                            measure_rich_text(fonts, spans, style, known.width, available.width);
                         Size {
                             width: known.width.unwrap_or(w),
                             height: known.height.unwrap_or(h),
@@ -4268,6 +4298,31 @@ mod tests {
             cpu_ids[0],
             image.data.id(),
             "the CPU path bakes a new image"
+        );
+    }
+
+    /// Text squeezed below its longest word (a long token in a narrow
+    /// column, as SF Mono code on a phone): its height is the height at the
+    /// width it ends up with, not one line per word. Measuring min-content
+    /// at a zero wrap width broke at every opportunity, and a 14-line code
+    /// card came out 114 lines tall.
+    #[test]
+    fn text_squeezed_below_its_longest_word_keeps_short_words_together() {
+        use crate::element::{col, row, text};
+        use crate::query::by;
+        let long = "m".repeat(40);
+        let one = test_frame(&col::<()>().child(text("a").id("t")), (400.0, 400.0));
+        let line = one.get(&by::id("t")).rect.height();
+        let squeezed = row::<()>().w(100.0).child(
+            col().child(col().w_full().child(text(format!("a b c d e f g h {long}")).id("t"))),
+        );
+        let frame = test_frame(&squeezed, (400.0, 400.0));
+        let rect = frame.get(&by::id("t")).rect;
+        assert!(rect.width() > 100.0, "the long word overflows: {rect:?}");
+        assert!(
+            rect.height() <= 2.0 * line + 1.0,
+            "short words share a line beside the long one: {} vs line {line}",
+            rect.height()
         );
     }
 

@@ -14,6 +14,11 @@
 
 ### Fixed
 
+- **Text squeezed below its longest word came out one line per word.** A
+  text's min-content height was measured at a zero wrap width; it is now
+  the height at its min-content width, so short words still share lines
+  beside the long one (a 14-line code card in SF Mono on a phone measured
+  114 lines tall).
 - **iOS: the window never showed** (winit reports no visibility there), **a
   startup failure left a silent black screen** (iOS never returns from
   `run_app`; the shell now panics with the error), and **the window opened
