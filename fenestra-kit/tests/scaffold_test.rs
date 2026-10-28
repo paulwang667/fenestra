@@ -120,6 +120,9 @@ fn switching_style_keeps_focus_and_scroll() {
         let f = frame_in(from, &mut state, &view);
         let (field, list) = (f.get(&by::id("field")).id, f.get(&by::id("list")).id);
         state.set_focus(Some(field));
+        // A frame with the field focused (a tap draws one), then the user
+        // scrolls: focus moving to the field scrolls it into view once.
+        frame_in(from, &mut state, &view);
         state.scroll_to(list, 200.0);
         let f = frame_in(from, &mut state, &view);
         let before = f.scroll_offset(list);

@@ -1963,6 +1963,21 @@ pub fn build_frame<Msg>(
             .unwrap_or(usize::MAX)
     });
 
+    // ---- the focused element into view: once, when focus moves to it or
+    // the window changes size under it (an on-screen keyboard), so later
+    // scrolling is the user's.
+    let focus = state.focused();
+    if let Some(id) = focus
+        && (state.revealed_focus != focus || state.revealed_size != size)
+    {
+        let moved =
+            reveal(&root_node, id, state) || overlays.iter().any(|o| reveal(&o.node, id, state));
+        // The new offsets apply on the next frame.
+        animating |= moved;
+    }
+    state.revealed_focus = focus;
+    state.revealed_size = size;
+
     // ---- motion completion: FLIP layout slides, then exit-ghost lifecycle ----
     let now = state.now();
     let seen = state.frame_no;
@@ -2089,6 +2104,86 @@ fn mirror_rtl(node: &mut FrameNode, w: f64) {
 }
 
 /// Finds a node's rect within a realized subtree.
+/// Space kept around an element scrolled into view (logical px).
+const REVEAL_MARGIN: f64 = 8.0;
+
+/// Pushes the nodes from `node` down to `id` onto `chain` (both included);
+/// whether `id` is under `node`.
+fn chain_to<'a>(node: &'a FrameNode, id: WidgetId, chain: &mut Vec<&'a FrameNode>) -> bool {
+    chain.push(node);
+    if node.id == id || node.children.iter().any(|c| chain_to(c, id, chain)) {
+        return true;
+    }
+    chain.pop();
+    false
+}
+
+/// How far to scroll so `[t0, t1]` shows in `[v0, v1]`: nothing when it
+/// does, the nearest edge otherwise, its start when it is the larger.
+fn reveal_delta(t0: f64, t1: f64, v0: f64, v1: f64) -> f64 {
+    if t1 - t0 > v1 - v0 {
+        t0 - v0
+    } else if t1 > v1 {
+        t1 - v1
+    } else if t0 < v0 {
+        t0 - v0
+    } else {
+        0.0
+    }
+}
+
+/// Scrolls the scroll containers above `id` in `node`, innermost first, just
+/// far enough that `id` (with [`REVEAL_MARGIN`]) shows in each one's content
+/// box — its padding (room left under a floating bar) counts as hidden.
+/// Returns whether any offset changed; the new offsets apply next frame.
+fn reveal(node: &FrameNode, id: WidgetId, state: &mut FrameState) -> bool {
+    let mut chain = Vec::new();
+    if !chain_to(node, id, &mut chain) {
+        return false;
+    }
+    let Some((target_node, ancestors)) = chain.split_last() else {
+        return false;
+    };
+    let mut target = target_node.rect.inflate(REVEAL_MARGIN, REVEAL_MARGIN);
+    let mut moved = false;
+    for anc in ancestors.iter().rev() {
+        let Some(scroll) = &anc.scroll else {
+            continue;
+        };
+        let pad = &anc.style.padding;
+        let view = Rect::new(
+            anc.rect.x0 + f64::from(pad.left),
+            anc.rect.y0 + f64::from(pad.top),
+            anc.rect.x1 - f64::from(pad.right),
+            anc.rect.y1 - f64::from(pad.bottom),
+        );
+        let dy = if scroll.can_scroll_y {
+            reveal_delta(target.y0, target.y1, view.y0, view.y1)
+        } else {
+            0.0
+        };
+        let dx = if scroll.can_scroll_x {
+            reveal_delta(target.x0, target.x1, view.x0, view.x1)
+        } else {
+            0.0
+        };
+        #[expect(clippy::cast_possible_truncation, reason = "logical px")]
+        {
+            if dy.abs() > 0.5 {
+                state.scroll_to(anc.id, scroll.offset_y + dy as f32);
+                moved = true;
+            }
+            if dx.abs() > 0.5 {
+                state.scroll_to_x(anc.id, scroll.offset_x + dx as f32);
+                moved = true;
+            }
+        }
+        // Outward, the target is what this container now shows of it.
+        target = (target - kurbo::Vec2::new(dx, dy)).intersect(view);
+    }
+    moved
+}
+
 fn rect_in(node: &FrameNode, id: WidgetId) -> Option<Rect> {
     if node.id == id {
         return Some(node.rect);

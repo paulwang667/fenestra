@@ -202,6 +202,10 @@ pub struct FrameState {
     scroll: HashMap<WidgetId, Scroll>,
     /// Snaps every animation to its final value. Headless rendering sets it.
     pub reduced_motion: bool,
+    /// The focus and the window size the last frame was built with: a
+    /// change in either scrolls the focused element into view.
+    pub(crate) revealed_focus: Option<WidgetId>,
+    pub(crate) revealed_size: (f32, f32),
     /// Elements currently hovered (with hover styling or handlers), with
     /// the clock time the hover began (tooltips key off it).
     pub(crate) hovered: HashMap<WidgetId, f64>,
@@ -301,6 +305,8 @@ impl Default for FrameState {
             now: 0.0,
             scroll: HashMap::new(),
             reduced_motion: false,
+            revealed_focus: None,
+            revealed_size: (0.0, 0.0),
             hovered: HashMap::new(),
             active: None,
             focus: None,
