@@ -2668,8 +2668,12 @@ impl Frame {
             if let (Some(rect), Some(focus)) = (geom.magnifier, geom.focus) {
                 crate::touch_select::begin_magnifier(target, &geom, rect);
                 target.push_transform(crate::touch_select::magnifier_transform(rect, focus));
-                // Plain paint: the zoomed copy records no glass passes.
+                // What is on screen, overlays included; plain paint, so the
+                // zoomed copy records no glass passes.
                 self.paint_node(target, fonts, state, &self.root, &mut PaintMode::Full);
+                for overlay in &self.overlays {
+                    self.paint_node(target, fonts, state, &overlay.node, &mut PaintMode::Full);
+                }
                 target.pop_transform();
                 crate::touch_select::end_magnifier(target, &geom, rect);
             }

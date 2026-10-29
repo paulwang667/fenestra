@@ -29,16 +29,19 @@ impl App for Page {
     }
 }
 
+/// The finger is the pointer source (a tap on blank space), as on a phone.
+fn touched(page: Page) -> Harness<Page> {
+    let mut h = Harness::new(page, Theme::light(), (400, 200));
+    h.touch_tap(&by::label("blank"));
+    h
+}
+
 #[test]
 fn select_all_on_selects_and_shows_the_menu() {
-    let mut h = Harness::new(
-        Page {
-            token: 0,
-            selectable: true,
-        },
-        Theme::light(),
-        (400, 200),
-    );
+    let mut h = touched(Page {
+        token: 0,
+        selectable: true,
+    });
     assert!(h.touch_selection().is_none());
     h.app_mut().token = 1;
     h.rebuild();
@@ -50,14 +53,12 @@ fn select_all_on_selects_and_shows_the_menu() {
 
 #[test]
 fn the_same_token_does_not_reselect() {
-    let mut h = Harness::new(
-        Page {
-            token: 1,
-            selectable: true,
-        },
-        Theme::light(),
-        (400, 200),
-    );
+    let mut h = touched(Page {
+        token: 0,
+        selectable: true,
+    });
+    h.app_mut().token = 1;
+    h.rebuild();
     assert!(h.touch_selection().is_some());
     h.touch_tap(&by::label("blank"));
     assert!(h.touch_selection().is_none());

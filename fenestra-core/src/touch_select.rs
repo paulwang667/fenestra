@@ -90,6 +90,9 @@ pub(crate) struct TouchSel {
     pub offset: Vec2,
     /// The finger that long-pressed is still down: moving it drags.
     pub held: bool,
+    /// The word a long press selected in text: a drag after it keeps the
+    /// word inside the range, whichever way it goes.
+    pub word: Option<(usize, usize)>,
 }
 
 /// A handle's touch area: at least 44 logical px square, hanging below
@@ -118,6 +121,7 @@ pub(crate) fn start(state: &mut FrameState, target: WidgetId, input: bool) {
         fixed: 0,
         offset: Vec2::ZERO,
         held: false,
+        word: None,
     });
 }
 /// Honors a `select_all_on` token that came new this frame: everything in
@@ -126,6 +130,9 @@ fn select_requested(frame: &Frame, state: &mut FrameState, fonts: &mut Fonts) {
     let Some(id) = state.pending_select.take() else {
         return;
     };
+    // Under the mouse it only selects (Cmd/Ctrl+C copies it): the touch
+    // handles and menu are a finger's.
+    let touch = state.pointer_source == crate::events::PointerSource::Touch;
     let Some(rect) = frame.rect_of(id) else {
         return;
     };
@@ -137,12 +144,22 @@ fn select_requested(frame: &Frame, state: &mut FrameState, fonts: &mut Fonts) {
         #[expect(clippy::cast_possible_truncation, reason = "widths fit in f32")]
         let all = fonts.static_range(&text, style, Some(rect.width() as f32), 0, len);
         state.static_sel = Some((id, all, false));
-        start(state, id, false);
+        // As a press on static text does: typing into a field ends, so the
+        // field does not take Cmd/Ctrl+C with its own (empty) selection.
+        if state.focus.is_some_and(|f| state.editors.contains_key(&f)) {
+            state.focus = None;
+            state.focus_visible = false;
+        }
+        if touch {
+            start(state, id, false);
+        }
     } else if let Some(editor) = state.editors.get_mut(&id) {
         let len = editor.editor.raw_text().len();
         crate::input::select_range(editor, fonts, 0, len);
         state.focus = Some(id);
-        start(state, id, true);
+        if touch {
+            start(state, id, true);
+        }
     }
 }
 
@@ -202,7 +219,12 @@ pub(crate) fn drag_to(
     fonts: &mut Fonts,
     finger: Point,
 ) -> bool {
-    let geom_range = state.touch_geom.as_ref().map_or((0, 0), |g| g.range);
+    // The range as it is now (the frame's geometry may not have caught up
+    // with the long press that made it).
+    let static_range = state
+        .static_sel
+        .map(|(_, s, _)| s.text_range())
+        .map(|r| (r.start, r.end));
     let Some(sel) = state.touch_sel.as_mut() else {
         return false;
     };
@@ -213,7 +235,7 @@ pub(crate) fn drag_to(
         // Moving the finger that long-pressed: a field's caret follows it;
         // text extends the selection's end.
         sel.drag = Some(if sel.input { Drag::Caret } else { Drag::End });
-        sel.fixed = geom_range.0;
+        sel.word = if sel.input { None } else { static_range };
         sel.offset = Vec2::ZERO;
     }
     sel.finger = Some(finger);
@@ -255,10 +277,18 @@ pub(crate) fn drag_to(
             (local.y - rect.y0) as f32,
         );
         let at = grapheme_floor(&text.to_text(), at);
+        // After a long press the pressed word stays in the range: the
+        // finger moves whichever end is on its side of it.
+        let (anchor, focus) = match sel.word {
+            Some((a, b)) if at < a => (b, at),
+            Some((a, b)) if at <= b => (a, b),
+            Some((a, _)) => (a, at),
+            None => (sel.fixed, at),
+        };
         // Read-only text keeps at least one character selected: dragged
         // onto the other end, the selection stays as it was.
-        if at != sel.fixed {
-            let range = fonts.static_range(&text, style, width, sel.fixed, at);
+        if anchor != focus {
+            let range = fonts.static_range(&text, style, width, anchor, focus);
             state.static_sel = Some((sel.target, range, false));
         }
     }
@@ -417,14 +447,34 @@ pub(crate) fn refresh(
             })
             .collect();
         let total: f64 = widths.iter().sum();
-        let top = lines.iter().map(|r| r.y0).fold(f64::INFINITY, f64::min);
-        let bottom = lines.iter().map(|r| r.y1).fold(f64::NEG_INFINITY, f64::max);
-        let left = lines.iter().map(|r| r.x0).fold(f64::INFINITY, f64::min);
-        let right = lines.iter().map(|r| r.x1).fold(f64::NEG_INFINITY, f64::max);
+        // Placed against what is on screen of the selection: a tall one
+        // (Select All on a long message) runs past the view.
+        let view = clip.map_or(canvas, |c| c.intersect(canvas));
+        let shown: Vec<Rect> = lines
+            .iter()
+            .map(|r| r.intersect(view))
+            .filter(|r| r.height() > 0.0)
+            .collect();
+        let shown = if shown.is_empty() {
+            lines.clone()
+        } else {
+            shown
+        };
+        let top = shown.iter().map(|r| r.y0).fold(f64::INFINITY, f64::min);
+        let bottom = shown.iter().map(|r| r.y1).fold(f64::NEG_INFINITY, f64::max);
+        let left = shown.iter().map(|r| r.x0).fold(f64::INFINITY, f64::min);
+        let right = shown.iter().map(|r| r.x1).fold(f64::NEG_INFINITY, f64::max);
         let mut y = top - MENU_GAP - MENU_H;
         if y < canvas.y0 + MENU_GAP {
             // No room above: below the selection, clear of its handles.
             y = bottom + HANDLE_HIT + MENU_GAP;
+        }
+        if y + MENU_H > canvas.y1 - MENU_GAP {
+            // Nor below: over the middle of what shows of it.
+            y = ((top + bottom) / 2.0 - MENU_H / 2.0).clamp(
+                canvas.y0 + MENU_GAP,
+                (canvas.y1 - MENU_GAP - MENU_H).max(canvas.y0),
+            );
         }
         let min_x = canvas.x0 + MENU_GAP;
         let max_x = (canvas.x1 - MENU_GAP - total).max(min_x);

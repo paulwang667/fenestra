@@ -15,7 +15,8 @@
   keyboard shortcuts do. `Theme::selection_controls`
   (`SelectionControls::Material` / `Cupertino`, the platform's by
   default) picks the look. Mouse input keeps the desktop behavior; on
-  touch, a drag across a field now scrolls instead of selecting.
+  touch, a drag across a field now scrolls instead of selecting. Known
+  gap: the edit menu is not in the accessibility tree yet.
 - **`Element::select_all_on(token)`**: selects a text's whole content
   with handles and the menu when the token is new (as `focus_on` moves
   focus), for an app's own "Select text" command.

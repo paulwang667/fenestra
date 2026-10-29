@@ -277,6 +277,9 @@ pub struct FrameState {
     /// A touch press on a field that left its bare caret where it was:
     /// released as a tap, it opens the edit menu there.
     pub(crate) caret_tap: Option<WidgetId>,
+    /// A touch press made while a touch selection showed, waiting for its
+    /// release to tell a tap from a scroll.
+    pub(crate) deferred_tap: bool,
     /// A touch press on an edit menu item, acted on when released there.
     pub(crate) menu_press: Option<crate::touch_select::EditAction>,
     /// `select_all_on` tokens last honored, and an element whose new token
@@ -357,6 +360,7 @@ impl Default for FrameState {
             touch_sel: None,
             touch_geom: None,
             caret_tap: None,
+            deferred_tap: false,
             menu_press: None,
             select_requests: HashMap::new(),
             pending_select: None,

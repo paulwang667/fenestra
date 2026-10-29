@@ -664,6 +664,14 @@ pub(crate) fn cancel_compose(state: &mut EditorState, fonts: &mut Fonts) -> bool
     true
 }
 
+/// Commits an input method's composition as typed text.
+pub(crate) fn commit_compose(state: &mut EditorState, fonts: &mut Fonts) {
+    if state.editor.is_composing() {
+        let (font_cx, layout_cx) = fonts.editor_contexts();
+        state.editor.driver(font_cx, layout_cx).finish_compose();
+    }
+}
+
 /// Updates the IME preedit text.
 pub(crate) fn handle_preedit(
     state: &mut EditorState,

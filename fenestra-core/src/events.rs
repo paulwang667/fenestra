@@ -644,11 +644,13 @@ pub fn owns_touch_drag<Msg>(
     state: &FrameState,
     point: Point,
 ) -> bool {
-    // A touch selection's handle drags the selection end.
+    // A touch selection's handle drags the selection end, and its menu
+    // takes its own press (a slow press there is not a long press).
     if state.touch_geom.as_ref().is_some_and(|g| {
         [g.start_handle, g.end_handle]
             .into_iter()
             .flatten()
+            .chain(g.menu.iter().map(|(_, r)| *r))
             .any(|h| h.contains(point))
     }) {
         return true;
@@ -924,6 +926,13 @@ fn dispatch_inner<Msg: Clone>(
                     out.redraw = true;
                     return out;
                 }
+                // With a selection showing, a press waits for its release:
+                // a tap ends the selection (and then presses), a scroll
+                // keeps it.
+                if state.touch_sel.is_some() {
+                    state.deferred_tap = true;
+                    return out;
+                }
             }
             let chain = frame.hit_chain(point);
             // Internal drag: the deepest drag source under the press.
@@ -1143,6 +1152,15 @@ fn dispatch_inner<Msg: Clone>(
             }
         }
         InputEvent::RightDown => {
+            // A finger's long press ends the press it began with: moving on
+            // drags no desktop-style selection or field caret under an
+            // app's menu (a touch selection drags by itself).
+            if state.pointer_source == PointerSource::Touch {
+                state.active = None;
+                if matches!(state.static_sel, Some((_, _, true))) {
+                    state.static_sel = None;
+                }
+            }
             if let Some((px, py)) = state.pointer {
                 let point = Point::new(f64::from(px), f64::from(py));
                 let chain = frame.hit_chain(point);
@@ -1184,6 +1202,25 @@ fn dispatch_inner<Msg: Clone>(
             // A handle (or caret) drag ends; the edit menu comes back.
             if crate::touch_select::release(state) {
                 state.active = None;
+                out.redraw = true;
+                return out;
+            }
+            // A press deferred over a selection: released where it was (a
+            // tap), the selection ends and the press happens; lifted after
+            // leaving (a scroll), the selection stays.
+            if std::mem::take(&mut state.deferred_tap) {
+                if state.pointer.is_some() {
+                    let was_static = state.touch_sel.is_some_and(|s| !s.input);
+                    crate::touch_select::clear(state);
+                    if was_static {
+                        state.static_sel = None;
+                    }
+                    let down = dispatch_inner(root, frame, state, fonts, InputEvent::PointerDown);
+                    let up = dispatch_inner(root, frame, state, fonts, InputEvent::PointerUp);
+                    out.msgs.extend(down.msgs);
+                    out.msgs.extend(up.msgs);
+                    out.cursor = up.cursor.or(down.cursor);
+                }
                 out.redraw = true;
                 return out;
             }
@@ -1885,11 +1922,10 @@ fn touch_edit<Msg>(
         let Some(editor) = st.editors.get_mut(&sel.target) else {
             return;
         };
-        // An input method's half-composed text is not the user's: it goes
-        // before the paste replaces the selection.
-        if action == EditAction::Paste {
-            input::cancel_compose(editor, fonts);
-        }
+        // An input method's composition is committed first, as Android
+        // and UIKit do: Gboard keeps the current word composing, and it is
+        // the user's text.
+        input::commit_compose(editor, fonts);
         let outcome = input::handle_key(editor, fonts, st.clipboard.as_mut(), &key);
         editor.last_activity = now;
         if outcome.changed

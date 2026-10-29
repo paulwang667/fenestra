@@ -73,8 +73,12 @@ enum Mode {
     Pending,
     /// Past the slop: its travel scrolls.
     Scrolling,
-    /// Held long enough: it right-clicked, and is spent.
+    /// Held long enough: it right-clicked. Within the slop it stays put (a
+    /// held finger still reports moves and jitters).
     LongPressed,
+    /// Long-pressed, then moved past the slop: it drives the pointer (a
+    /// touch selection's caret or end follows it).
+    LongDragging,
     /// Down on an element with its own drag (or without gestures): only
     /// the pointer.
     Pointer,
@@ -248,7 +252,12 @@ impl Touch {
                 Mode::Pending | Mode::Caught => {}
                 // After a long press the finger drives the pointer (a touch
                 // selection's caret or end follows it).
-                Mode::Pointer | Mode::LongPressed => events.push(pointer_at(at)),
+                Mode::LongPressed if finger.down.distance(at) > TAP_SLOP => {
+                    finger.mode = Mode::LongDragging;
+                    events.push(pointer_at(at));
+                }
+                Mode::LongPressed => {}
+                Mode::Pointer | Mode::LongDragging => events.push(pointer_at(at)),
                 Mode::Scrolling => {
                     events.extend(scroll_step(finger.down, finger.last, at, finger.lock));
                 }
@@ -270,7 +279,9 @@ impl Touch {
                         let (vx, vy) = finger.velocity(now);
                         pan_end(finger.down, vx, vy).to_vec()
                     }
-                    Mode::LongPressed => vec![InputEvent::PointerLeave, InputEvent::PointerUp],
+                    Mode::LongPressed | Mode::LongDragging => {
+                        vec![InputEvent::PointerLeave, InputEvent::PointerUp]
+                    }
                 });
                 self.finger = None;
                 return Some(events);
@@ -282,7 +293,7 @@ impl Touch {
                     }
                     // Let go where it is: a stretch springs back.
                     Mode::Scrolling | Mode::Caught => pan_end(finger.down, 0.0, 0.0).to_vec(),
-                    Mode::LongPressed => vec![InputEvent::PointerLeave],
+                    Mode::LongPressed | Mode::LongDragging => vec![InputEvent::PointerLeave],
                 });
                 self.finger = None;
                 return Some(events);
@@ -633,14 +644,19 @@ mod tests {
         assert_eq!(t.deadline(), None);
     }
 
-    /// After a long press the finger moves the pointer (a touch selection's
-    /// caret or end follows it), and the lift leaves before it releases,
-    /// so it clicks nothing.
+    /// After a long press a held (or jittering) finger stays put; past the
+    /// slop it moves the pointer (a touch selection's caret or end follows
+    /// it), and the lift leaves before it releases, so it clicks nothing.
     #[test]
     fn after_a_long_press_the_lift_clicks_nothing() {
         let mut t = Touch::new(true);
         t.event(0, Started, p(50., 60.), 0.0, false, false);
         t.tick(0.6);
+        assert!(
+            t.event(0, Moved, p(53., 62.), 0.65, false, false)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             t.event(0, Moved, p(80., 90.), 0.7, false, false).unwrap(),
             vec![InputEvent::PointerMove { x: 80.0, y: 90.0 }]

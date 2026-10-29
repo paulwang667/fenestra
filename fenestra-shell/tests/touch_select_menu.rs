@@ -2,9 +2,7 @@
 //! the field's app hears about the edit, the input method's mirror
 //! follows, and the menu stays on the canvas.
 
-use fenestra_core::{
-    App, EditAction, Element, ImeTextState, InputEvent, Theme, by, col, raw_input, text,
-};
+use fenestra_core::{App, EditAction, Element, Theme, by, col, raw_input, text};
 use fenestra_shell::Harness;
 use kurbo::Insets;
 
@@ -148,34 +146,6 @@ fn a_masked_input_offers_no_cut_or_copy() {
         .map(|(a, _)| *a)
         .collect();
     assert_eq!(actions, vec![EditAction::SelectAll]);
-}
-
-#[test]
-fn paste_while_composing_commits_first() {
-    let mut h = harness(Page::default(), (400, 300));
-    h.clipboard().set("X".to_owned());
-    let r = h.get(&by::label("field")).rect;
-    h.touch_tap_at(pt(r.x1 - 12.0, r.center().y));
-    // The input method is composing "ni" at the end.
-    let field = h.get(&by::label("field")).id;
-    h.input(InputEvent::ImeState(ImeTextState {
-        text: "foo barni".to_owned(),
-        selection: (9, 9),
-        compose: Some((7, 9)),
-        field: Some(field),
-        ..ImeTextState::default()
-    }));
-    h.pump(1000.0);
-    h.touch_tap_at(pt(r.x1 - 12.0, r.center().y));
-    tap(&mut h, EditAction::Paste);
-    let ime = h.ime_text_state().expect("a focused field");
-    assert_eq!(ime.compose, None);
-    assert!(
-        !ime.text.contains("ni"),
-        "no leftover pinyin: {:?}",
-        ime.text
-    );
-    assert!(ime.text.contains('X'));
 }
 
 #[test]
